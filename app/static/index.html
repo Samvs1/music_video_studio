@@ -321,7 +321,7 @@ function renderRefs() {
   const el = $("#refs"); if (!el) return;
   el.innerHTML = (S.project.refs || []).map(r => `<div class="ref" data-id="${r.id}"><img src="/p/${S.name}/${esc(r.file)}?v=${r.id}" alt="${esc(r.name)}" loading="lazy">
       <button class="small" title="Remove this picture" onclick="refEdit(${r.id},{delete:true})">&#10005;</button>
-      <input data-k="name" value="${esc(r.name)}" placeholder="who is this?"><textarea data-k="note" placeholder="optional: e.g. the singer; always in a yellow raincoat">${esc(r.note)}</textarea></div>`).join("");
+      <input data-k="name" value="${esc(r.name)}" placeholder="who is this?"><textarea data-k="note" placeholder="a note, e.g. the singer, red coat">${esc(r.note)}</textarea></div>`).join("");
   el.querySelectorAll("[data-k]").forEach(i => i.onchange = () => refEdit(+i.closest(".ref").dataset.id, {[i.dataset.k]: i.value}));
 }
 async function refFlush() {          // a name still being typed is saved before the list is drawn again
