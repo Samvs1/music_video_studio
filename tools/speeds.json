@@ -1,6 +1,6 @@
 {
  "measured_on": {
-  "date": "2026-10-27 17:53",
+  "date": "2026-10-27 18:37",
   "host": "vm",
   "os": "Linux 6.18.44-fc-v165",
   "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz",
@@ -12,7 +12,7 @@
  "renderers": {
   "web2d": {
    "1080p": {
-    "s_per_frame": 0.708,
+    "s_per_frame": 0.6613,
     "frames": 60,
     "workers": 1,
     "width": 1920,
@@ -21,7 +21,7 @@
     "gpu": false
    },
    "540p_preview": {
-    "s_per_frame": 0.3891,
+    "s_per_frame": 0.4098,
     "frames": 60,
     "workers": 1,
     "width": 960,
@@ -30,7 +30,7 @@
     "gpu": false
    },
    "1080p_parallel": {
-    "s_per_frame": 0.5696,
+    "s_per_frame": 0.5434,
     "frames": 60,
     "workers": 2,
     "width": 1920,
@@ -41,7 +41,7 @@
   },
   "web3d": {
    "1080p": {
-    "s_per_frame": 0.6928,
+    "s_per_frame": 0.7086,
     "frames": 60,
     "workers": 1,
     "width": 1920,
@@ -50,7 +50,7 @@
     "gpu": false
    },
    "540p_preview": {
-    "s_per_frame": 0.3169,
+    "s_per_frame": 0.3364,
     "frames": 60,
     "workers": 1,
     "width": 960,
@@ -59,7 +59,7 @@
     "gpu": false
    },
    "1080p_parallel": {
-    "s_per_frame": 0.6499,
+    "s_per_frame": 0.6406,
     "frames": 60,
     "workers": 2,
     "width": 1920,
@@ -70,13 +70,13 @@
   },
   "blender_workbench": {
    "1080p": {
-    "s_per_frame": 1.2455,
+    "s_per_frame": 1.1805,
     "frames": 10,
     "width": 1920,
     "samples": null
    },
    "540p_preview": {
-    "s_per_frame": 0.3134,
+    "s_per_frame": 0.3136,
     "frames": 10,
     "width": 960,
     "samples": null
@@ -84,13 +84,13 @@
   },
   "blender_eevee": {
    "1080p": {
-    "s_per_frame": 2.3389,
+    "s_per_frame": 2.2861,
     "frames": 10,
     "width": 1920,
     "samples": 32
    },
    "540p_preview": {
-    "s_per_frame": 0.6322,
+    "s_per_frame": 0.6413,
     "frames": 10,
     "width": 960,
     "samples": 16
@@ -98,13 +98,13 @@
   },
   "blender_cycles": {
    "1080p": {
-    "s_per_frame": 5.6278,
+    "s_per_frame": 5.4348,
     "frames": 10,
     "width": 1920,
     "samples": 32
    },
    "540p_preview": {
-    "s_per_frame": 0.9171,
+    "s_per_frame": 0.8697,
     "frames": 10,
     "width": 960,
     "samples": 16
@@ -112,26 +112,26 @@
   }
  },
  "encode": {
-  "libx264_final_fps": 20.0,
-  "libx264_preview_fps": 87.7,
+  "libx264_final_fps": 21.5,
+  "libx264_preview_fps": 97.1,
   "nvenc": false
  },
  "notes": [],
  "budget": {
   "frames_in_3_minutes_at_30fps": 5400,
   "minutes_for_3_minutes_at_30fps": {
-   "web2d 1080p": 63.7,
-   "web2d 540p_preview": 35.0,
-   "web2d 1080p_parallel": 51.3,
-   "web3d 1080p": 62.4,
-   "web3d 540p_preview": 28.5,
-   "web3d 1080p_parallel": 58.5,
-   "blender_workbench 1080p": 112.1,
+   "web2d 1080p": 59.5,
+   "web2d 540p_preview": 36.9,
+   "web2d 1080p_parallel": 48.9,
+   "web3d 1080p": 63.8,
+   "web3d 540p_preview": 30.3,
+   "web3d 1080p_parallel": 57.7,
+   "blender_workbench 1080p": 106.2,
    "blender_workbench 540p_preview": 28.2,
-   "blender_eevee 1080p": 210.5,
-   "blender_eevee 540p_preview": 56.9,
-   "blender_cycles 1080p": 506.5,
-   "blender_cycles 540p_preview": 82.5
+   "blender_eevee 1080p": 205.7,
+   "blender_eevee 540p_preview": 57.7,
+   "blender_cycles 1080p": 489.1,
+   "blender_cycles 540p_preview": 78.3
   },
   "how_to_read": "s_per_frame includes browser / Blender start-up for a short test, so long renders are a little faster per frame. Parallel rows use several workers at once. Plan the final render + checks to take at most a third of the time budget."
  }

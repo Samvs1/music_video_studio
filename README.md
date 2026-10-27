@@ -128,6 +128,9 @@ suggestions, style samples, the stylebook.
 - Software WebGL (no GPU) is slow for heavy three.js; the benchmark says how slow so the director can plan.
 - The photosensitivity check approximates the broadcast guidelines; it is not a certified Harding test.
 - The text checks only see text the renderers recorded or that is declared in `work/text.json`.
+- Interactive `/musicvideo` sessions use your own Claude Code permission settings, so expect the usual prompts for
+  Bash and edits (there is no project `.claude/settings.json`; this build session wasn't allowed to write one). The
+  autonomous runner passes its own scoped permissions and asks nothing.
 - One song per project; the whole song, always.
 - QA can't hear: phrase-level musical feel needs a human ear (the director's report lists the timestamps).
 
