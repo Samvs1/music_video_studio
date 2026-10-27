@@ -258,7 +258,7 @@ def scene_key(scene_path, project, cfg):
     return h.hexdigest()[:16]
 
 
-def merge_texts(per_frame, fps):
+def merge_texts(per_frame, fps, space=None):
     """Per-frame text lists -> appearances: {text, role, f0, f1, t0, t1, box, boxes, color, size, overflow, opacity_min}."""
     open_, out = {}, []
     for f in sorted(per_frame):
@@ -292,6 +292,8 @@ def merge_texts(per_frame, fps):
             a["boxes"].append(a["last"])
         del a["last"]
         a["t0"], a["t1"] = round(a["f0"] / fps, 4), round((a["f1"] + 1) / fps, 4)
+        if space:
+            a["space"] = list(space)
     return out
 
 
@@ -487,7 +489,7 @@ def render(scene, out, project=None, frames=None, width=None, height=None, fps=N
         intents += j.get("intents") or []
     side = {"scene": os.path.relpath(scene, project).replace("\\", "/"), "range": [a, b], "fps": fps, "w": w, "h": h,
             "t0": round(a / fps, 4), "t1": round(b / fps, 4), "transparent": transparent, "format": "png" if mode == "png" and not out.endswith(".mov") else os.path.splitext(out)[1][1:],
-            "browser": info, "texts": merge_texts(per_frame, fps), "intents": [dict(x) for x in {json.dumps(i, sort_keys=True): i for i in intents}.values()],
+            "browser": info, "texts": merge_texts(per_frame, fps, (w, h)), "intents": [dict(x) for x in {json.dumps(i, sort_keys=True): i for i in intents}.values()],
             "logs": sorted(set(logs))[:50], "rendered_at": time.strftime("%Y-%m-%d %H:%M:%S")}
     jsave(out.rstrip("/\\") + ".mv.json", side)
     for old in glob.glob(os.path.join(parts, "*")):              # older scene versions' chunks are not needed any more

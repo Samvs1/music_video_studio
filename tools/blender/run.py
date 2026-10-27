@@ -152,7 +152,7 @@ def render(scene, out, project=None, frames=None, engine="auto", samples=None, s
     side = {"scene": os.path.relpath(scene, project).replace("\\", "/"), "range": [a, b], "fps": fps, "w": w, "h": h,
             "t0": round(a / fps, 4), "t1": round(b / fps, 4), "transparent": transparent,
             "format": "mp4" if to_mp4 else "png", "frames_dir": out_dir, "engine": (metas[0] if metas else {}).get("engine", engine),
-            "blender": blender_version(exe), "texts": [dict(t, f0=int(round(t["t0"] * fps)), f1=int(round(t["t1"] * fps)) - 1,
+            "blender": blender_version(exe), "texts": [dict(t, space=[w, h], f0=int(round(t["t0"] * fps)), f1=int(round(t["t1"] * fps)) - 1,
                                                              boxes=[[int(round(t["t0"] * fps))] + list(t["box"])]) for t in texts],
             "render_seconds": round(el, 1), "rendered_at": time.strftime("%Y-%m-%d %H:%M:%S")}
     jsave(out.rstrip("/\\") + ".mv.json", side)

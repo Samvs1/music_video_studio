@@ -227,7 +227,10 @@
   function collectTexts() {
     const out = frameTexts.splice(0);
     document.querySelectorAll("[data-mv-text]").forEach(el => {
-      const r = el.getBoundingClientRect();
+      const rg = document.createRange();                 // the glyphs' own box, not the element's (a block spans the stage)
+      rg.selectNodeContents(el);
+      let r = rg.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) return;
       const cs = getComputedStyle(el);
       if (cs.visibility === "hidden" || cs.display === "none") return;

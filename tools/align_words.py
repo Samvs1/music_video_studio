@@ -94,17 +94,21 @@ def main():
     need_project()
     path = os.path.join(CACHE, "audio.json")
     d = json.load(open(path, encoding="utf-8"))
-    voc, _ = librosa.load(os.path.join(STEMS, "vocals.wav"), sr=SR, mono=True)
-    bundle = torchaudio.pipelines.MMS_FA
-    model = bundle.get_model(with_star=True).to(DEV)                # ~1.3 GB of VRAM on the GPU
-    tok = bundle.get_tokenizer()
-    aligner = bundle.get_aligner()
     lines = d.get("lyrics") or []
-    if not lines:
-        print("no lyrics in the analysis: nothing to align")
-        return
     if lines and all(w.get("src") == "user" for L in lines for w in L.get("words", [])):
         print("every word was timed by the user (enhanced LRC): nothing to align")
+        return
+    voc, _ = librosa.load(os.path.join(STEMS, "vocals.wav"), sr=SR, mono=True)
+    bundle = torchaudio.pipelines.MMS_FA
+    try:
+        print("   loading the MMS aligner (first use downloads ~1.2 GB from dl.fbaipublicfiles.com)", flush=True)
+        model = bundle.get_model(with_star=True).to(DEV)            # ~1.3 GB of VRAM on the GPU
+    except Exception as ex:
+        sys.exit(f"the MMS aligner could not be loaded ({type(ex).__name__}: {str(ex)[:160]}): word times stay estimates")
+    tok = bundle.get_tokenizer()
+    aligner = bundle.get_aligner()
+    if not lines:
+        print("no lyrics in the analysis: nothing to align")
         return
     for L in lines:                          # re-runs start from the LRC times, not from an earlier alignment
         for w in L.get("words", []):

@@ -10,15 +10,17 @@ spec: H.264 (yuv420p) + AAC in MP4; the delivery width, height and a constant fp
   errors; the frame count is the song's length to the frame (round(duration * fps)); both streams start at 0; the
   audio, decoded, is the song file's audio (cross-correlation lag 0, level within 0.1 dB, same length); no black or
   frozen stretches that weren't declared (scenes declare them with MV.intent('black'|'frozen', t0, t1, why), or list
-  them in work/intent.json: {"black": [[t0, t1, "why"]], "frozen": [...]}; up to 0.5 s of black at the very start
-  and 1 s at the very end are allowed without a declaration).
+  them in work/intent.json: {"black": [[t0, t1, "why"]], "frozen": [...]}; black before the music starts (at least
+  0.5 s) and after it ends (at least 1 s) is allowed without a declaration).
 flash: after ITU-R BT.1702 / Ofcom and WCAG 2.x. A flash = a pair of opposing changes in relative luminance of 10% or
   more where the darker state is below 0.80; a red flash = an opposing pair of changes in (R-G-B)x320 of more than 20
   involving saturated red (R/(R+G+B) >= 0.8). FAIL: more than 3 flashes within any one second over more than 25% of
   the screen (the broadcast limit). WARN: the same over more than 10% (about the WCAG area), or 2-3 flashes a second
   sustained for more than 5 s. An automated approximation of those guidelines, not a certified Harding test.
 text: uses the on-screen text recorded by the renderers (VIDEO.mv.json sidecars, merged by compose) plus
-  work/text.json. Reading time 0.8 s + 55 ms per character (1.4-3 s; word-by-word lyric type is exempt per word),
+  work/text.json. Roles (data-mv-text="role" / MV.text(s, {role})): text, title, credit (every check); lyric (a sung
+  line: also its timing); lyric-word (one word at a time: timing, no reading time); label (changing counters,
+  timecodes: no reading time or size rule); deco (type as texture: not checked). Reading time 0.8 s + 55 ms per character (1.4-3 s; word-by-word lyric type is exempt per word),
   contrast >= 3:1 against what is behind it, inside the title-safe area (90%), never clipped, lyric text appearing on
   the beat or 8th at or just before the sung word (never after), at least 34 px tall at 1080p.
 Carried over from aftermovie-studio's qa.py and am/checks.py (reading time, contrast, audio), now EDL-free.
@@ -121,8 +123,13 @@ def check_spec(video, song=None):
     # black / frozen stretches
     it = intents(video)
     total = n / fps
-    for kind, flt, key in (("black", "blackdetect=d=0.4:pix_th=0.10:pic_th=0.98", "black_start"),
-                           ("frozen", "freezedetect=n=0.001:d=2", "freeze_start")):
+    sm = jload(os.path.join(ROOT, "song", "song-map.json"), {}) or {}
+    mus = sm.get("music") or {}
+    pre = max(0.5, float(mus.get("start", 0)) + 0.25)            # black before the music starts is fine
+    post = max(1.0, total - float(mus.get("end", total)) + 0.25)  # ... and after it ends
+    # black = (almost) nothing on screen; frozen = (almost) no pixel changes: a dark, sparse or slow design is neither
+    for kind, flt, key in (("black", "blackdetect=d=0.4:pix_th=0.05:pic_th=0.999", "black_start"),
+                           ("frozen", "freezedetect=n=0.0002:d=2", "freeze_start")):
         r = subprocess.run([ffmpeg(), "-v", "info", "-i", video, "-map", "0:v", "-vf", flt, "-f", "null", "-"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         spans = []
@@ -135,7 +142,7 @@ def check_spec(video, song=None):
             spans = [(s0, ends[i] if i < len(ends) else total) for i, s0 in enumerate(starts)]
         bad = []
         for s0, s1 in spans:
-            if kind == "black" and ((s0 <= 0.01 and s1 <= 0.5) or (s1 >= total - 0.05 and s1 - s0 <= 1.0)):
+            if kind == "black" and ((s0 <= 0.01 and s1 <= pre) or (s1 >= total - 0.05 and s1 - s0 <= post)):
                 continue
             if covered(s0, s1, it[kind]):
                 continue
@@ -223,7 +230,7 @@ def check_flash(video):
     from eyes import Video
     V = Video(video, delivery()["fps"])
     fps = V.fps
-    gw, gh = (64, 36) if V.w >= V.h else (36, 64)
+    gw, gh = (16, 9) if V.w >= V.h else (9, 16)          # areas of the screen (0.7% each), not pixels: a thin moving line is not a flash
     L, RED, SAT = [], [], []
     for blk in V.stream(gw, gh):
         x = lin(blk.astype(np.float32) / 255.0).reshape(len(blk), -1, 3)
@@ -365,7 +372,10 @@ def check_text(video):
         return R
     V = Video(video, d["fps"])
     fps = V.fps
-    sx, sy = V.w / max(1, side.get("w") or d["width"]), V.h / max(1, side.get("h") or d["height"])
+
+    def scale(t):
+        sp = t.get("space") or [side.get("w") or d["width"], side.get("h") or d["height"]]
+        return V.w / max(1, sp[0]), V.h / max(1, sp[1]), 1080 / max(1, min(sp))
     song = Song(ROOT)
     beat_s = song.beat_s
     lines = [(re.sub(r"[^\w ]+", "", x["text"].lower()).strip(), x) for x in song.lines]
@@ -381,10 +391,13 @@ def check_text(video):
     for i, t in enumerate(texts):
         txt = t["text"].strip()
         role = t.get("role", "text")
+        if role == "deco":                                  # type used as texture: not meant to be read
+            continue
+        sx, sy, s1080 = scale(t)
         dur = t["t1"] - t["t0"]
         at_end = t["t1"] >= V.duration + V.f0 / fps - 1.5 / fps
-        if role not in ("lyric-word", "word", "kinetic") and not at_end and dur < need(txt) - 1e-3:
-            short.append(f"{t['t0']:.2f}s \"{txt[:30]}\" {dur:.2f}s < {need(txt):.2f}s")
+        if role not in ("lyric-word", "word", "kinetic", "label") and not at_end and dur < need(txt) - 1e-3:
+            short.append(f"{t['t0']:.2f}s \"{txt[:30]}\" {dur:.3f}s < {need(txt):.3f}s")
         f, bx = need_frames[i]
         if f in ims:
             img = np.asarray(ims[f], dtype=np.float32) / 255
@@ -402,15 +415,15 @@ def check_text(video):
                 break
         if t.get("overflow"):
             clipped.append(f"{t['t0']:.2f}s \"{txt[:30]}\" overflows its box")
-        if t.get("size") and t["size"] * (1080 / (side.get("h") or d["height"])) < 34 and role not in ("credit-small",):
+        if t.get("size") and t["size"] * s1080 < 34 and role not in ("label",):
             small.append(f"{t['t0']:.2f}s \"{txt[:30]}\" {t['size']:.0f}px")
         if role in ("lyric", "lyric-word", "word", "kinetic"):
             norm = re.sub(r"[^\w ]+", "", txt.lower()).strip()
             onset = None
-            if role == "lyric":
-                best = max(lines, key=lambda L: SequenceMatcher(None, norm, L[0]).ratio(), default=None)
-                if best and SequenceMatcher(None, norm, best[0]).ratio() >= 0.6:
-                    onset = best[1]["t"]
+            if role == "lyric":                             # the matching line sung nearest to when the text appears
+                cands = [L for L in lines if SequenceMatcher(None, norm, L[0]).ratio() >= 0.6]
+                if cands:
+                    onset = min(cands, key=lambda L: abs(L[1]["t"] - t["t0"]))[1]["t"]
             else:
                 cands = [w for w in song.words if re.sub(r"[^\w]+", "", w[1].lower()) == re.sub(r"[^\w]+", "", norm)]
                 if cands:

@@ -107,6 +107,12 @@ def hits_on(song, t, fps):
 
 def margin(song, t, fps, extra=""):
     d = song.at(t)
+    import bisect
+    j = bisect.bisect_left(song.beats, t - 0.5 / fps)
+    if j < len(song.beats) and abs(song.beats[j] - t) <= 0.5 / fps + 1e-6:     # a beat lands in this frame's slot
+        p = song.pos(song.beats[j] + 1e-4)
+        if p:
+            d["bar"], d["beat"] = p[0], float(round(p[1]))
     l1 = f"{mmss(t)}  f{int(round(t * fps))}  " + (f"bar {d['bar']}:{d['beat']:.2f}" if d["bar"] is not None else "no beat") + \
          (f"  {d['section']}" if d["section"] else "") + (f"  {d['chord']}" if d["chord"] else "")
     lyr = d["line"] or ""
