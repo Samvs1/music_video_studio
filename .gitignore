@@ -36,3 +36,4 @@ projects/_*/
 # test outputs
 tests/out/
 tools/installed.md
+projects/srv-test-*/
