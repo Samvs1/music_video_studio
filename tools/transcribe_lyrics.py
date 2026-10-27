@@ -64,8 +64,11 @@ def main():
     v, _ = librosa.load(os.path.join(STEMS, "vocals.wav"), sr=SR, mono=True)
     regs = sung_regions(v)
     print(f"{len(regs)} sung stretches, {sum(b - x for x, b in regs):.0f} s of singing; {a.model} on {dev}")
-    asr = pipeline("automatic-speech-recognition", model=a.model, device=dev,
-                   dtype=torch.float16 if dev == "cuda" else torch.float32)
+    try:
+        asr = pipeline("automatic-speech-recognition", model=a.model, device=dev,
+                       dtype=torch.float16 if dev == "cuda" else torch.float32)
+    except Exception as ex:   # first use downloads ~1.6 GB from huggingface.co
+        sys.exit(f"Whisper ({a.model}) could not be loaded ({type(ex).__name__}: {str(ex)[:160]}): no transcribed lyrics")
     gk = {"task": "transcribe"}
     if a.language:
         gk["language"] = a.language

@@ -474,7 +474,7 @@ async function dirLive() {
       <span class="mut">${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)} &middot; budget ${esc(d.budget)}</span><span class="sp" style="flex:1"></span>
       <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; $${(d.cost_usd || 0).toFixed(2)}${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
     ${running ? `<div class="prog"><div style="width:${pct}%"></div></div>` : `<p class="hint">${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}
-    <pre class="log" id="dir-ev" style="max-height:420px">${esc((d.events || []).map(e => `${dur(e.t).padStart(8)}  ${e.text}`).join("\n"))}</pre>
+    <pre class="log" id="dir-ev" style="max-height:420px">${esc((d.events || []).map(e => String(e.text).split("\n").map((l, i) => `${i ? "".padStart(8) : dur(e.t).padStart(8)}  ${l}`).join("\n")).join("\n"))}</pre>
     ${d.brief ? `<a href="${d.brief}" target="_blank">the brief</a>` : ""}</div>`;
   const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
   if (!running) clearInterval(dpoll);
