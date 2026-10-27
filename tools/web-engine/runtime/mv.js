@@ -13,6 +13,8 @@
  *       async setup(mv) { ... build things once; mv.canvas(), mv.song, mv.width, ... },
  *       render(f) { ... draw frame f: f.t, f.frame, f.bar, f.beat, f.beatPhase, f.c.drums, f.section, f.word ... }
  *     }
+ *   f.t is the end of the frame's time slot ((frame + 0.5) / fps): whatever happens in a frame's slot shows in that
+ *   frame, the same rule as hits.json (frame = round(t * fps)). Use f.t for everything (MV.pulse(kind, f.t), ...).
  * An HTML scene calls MV.scene({...}) itself. See tools/web-engine/README.md.
  */
 (function () {
@@ -206,8 +208,11 @@
   const frameTexts = [], intents = [], logs = [];
 
   // ------------------------------------------------------------------ the frame
+  // A frame k shows song time [(k - 0.5) / fps, (k + 0.5) / fps): everything that happens in that slot (a downbeat, a
+  // kick, a word) is in this frame. So f.t is the END of the slot; f.time = k / fps is its middle.
+  const slot = i => (i + 0.5) / FPS - 1e-6;
   function info(i) {
-    const t = i / FPS, fr = D.frames, same = fr && fr.fps === FPS, k = same ? clamp(i, 0, fr.frames - 1) : null;
+    const t = slot(i), fr = D.frames, same = fr && fr.fps === FPS, k = same ? clamp(i, 0, fr.frames - 1) : null;
     const p = MV.pos(t), sec = MV.sectionAt(t), ln = MV.lineAt(t);
     const c = {};
     if (fr) for (const name of Object.keys(fr.curves)) Object.defineProperty(c, name, {get: () => MV.curve(name, i), enumerable: true});
@@ -217,7 +222,7 @@
       const b = p[0], end = b + 1 < downbeats.length ? downbeats[b + 1] : downbeats[b] + 4 * beatS;
       barPhase = clamp((t - downbeats[b]) / (end - downbeats[b]), 0, 0.9999);
     }
-    return {frame: i, t, fps: FPS, w: W, h: H, dt: 1 / FPS, progress: t / (MV.duration || 1),
+    return {frame: i, t, time: i / FPS, fps: FPS, w: W, h: H, dt: 1 / FPS, progress: t / (MV.duration || 1),
             bar: p ? p[0] : -1, beat: p ? p[1] : 0, beatPhase, barPhase,
             section: sec, sectionIndex: sec ? D.map.sections.indexOf(sec) : -1,
             sectionPhase: sec ? (t - sec.t0) / (sec.t1 - sec.t0) : 0,
@@ -248,7 +253,7 @@
   }
   let SCENE = null;
   async function step(i, collect) {
-    NOW = i / FPS * 1000;
+    NOW = slot(i) * 1000;
     reseed(i);
     fireTimers();
     syncAnimations();

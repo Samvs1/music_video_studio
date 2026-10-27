@@ -8,7 +8,7 @@ A scene script defines:
 
 `mv` gives: mv.song (tools/mv/song.py Song: t(bar, beat), pos(t), at(t), cue(t), hits(kind), pulse(kind, t), ...),
 mv.fps, mv.width, mv.height, mv.f0, mv.f1 (the frames being rendered), mv.seed, mv.preview,
-mv.curve(name) (one value per frame), mv.value(name, f), mv.t(f) (song seconds of frame f), mv.frame(t),
+mv.curve(name) (one value per frame), mv.value(name, f), mv.t(f) (song time of frame f: the end of its slot), mv.frame(t),
 mv.random(f, key) (stable per frame), mv.text(...) (declare on-screen text for the checks), mv.scene (bpy scene).
 Blender frame numbers ARE song frames (frame 0 = song time 0).
 """
@@ -32,7 +32,9 @@ class MV:
         self.project = A["project"]
 
     def t(self, f):
-        return f / self.fps
+        """Song time of frame f: the end of its slot, so whatever happens in the frame's slot (a downbeat, a kick)
+        shows in it (the studio's rule: an event at t is in frame round(t * fps))."""
+        return (f + 0.5) / self.fps - 1e-6
 
     def frame(self, t):
         return int(round(t * self.fps))

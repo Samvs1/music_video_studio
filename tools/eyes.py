@@ -297,7 +297,7 @@ def visual_events(diff, fps):
     from scipy.signal import find_peaks
     from scipy.ndimage import gaussian_filter1d
     base = gaussian_filter1d(diff, 8)
-    pk, _ = find_peaks(diff, height=np.maximum(0.06, base * 2.2), distance=3)
+    pk, _ = find_peaks(diff, height=np.maximum(0.02, base * 3.0), distance=3)
     out = []
     for p in pk:
         q = p

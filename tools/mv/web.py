@@ -298,13 +298,15 @@ def merge_texts(per_frame, fps, space=None):
 
 
 def _capture(cdp, page, jpeg):
+    """One frame from the compositor. jpeg: False = PNG (lossless, alpha), or a JPEG quality (Chrome's PNG encoder is
+    ~7x slower than its JPEG one on busy frames; at quality 98 the JPEG step is invisible after the H.264 encode)."""
     try:
-        r = cdp.send("Page.captureScreenshot", {"format": "jpeg" if jpeg else "png", "quality": 92,
-                                                "optimizeForSpeed": True, "captureBeyondViewport": False} if jpeg else
+        r = cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": int(jpeg), "optimizeForSpeed": True,
+                                                "captureBeyondViewport": False} if jpeg else
                      {"format": "png", "optimizeForSpeed": True, "captureBeyondViewport": False})
         return base64.b64decode(r["data"])
     except Exception:
-        return page.screenshot(type="jpeg" if jpeg else "png", quality=92 if jpeg else None, omit_background=True)
+        return page.screenshot(type="jpeg" if jpeg else "png", quality=int(jpeg) if jpeg else None, omit_background=not jpeg)
 
 
 def _open_page(pw, job):
@@ -401,7 +403,7 @@ def plan_chunks(a, b, per):
 
 
 def render(scene, out, project=None, frames=None, width=None, height=None, fps=None, quality="final", scale=1.0,
-           transparent=False, workers=None, gpu="auto", seed=1, chunk_s=2.0, fresh=False, log=print):
+           transparent=False, workers=None, gpu="auto", seed=1, chunk_s=2.0, fresh=False, lossless=False, log=print):
     """Render scene frames [a, b) to `out` (.mp4 = H.264 chunks joined frame-exact; a folder or .mov with transparent=True).
     Returns the sidecar dict (also written to <out>.mv.json)."""
     from concurrent.futures import ProcessPoolExecutor
@@ -420,8 +422,9 @@ def render(scene, out, project=None, frames=None, width=None, height=None, fps=N
         raise SystemExit(f"empty frame range {a}:{b}")
     out = os.path.abspath(out)
     mode = "png" if transparent and not out.lower().endswith(".mov") else ("png" if transparent else "mp4")
-    jpeg = quality == "preview" and not transparent
-    cfg = {"w": w, "h": h, "fps": fps, "seed": seed, "quality": quality, "transparent": transparent, "rt": RUNTIME_VERSION}
+    jpeg = False if (transparent or lossless) else (88 if quality == "preview" else 98)
+    cfg = {"w": w, "h": h, "fps": fps, "seed": seed, "quality": quality, "transparent": transparent, "rt": RUNTIME_VERSION,
+           "capture": "png" if not jpeg else f"jpeg{jpeg}"}
     key = scene_key(scene, project, cfg)
     parts = out + ".parts"
     cdir = os.path.join(parts, key)

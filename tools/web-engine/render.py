@@ -5,7 +5,7 @@
         [--preview | --scale 0.5]          low-res + fast encode (same fps, so sync checks still hold)
         [--transparent]                    PNG frames with alpha (a folder, or .mov = ProRes 4444) for layering
         [--still 12.5,40.2]                PNG stills at song times instead of a video (style frames)
-        [--workers N] [--gpu auto|on|off] [--seed N] [--fresh] [--chunk 2.0]
+        [--workers N] [--gpu auto|on|off] [--seed N] [--fresh] [--chunk 2.0] [--lossless]
 
 Paths are relative to the project folder. A re-run after a crash (or a section render) reuses finished chunks of the
 same scene version; any change to the scene's folder renders them again. Writes <out>.mv.json next to the output:
@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--chunk", type=float, default=2.0)
+    ap.add_argument("--lossless", action="store_true", help="capture PNG instead of JPEG q98 (slower; transparent passes always PNG)")
     a = ap.parse_args()
     need_project()
     scene = a.scene if os.path.isabs(a.scene) else os.path.join(ROOT, a.scene)
@@ -75,7 +76,7 @@ def main():
     n_total = int(round(fm.get("duration", 0) * fps))
     rng = frame_range(a, fps, n_total, os.path.join(ROOT, "song"))
     web.render(scene, out, ROOT, rng, a.width, a.height, fps, "preview" if a.preview else "final", scale, a.transparent,
-               a.workers, a.gpu, a.seed, a.chunk, a.fresh)
+               a.workers, a.gpu, a.seed, a.chunk, a.fresh, a.lossless)
 
 
 if __name__ == "__main__":

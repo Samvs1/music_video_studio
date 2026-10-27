@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Music Video Studio</title>
+<style>
+@font-face{font-family:Anton;src:url(/fonts/Anton-Regular.ttf)}
+@font-face{font-family:Caveat;src:url("/fonts/Caveat[wght].ttf");font-weight:400 700}
+@font-face{font-family:SpaceMono;src:url(/fonts/SpaceMono-Regular.ttf)}
+:root{--bg:#0f0f10;--panel:#18181a;--card:#202023;--line:#2c2c30;--fg:#ececec;--mut:#9a9aa0;--acc:#ffd23f;--acc2:#ff5c9d;--ok:#5bd68a;--bad:#ff6b5b}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+a{color:var(--acc)}
+button,.btn{font:inherit;border:0;border-radius:10px;padding:10px 16px;background:var(--acc);color:#111;font-weight:700;cursor:pointer}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button.small{padding:5px 10px;font-size:13px;border-radius:8px}
+button:disabled{opacity:.45;cursor:default}
+input,textarea,select{font:inherit;width:100%;background:#121214;color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+textarea{min-height:84px;resize:vertical}
+label{display:block;margin:14px 0 6px;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.06em}
+header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,15,16,.92);backdrop-filter:blur(6px);z-index:5}
+header .logo{font-family:Anton,Impact,sans-serif;font-size:24px;letter-spacing:.02em;cursor:pointer}
+header .logo span{color:var(--acc)}
+header .crumb{color:var(--mut)}
+header .sp{flex:1}
+main{max-width:1280px;margin:0 auto;padding:24px 18px 80px}
+h1{font-family:Anton,Impact,sans-serif;font-weight:400;font-size:40px;margin:6px 0 4px;letter-spacing:.01em}
+h2{font-family:Anton,Impact,sans-serif;font-weight:400;font-size:28px;margin:0 0 6px}
+.hand{font-family:Caveat,cursive;font-size:24px;color:var(--acc)}
+.mut{color:var(--mut)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
+.pcard{background:var(--card);border-radius:14px;overflow:hidden;cursor:pointer;border:1px solid var(--line);transition:transform .12s}
+.pcard:hover{transform:translateY(-2px);border-color:#444}
+.pcard .cov{height:150px;background:#000 center/cover no-repeat;display:grid;place-items:center;color:#444;font-family:Anton;font-size:40px}
+.pcard .b{padding:12px 14px}
+.pcard .t{font-weight:700;font-size:17px}
+.tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:#2a2a2e;color:var(--mut);margin-top:6px}
+.new{display:flex;flex-direction:column;justify-content:center;gap:10px;padding:18px;border:2px dashed #3a3a40;border-radius:14px}
+.layout{display:grid;grid-template-columns:230px 1fr;gap:24px}
+@media(max-width:820px){.layout{grid-template-columns:1fr}}
+nav.steps{position:sticky;top:84px;align-self:start;display:flex;flex-direction:column;gap:6px}
+nav.steps div{padding:10px 12px;border-radius:10px;cursor:pointer;color:var(--mut);display:flex;gap:10px;align-items:center}
+nav.steps div.on{background:var(--card);color:var(--fg)}
+nav.steps .dot{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;background:#2a2a2e;color:var(--mut);flex:none}
+nav.steps .dot.done{background:var(--ok);color:#111}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px}
+.drop{border:2px dashed #3d3d44;border-radius:14px;padding:34px;text-align:center;cursor:pointer;transition:.15s}
+.drop.over{border-color:var(--acc);background:#1d1c14}
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:16px}
+.thumbs .th{position:relative;aspect-ratio:1;background:#000 center/contain no-repeat;border-radius:8px}
+.thumbs .th button{position:absolute;top:4px;right:4px;padding:1px 7px;font-size:12px;background:rgba(0,0,0,.65);color:#fff;border-radius:6px;display:none}
+.thumbs .th:hover button{display:block}
+.thumbs .th button.star{right:auto;left:4px;color:#fff}
+.thumbs .th button.star.on{display:block;background:var(--acc);color:#111}
+.rtabs{display:flex;gap:6px;margin:0 0 14px;border-bottom:1px solid var(--line)}
+.rtabs div{padding:8px 14px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent;margin-bottom:-1px}
+.rtabs div.on{color:var(--fg);border-color:var(--acc)}
+.bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+.bcard{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.bcard.bad{border-color:var(--bad)}
+.bcard .im{position:relative;cursor:pointer}
+.bcard .im img{width:100%;aspect-ratio:16/9;display:block;background:#000}
+.bcard .im .tc{position:absolute;left:6px;bottom:6px;font:12px SpaceMono,monospace;background:rgba(0,0,0,.7);padding:1px 6px;border-radius:5px;color:var(--acc)}
+.bcard .bd{padding:9px 11px 11px;font-size:13px}
+.bcard .ly{color:var(--mut);font-style:italic;margin:2px 0 6px}
+.bcard .fl{color:var(--bad);margin:3px 0}
+.cap{display:flex;gap:6px;align-items:flex-start;padding:5px 0;border-top:1px solid var(--line)}
+.cap .ct{flex:1;white-space:pre-wrap}
+.cap .ct small{display:block;color:var(--mut)}
+.cap.no .ct{color:var(--bad);text-decoration:line-through}
+.cap.yes .ct{color:var(--ok)}
+.org{font-size:11px;padding:1px 6px;border-radius:99px;background:#2a2a2e;color:var(--mut);white-space:nowrap}
+.org.chk{background:#4a3d12;color:var(--acc)}
+.org.unk{background:#4a1d18;color:#ffb0a6}
+.cap button{padding:2px 8px;font-size:12px;border-radius:6px}
+.cap button.sel{outline:2px solid var(--fg)}
+.chg{display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:13px}
+.chg .w{font-size:11px;padding:0 6px;border-radius:99px;background:#2a2a2e;color:var(--mut)}
+.note .fx{display:inline-block;width:100%;color:var(--ok);font-size:13px;margin-top:3px}
+.thumbs .th .f{position:absolute;left:4px;bottom:4px;font-size:11px;background:rgba(0,0,0,.6);padding:0 5px;border-radius:5px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+@media(max-width:700px){.two{grid-template-columns:1fr}}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{padding:6px 12px;border-radius:99px;border:1px solid var(--line);cursor:pointer;color:var(--mut);user-select:none}
+.chip.on{background:var(--acc);color:#111;border-color:var(--acc);font-weight:700}
+.steplist{list-style:none;padding:0;margin:16px 0}
+.steplist li{padding:7px 0;display:flex;gap:10px;align-items:center;color:var(--mut)}
+.steplist li.now{color:var(--fg);font-weight:700}
+.steplist li.done{color:var(--ok)}
+.spin{width:14px;height:14px;border:2px solid #555;border-top-color:var(--acc);border-radius:50%;animation:s 1s linear infinite;display:inline-block}
+@keyframes s{to{transform:rotate(360deg)}}
+pre.log{background:#0b0b0c;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:12px/1.5 SpaceMono,Consolas,monospace;color:#bbb;max-height:220px;overflow:auto;white-space:pre-wrap}
+.cl{display:grid;grid-template-columns:1fr;gap:10px;background:var(--card);border-radius:12px;padding:12px;margin-bottom:12px;border:1px solid var(--line)}
+.cl .faces{display:flex;gap:6px;overflow-x:auto}
+.cl .faces img{width:78px;height:78px;border-radius:8px;object-fit:cover;flex:none}
+.cl .f5{display:grid;grid-template-columns:1.2fr .8fr .9fr 1fr 1fr 1.6fr;gap:8px}
+@media(max-width:900px){.cl .f5{grid-template-columns:1fr 1fr}}
+.cl.ignored{opacity:.45}
+.cards2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:820px){.cards2{grid-template-columns:1fr}}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+code.cmd{display:block;background:#0b0b0c;border:1px solid var(--line);padding:12px;border-radius:10px;font:15px SpaceMono,Consolas,monospace;color:var(--acc);margin:8px 0}
+video{width:100%;border-radius:12px;background:#000;max-height:64vh}
+.vtabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.vtabs .chip{font-size:13px}
+.styles{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:4px}
+.sty{position:relative;background:#151517;border:1px solid var(--line);border-radius:10px;overflow:hidden;cursor:pointer;transition:border-color .15s,transform .15s}
+.sty:hover{border-color:#55555c;transform:translateY(-1px)}
+.sty.on{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.sty.on::after{content:"\2713";position:absolute;top:7px;left:7px;width:24px;height:24px;border-radius:50%;background:var(--acc);color:#111;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:14px}
+.sty img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#000}
+.sty .zm{position:absolute;top:7px;right:7px;width:28px;height:28px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;display:flex;align-items:center;justify-content:center;opacity:.85}
+.sty .zm:hover{opacity:1;background:rgba(0,0,0,.85)}
+.sty .b{padding:8px 10px 10px;font-size:12.5px;line-height:1.38}
+.sty .b b{display:block;font-size:14px;margin-bottom:3px}
+.sty .b span{display:block;color:#c9c9ce}
+.sty .b i{display:block;color:var(--mut);margin-top:5px;font-size:11.5px}
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:50;display:flex;align-items:center;justify-content:center;padding:24px}
+.lbin{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;max-width:min(1100px,94vw)}
+.lbin img{display:block;width:100%;max-height:72vh;object-fit:contain;background:#000}
+.gal summary{cursor:pointer;color:var(--acc);margin:10px 0 6px}
+.gal img{width:100%;border-radius:8px;display:block}
+.dirs{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:10px}
+@media(max-width:1000px){.dirs{grid-template-columns:1fr}}
+.dir{background:#151517;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.dir.on{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok)}
+.dir .frames{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:#000}
+.dir .frames img{width:100%;aspect-ratio:16/9;object-fit:cover;cursor:zoom-in;display:block}
+.songs{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:900px){.songs{grid-template-columns:1fr}}
+.song{background:#151517;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.song.on{border-color:var(--ok)}
+.note{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:10px;background:var(--card);margin-bottom:8px}
+.note .ts{font:13px SpaceMono,monospace;background:#2a2a2e;padding:2px 7px;border-radius:6px;cursor:pointer;color:var(--acc);flex:none}
+.note .tx{flex:1;white-space:pre-wrap}
+.note.done .tx{text-decoration:line-through;color:var(--mut)}
+.qa{font-size:13px;color:var(--mut);margin:10px 0 0;padding-left:18px}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#2a2a2e;color:var(--fg);padding:10px 16px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none;z-index:9}
+.toast.on{opacity:1}
+.prog{height:6px;background:#2a2a2e;border-radius:4px;overflow:hidden;margin:6px 0}
+.prog div{height:100%;background:var(--acc);width:0;transition:width .2s}
+.hint{font-size:13px;color:var(--mut);margin-top:6px}
+img.sheet{width:100%;border-radius:10px;margin-top:14px}
+/* the song viewer */
+.sv-facts{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:13px;color:var(--mut);margin:2px 0 12px}
+.sv-facts b{color:var(--fg);font-weight:600}
+.sv-now{display:grid;grid-template-columns:minmax(150px,auto) 1fr minmax(170px,auto);gap:16px;align-items:center;background:#0b0b0c;border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-bottom:8px;min-height:72px}
+.sv-now .big{font:22px Anton,Impact,sans-serif;letter-spacing:.02em;display:flex;align-items:center;gap:8px}
+.sv-now .big i{display:inline-block;width:12px;height:12px;border-radius:3px}
+.sv-now .pos{font:13px SpaceMono,monospace;color:var(--acc);margin-top:2px}
+.sv-now .ly{font-size:19px;line-height:1.35}
+.sv-now .ly span{color:#5d5d63}
+.sv-now .ly span.on{color:var(--fg)}
+.sv-now .ly span.now{color:var(--acc)}
+.sv-now .ly small{display:block;font-size:12px;color:var(--mut)}
+.sv-now .nx{font-size:12.5px;color:var(--mut);text-align:right;line-height:1.5}
+.sv-ctl{margin:6px 0 10px;gap:7px}
+.sv-ctl .chip{font-size:12.5px;padding:4px 10px}
+.sv-ctl .t{font:13px SpaceMono,monospace;min-width:130px}
+.sv-ctl .sep{width:1px;height:22px;background:var(--line)}
+canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:crosshair}
+#sv-ov{height:58px;margin-bottom:6px}
+#sv-cv{height:560px}
+.sv-hov{font:12px SpaceMono,monospace;color:var(--mut);min-height:18px;margin:5px 0 14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sv-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.sv-tbl td{padding:5px 6px;border-top:1px solid var(--line);vertical-align:top}
+.sv-tbl tr{cursor:pointer}
+.sv-tbl tr:hover td{background:#26262a}
+.sv-tbl tr.on td{background:#2b2814}
+.sv-scroll{max-height:330px;overflow:auto;margin-top:6px}
+.sv-dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.stars{color:var(--acc);white-space:nowrap;letter-spacing:-1px}
+.sv-ly{max-height:640px;overflow:auto;font-size:14px;position:relative;margin-top:6px}
+.sv-ly h4{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);font-weight:600}
+.sv-ly .l{display:flex;gap:9px;padding:3px 5px;border-radius:6px;cursor:pointer}
+.sv-ly .l:hover{background:#26262a}
+.sv-ly .l.on{background:#2b2814}
+.sv-ly .l .ts{font:12px SpaceMono,monospace;color:var(--acc);flex:none;padding-top:2px}
+.sv-ly .l small{display:block;color:var(--mut);font-size:12px}
+.sv-md{font-size:14px}
+.sv-md h2{font-size:24px;margin:4px 0}.sv-md h3{font:600 15px system-ui;margin:14px 0 4px;color:var(--acc)}
+.sv-md table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+.sv-md td,.sv-md th{border:1px solid var(--line);padding:4px 7px;text-align:left;vertical-align:top}
+.sv-md blockquote{margin:6px 0;padding-left:10px;border-left:3px solid var(--line);color:var(--mut)}
+.sv-md p{margin:6px 0}
+
+.hint code,.mut code{font:12px SpaceMono,monospace}
+#dir-ev{font-size:12px;line-height:1.55}
+video{max-height:58vh}
+</style>
+</head>
+<body>
+<header><div class="logo" onclick="go('')">MUSIC VIDEO <span>STUDIO</span></div><div class="crumb" id="crumb"></div><div class="sp"></div>
+<button class="ghost small" onclick="doctor()">Check install</button></header>
+<main id="main"></main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, {headers: {"Content-Type": "application/json"}, ...opts});
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+};
+const post = (path, body) => api(path, {method: "POST", body: JSON.stringify(body || {})});
+function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("on"), 2800); }
+const fmt = t => { t = Math.max(0, t); return Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0") + "." + Math.floor((t % 1) * 10); };
+const dur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m ${String(x).padStart(2, "0")}s`; };
+
+let S = null, step = "song", poll = null, dpoll = null;
+const STEPS = [["song", "Song & brief"], ["analyse", "Analyse"], ["listen", "The song"], ["story", "Story"], ["direct", "Direct"], ["watch", "Watch & review"]];
+
+function go(hash) { location.hash = hash; }
+window.onhashchange = route;
+async function route() {
+  clearInterval(poll); clearInterval(dpoll);
+  svStop(); document.onkeydown = null;
+  const h = location.hash.slice(1).split("/");
+  if (!h[0]) return home();
+  step = STEPS.some(s => s[0] === h[1]) ? h[1] : "song";
+  await load(h[0]);
+}
+
+// ---------------------------------------------------------------- home
+async function home() {
+  $("#crumb").textContent = "";
+  const ps = await api("/api/projects");
+  $("#main").innerHTML = `<h1>Your music videos</h1><p class="mut">Drop in a song; the studio writes it down so Claude can "hear" it; Claude directs an original motion-graphics video for it, cut to the music.</p>
+  <div class="grid" style="margin-top:20px">
+    <div class="new"><div class="hand">a new one</div><input id="nn" placeholder="Name, e.g. Night Drive">
+      <button onclick="newProject()">Start a music video</button></div>
+    ${ps.map(p => `<div class="pcard" onclick="go('${p.name}')"><div class="cov" style="${p.cover ? `background-image:url('${p.cover}')` : ""}">${p.cover ? "" : "&#9654;"}</div>
+      <div class="b"><div class="t">${esc(p.title)}</div><div class="mut">${esc(p.song || "no song yet")}${p.versions ? ` &middot; ${p.versions} version${p.versions > 1 ? "s" : ""}` : ""}</div><span class="tag">${esc(p.stage)}</span></div></div>`).join("")}
+  </div>`;
+}
+async function newProject() {
+  const n = $("#nn").value.trim(); if (!n) return toast("Give it a name first");
+  const r = await post("/api/projects", {name: n, title: n}); go(r.name);
+}
+
+// ---------------------------------------------------------------- project shell
+async function load(name) {
+  S = await api("/api/p/" + name);
+  $("#crumb").innerHTML = "/ " + esc(S.project.title || name);
+  const openNotes = S.notes.filter(n => !n.done).length;
+  const done = {song: !!S.song.file, analyse: !!S.song.map, listen: !!S.song.map, story: S.story.written,
+                direct: S.versions.length > 0, watch: S.versions.length > 0 && !openNotes};
+  $("#main").innerHTML = `<div class="layout"><nav class="steps">${STEPS.map(([k, l], i) =>
+      `<div class="${k === step ? "on" : ""}" onclick="go('${name}/${k}')"><span class="dot ${done[k] ? "done" : ""}">${done[k] ? "&#10003;" : i + 1}</span>${l}${k === "watch" && openNotes ? ` <span class="tag" style="margin:0">${openNotes} notes</span>` : ""}</div>`).join("")}</nav>
+    <section class="panel" id="pane"></section></div>`;
+  ({song: vBrief, analyse: vAnalyse, listen: vListen, story: vStory, direct: vDirect, watch: vWatch})[step]();
+}
+const refresh = () => load(S.name);
+
+// ---------------------------------------------------------------- 1. song & brief
+function vBrief() {
+  const p = S.project, s = p.song || {}, f = p.format || {}, pre = f.preset || "1080p";
+  const fmts = Object.entries(S.formats).map(([k, v]) => `<option value="${k}" ${pre === k ? "selected" : ""}>${esc(v.label)}</option>`).join("");
+  $("#pane").innerHTML = `<h2>Song &amp; brief</h2><p class="mut">The song and what you'd like. Everything except the song is optional: Claude decides the rest.</p>
+  <div class="drop" id="drop"><b>Drop the song here</b> (MP3, WAV, M4A, FLAC) or click to choose.<br><span class="mut">A lyrics file (.lrc / .txt) can go here too.</span>
+    ${S.song.file ? `<div style="margin-top:8px">now: <b>${esc(S.song.file)}</b></div>` : ""}</div><input type="file" id="fi" hidden accept="audio/*,.lrc,.txt">
+  <div id="up" class="hint"></div>
+  ${S.song.url ? `<audio controls preload="none" src="${S.song.url}" style="width:100%;margin-top:10px"></audio>` : ""}
+  <div class="two"><div><label>Artist</label><input id="b-artist" value="${esc(s.artist)}" placeholder="for the lyrics lookup (LRCLIB)"></div>
+    <div><label>Song title</label><input id="b-stitle" value="${esc(s.title)}"></div></div>
+  <div class="two"><div><label>Language of the lyrics</label><input id="b-lang" value="${esc(s.language)}" placeholder="en, nl, fr... (helps when the lyrics must be transcribed)"></div>
+    <div><label>Project name</label><input id="b-title" value="${esc(p.title)}"></div></div>
+  <label>What the song is about to you</label><textarea id="b-about" placeholder="Why this song, what it means to you, who it's about...">${esc(p.about)}</textarea>
+  <label>Mood or direction</label><textarea id="b-mood" placeholder="e.g. tender and strange; a lot of dance; black and white; nothing cute">${esc(p.mood)}</textarea>
+  <div class="two"><div><label>Ideas</label><textarea id="b-ideas" placeholder="images, references, moments you already see">${esc(p.ideas)}</textarea></div>
+    <div><label>Things to avoid</label><textarea id="b-avoid" placeholder="colours, symbols, words, looks you don't want">${esc(p.avoid)}</textarea></div></div>
+  <div class="two"><div><label>Delivery format</label><select id="b-fmt" onchange="fmtCustom()">${fmts}<option value="custom" ${pre === "custom" ? "selected" : ""}>custom size / fps</option></select></div>
+    <div id="b-cust" style="display:${pre === "custom" ? "grid" : "none"};grid-template-columns:1fr 1fr 1fr;gap:8px;align-self:end">
+      <input id="b-w" type="number" value="${f.width || 1920}" title="width"><input id="b-h" type="number" value="${f.height || 1080}" title="height"><input id="b-fps" type="number" value="${f.fps || 30}" title="fps"></div></div>
+  <label>Lyrics (optional)</label><textarea id="b-lyrics" style="min-height:120px" placeholder="Only if they're not online (LRCLIB): plain text, or LRC with [mm:ss.xx] line times; word times <mm:ss.xx> are used exactly.">${esc(p.lyrics)}</textarea>
+  <div class="row" style="margin-top:16px"><button onclick="saveBrief()">Save</button><button class="ghost" onclick="saveBrief('analyse')">Save &amp; analyse &rarr;</button></div>`;
+  const drop = $("#drop"), fi = $("#fi");
+  drop.onclick = () => fi.click();
+  fi.onchange = () => upload([...fi.files]);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); upload([...e.dataTransfer.files]); };
+}
+function fmtCustom() { $("#b-cust").style.display = $("#b-fmt").value === "custom" ? "grid" : "none"; }
+async function upload(files) {
+  for (const f of files) {
+    $("#up").innerHTML = `<span class="spin"></span> uploading ${esc(f.name)}&hellip;`;
+    try {
+      const r = await fetch(`/api/p/${S.name}/upload?filename=${encodeURIComponent(f.name)}`, {method: "PUT", body: f});
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      toast(j.kind === "song" ? "Song uploaded: analyse it next" : "Lyrics file saved");
+    } catch (e) { toast(e.message); }
+  }
+  $("#up").textContent = ""; refresh();
+}
+async function saveBrief(next) {
+  const fm = $("#b-fmt").value;
+  const body = {title: $("#b-title").value, about: $("#b-about").value, mood: $("#b-mood").value, ideas: $("#b-ideas").value,
+                avoid: $("#b-avoid").value, lyrics: $("#b-lyrics").value,
+                song: {artist: $("#b-artist").value, title: $("#b-stitle").value, language: $("#b-lang").value},
+                format: fm === "custom" ? {preset: "custom", width: +$("#b-w").value, height: +$("#b-h").value, fps: +$("#b-fps").value} : {preset: fm}};
+  try { await post(`/api/p/${S.name}/brief`, body); toast("Saved"); next ? go(`${S.name}/${next}`) : refresh(); } catch (e) { toast(e.message); }
+}
+
+// ---------------------------------------------------------------- 2. analyse
+function vAnalyse() {
+  const a = S.project.analysis, rep = S.song.report || {}, w = rep.warnings || [];
+  $("#pane").innerHTML = `<h2>Analyse</h2><p class="mut">Splits the song into voice / drums / bass / other, finds every beat and bar, the lyrics (online, yours, or transcribed), the melody, chords and sections, and writes it all down in the song folder Claude reads. A few minutes (faster with an NVIDIA GPU). The first run downloads the analysis models.</p>
+  ${S.song.file ? "" : `<p style="color:var(--bad)">Upload the song first.</p>`}
+  <div class="row"><button id="go-ingest" onclick="startJob('ingest')" ${S.song.file ? "" : "disabled"}>${a ? "Analyse again" : "Analyse the song"}</button><button class="ghost small" id="stop-ingest" onclick="stopJob()" style="display:none">Stop</button></div>
+  <ul class="steplist" id="sl-ingest"></ul><div id="wn-ingest"></div><pre class="log" id="lg-ingest" style="display:none"></pre>
+  <div id="res">${a ? `<div class="box" style="margin-top:14px"><b>Done</b> <span class="mut">${esc(a.at || "")}</span><br>
+    ${fmt(a.duration)} &middot; ${Math.round(a.bpm)} BPM &middot; ${esc(a.key)} &middot; ${a.sections} sections &middot; lyrics: ${a.lyrics_lines ? `${a.lyrics_lines} lines (${esc(a.lyrics_source)})` : "none"}
+    <div class="hint">stems: ${esc(a.stems)}<br>beats: ${esc(a.beats)}</div>
+    ${w.length ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--acc)">${w.length} warning${w.length > 1 ? "s" : ""} in the song report</summary><ul class="qa">${w.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
+    <div class="row" style="margin-top:12px"><button onclick="go('${S.name}/listen')">See the song &rarr;</button><button class="ghost" onclick="go('${S.name}/story')">Story &rarr;</button></div></div>` : ""}</div>`;
+  watchJob("ingest");
+}
+async function startJob(kind, body) {
+  try { await post(`/api/p/${S.name}/${kind === "story" ? "story-draft" : kind}`, body || {}); toast("Started"); watchJob(kind); } catch (e) { toast(e.message); }
+}
+async function stopJob() { const r = await post(`/api/p/${S.name}/stop`); toast(r.stopping || "Stopping"); }
+let jobKinds = [];
+function renderJob(j) {
+  jobKinds.forEach(k => {
+    const g = $("#go-" + k), st = $("#stop-" + k);
+    if (g) g.disabled = !!j.running || g.dataset.off === "1";
+    if (st) st.style.display = j.running && j.job === k ? "" : "none";
+  });
+  if (!j.job || !jobKinds.includes(j.job)) return;
+  const sl = $("#sl-" + j.job), lg = $("#lg-" + j.job), wn = $("#wn-" + j.job);
+  if (sl && j.steps) sl.innerHTML = j.steps.map((s, i) => `<li class="${i < j.i || j.state === "done" ? "done" : i === j.i && j.running ? "now" : ""}">${i < j.i || j.state === "done" ? "&#10003;" : i === j.i && j.running ? '<span class="spin"></span>' : "&middot;"} ${esc(s)}</li>`).join("");
+  if (wn && j.warnings && j.warnings.length) wn.innerHTML = `<ul class="qa" style="color:var(--acc)">${j.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`;
+  if (lg && j.log && j.log.length) { lg.style.display = ""; lg.textContent = j.log.join("\n"); lg.scrollTop = 1e9; }
+  if (wn && j.state === "error" && j.error) wn.innerHTML += `<p style="color:var(--bad)">${esc(j.error)}</p>`;
+}
+let sawRunning = false;
+function watchJob(kinds, onDone) {
+  jobKinds = [].concat(kinds || []);
+  clearInterval(poll);
+  const tick = async () => {
+    const j = await api(`/api/p/${S.name}/job`);
+    renderJob(j);
+    if (j.running) { sawRunning = true; return; }
+    clearInterval(poll);
+    if (sawRunning) {
+      sawRunning = false;
+      if (j.returncode === 0) { toast("Finished"); onDone ? onDone() : refresh(); } else toast("Something went wrong: see the log");
+    }
+  };
+  tick(); poll = setInterval(tick, 1500);
+}
+
+// ---------------------------------------------------------------- 3. the song (viewer)
+async function svEnsure() {
+  if (SV.project !== S.name || SV.mapUrl !== S.song.map) {
+    const [m, env] = await Promise.all([api(S.song.map), api(S.song.env)]);
+    Object.assign(SV, {project: S.name, mapUrl: S.song.map, m, env, src: "mix", sched: -1, lastLine: null, lastSec: null});
+    svIndex(); svCenter(m.music.start, 0.02);
+  }
+}
+async function vListen() {
+  svStop();
+  if (!S.song.map) {
+    $("#pane").innerHTML = `<h2>The song</h2><p class="mut">This page shows the song the way Claude reads it: the sections, where it builds and drops, the melody, the chords, every beat, what the voice, drums, bass and other instruments do, and when each word is sung. It appears after <b>Analyse</b>.</p><button onclick="go('${S.name}/analyse')">Go to Analyse</button>`;
+    return;
+  }
+  $("#pane").innerHTML = `<h2>The song</h2><p class="mut"><span class="spin"></span> loading the song map&hellip;</p>`;
+  await svEnsure();
+  const cur = S.song, m = SV.m, t = m.tempo, mu = m.music, vo = m.vocals, lm = m.lyrics_meta || {};
+  const stemChips = [["mix", "Mix", "M"], ["vocals", "Voice", "V"], ["drums", "Drums", "D"], ["bass", "Bass", "B"], ["other", "Other", "O"]]
+    .filter(([k]) => k === "mix" || cur.stems[k]);
+  let lyr = "", sec = null;
+  for (const x of m.lyrics) {
+    const s = SV.lineSec[x.i];
+    if (s !== sec) { sec = s; lyr += `<h4>${esc(s ? s.name : "")}</h4>`; }
+    const mel = [x.contour, x.peak ? `peak ${x.peak.note}${x.peak.word ? ` on “${x.peak.word}”` : ""}` : "",
+                 ...(x.words || []).filter(w => (w.held || 0) >= 0.6).slice(0, 2).map(w => `holds “${w.w}” ${w.held.toFixed(1)} s`)].filter(Boolean);
+    lyr += `<div class="l" data-t="${Math.max(0, x.t - 0.6)}" data-li="${x.i}"><span class="ts">${fmt(x.t)}</span><div>${esc(x.text)}${x.repeat ? ` <span class="org">×${x.repeat + 1}</span>` : ""}<small>${esc(x.pos || "")}${mel.length ? " · " + esc(mel.join("; ")) : ""}</small></div></div>`;
+  }
+  const src = (lm.source || "").startsWith("transcribed") ? `<span style="color:var(--bad)">transcribed from the vocals: check the words</span>` : lm.source ? esc(lm.source) : "";
+  const warn = (S.song.report || {}).warnings || [];
+  $("#pane").innerHTML = `<h2>The song</h2>
+  <p class="mut" style="margin-top:0">The song the way Claude reads it. <b>Space</b> play/pause &middot; <b>&larr; &rarr;</b> a bar &middot; <b>[ ]</b> a section &middot; <b>M V D B O</b> the mix or one instrument alone &middot; <b>K</b> beat click &middot; click the lanes to jump, scroll to look around.</p>
+  <div class="sv-facts"><span><b>${esc(m.artist ? m.artist + " – " : "")}${esc(m.title || m.file)}</b></span><span><b>${t.bpm}</b> BPM &middot; bar ${t.bar_s.toFixed(2)} s</span>
+    <span>key <b>${esc(m.key.name)}</b></span><span>music <b>${fmt(mu.start)}–${fmt(mu.end)}</b> of ${fmt(m.duration)}</span>
+    <span><b>${m.loudness.integrated_lufs}</b> LUFS &middot; range ${m.loudness.range_lu} LU</span>${vo.range ? `<span>voice <b>${vo.range[0]}–${vo.range[1]}</b></span>` : ""}
+    <span>${m.sections.length} sections &middot; <b>${m.moments.filter(x => x.stars >= 3).length}</b> big moments</span></div>
+  ${warn.length ? `<details class="hint" style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--acc)">${warn.length} warning${warn.length > 1 ? "s" : ""}: how far to trust this</summary><ul class="qa">${warn.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
+  <div class="sv-now"><div><div class="big" id="sv-sec">&nbsp;</div><div class="pos" id="sv-pos">&nbsp;</div></div><div class="ly" id="sv-ly"></div><div class="nx" id="sv-nx"></div></div>
+  <div class="row sv-ctl"><button class="small" id="sv-play" onclick="svToggle()" style="min-width:84px">&#9654; Play</button><span class="t" id="sv-t">0:00.0</span><span class="sep"></span>
+    ${stemChips.map(([k, l, key]) => `<span class="chip ${SV.src === k ? "on" : ""}" data-src="${k}" title="${key}" onclick="svSource('${k}')">${l}</span>`).join("")}
+    <span class="sep"></span>${[0.5, 0.75, 1].map(r => `<span class="chip ${SV.rate === r ? "on" : ""}" data-rate="${r}" onclick="svRate(${r})">${r}&times;</span>`).join("")}
+    <span class="sep"></span>${[[4, "4 bars"], [8, "8"], [16, "16"], [32, "32"], [0, "whole song"]].map(([z, l]) => `<span class="chip ${SV.zoom === z ? "on" : ""}" data-zoom="${z}" onclick="svZoom(${z})">${l}</span>`).join("")}
+    <span class="sep"></span><span class="chip ${SV.follow ? "on" : ""}" id="sv-follow" onclick="svFollow(!SV.follow)">follow</span><span class="chip ${SV.click ? "on" : ""}" id="sv-click" onclick="svClick()" title="K">beat click</span></div>
+  <canvas class="sv" id="sv-ov"></canvas><canvas class="sv" id="sv-cv"></canvas><div class="sv-hov" id="sv-hov">&nbsp;</div>
+  <audio id="sv-au" preload="auto" src="${SV.src === "mix" || !cur.stems[SV.src] ? svMix() : cur.stems[SV.src]}"></audio>
+  <div class="box" style="margin-bottom:16px"><b>Sections</b> <span class="mut">click to jump &middot; V D B O = how much is sung / drums / bass / other, 0-9</span>
+      <table class="sv-tbl" id="sv-secs">${mu.before ? `<tr data-t="0"><td class="mut" colspan="2"><span class="sv-dot" style="background:#3a3a40"></span>before the music</td><td>0:00.0</td><td class="mut" colspan="5">${esc(mu.before.kind)}</td></tr>` : ""}
+      ${m.sections.map((s, i) => `<tr data-t="${s.t0}" data-si="${i}"><td style="white-space:nowrap"><span class="sv-dot" style="background:${secCol(s)}"></span><b>${esc(s.name)}</b></td><td class="mut" style="white-space:nowrap">bars ${s.bar0}–${s.bar1 - 1}</td><td>${fmt(s.t0)}</td><td class="mut" style="white-space:nowrap">${Math.round(s.t1 - s.t0)} s</td><td class="mut" style="white-space:nowrap">${s.loud} LUFS</td><td style="font:12px SpaceMono,monospace;white-space:nowrap">${s.voice} ${s.drums} ${s.bass} ${s.other}</td><td class="mut">${esc(chordsTxt(s.chords))}</td><td>${esc(s.first_line)}</td></tr>`).join("")}
+      ${mu.tail ? `<tr data-t="${mu.tail.t0}"><td class="mut" colspan="2"><span class="sv-dot" style="background:#3a3a40"></span>after the last bar</td><td>${fmt(mu.tail.t0)}</td><td class="mut" colspan="5">${esc(mu.tail.kind)}</td></tr>` : ""}
+      ${mu.after ? `<tr data-t="${mu.after.t0}"><td class="mut" colspan="2"><span class="sv-dot" style="background:#3a3a40"></span>after the music</td><td>${fmt(mu.after.t0)}</td><td class="mut" colspan="5">${esc(mu.after.kind)}</td></tr>` : ""}</table></div>
+  <div class="cards2"><div class="box"><b>Moments</b> <span class="mut">where to cut, hold or reveal; <span class="stars">★★★</span> = the song's own peaks and turns</span>
+      <div class="sv-scroll" style="max-height:640px"><table class="sv-tbl" id="sv-mom">${m.moments.map(e => `<tr data-t="${Math.max(0, e.t - 1.5)}"><td>${fmt(e.t)}</td><td class="mut">${esc(e.pos)}</td><td class="stars">${"★".repeat(e.stars)}</td><td>${esc(e.text)}</td></tr>`).join("")}</table></div></div>
+    <div class="box"><b>Lyrics</b> <span class="mut">${src}</span><div class="sv-ly" id="sv-lyr">${lyr || '<p class="mut">No lyrics: sections are named by sound.</p>'}</div></div></div>
+  <div class="row" style="margin-top:12px">${Object.entries(cur.docs).map(([f, u]) => `<a href="${u}" target="_blank">${esc(f)}</a>`).join("")}
+    <span class="sp" style="flex:1"></span><button class="ghost small" id="go-song" onclick="startJob('song')">Remake the song map</button><button class="ghost small" id="stop-song" onclick="stopJob()" style="display:none">Stop</button></div>
+  <ul class="steplist" id="sl-song"></ul><pre class="log" id="lg-song" style="display:none"></pre>`;
+  svWire();
+  watchJob("song", () => { SV.mapUrl = null; refresh(); });
+}
+
+// ---------------------------------------------------------------- 4. story
+function vStory() {
+  const st = S.story;
+  $("#pane").innerHTML = `<h2>Story</h2><p class="mut">What the song is about and how its arc could carry a video: the <i>why</i> behind it. Claude can draft it from the lyrics, the song map and your notes; then make it yours. If you skip this, the director writes it first thing.</p>
+  ${S.song.map ? "" : `<p style="color:var(--bad)">Analyse the song first.</p>`}
+  <div class="row"><button id="go-story" onclick="draftStory()" ${S.song.map ? "" : "disabled"}>${st.written ? "Draft it again with Claude" : "Draft it with Claude"}</button><button class="ghost small" id="stop-story" onclick="stopJob()" style="display:none">Stop</button>
+    <span class="mut">${st.written ? "a story is written" : st.exists ? "only the skeleton so far" : ""}${(S.project.status || {}).story ? ` &middot; last by ${esc(S.project.status.story.by)} at ${esc(S.project.status.story.at)}` : ""}</span></div>
+  <ul class="steplist" id="sl-story"></ul><div id="wn-story"></div><pre class="log" id="lg-story" style="display:none"></pre>
+  <textarea id="st-text" style="min-height:460px;font:13px/1.5 SpaceMono,Consolas,monospace;margin-top:12px">${esc(st.text)}</textarea>
+  <div class="row" style="margin-top:10px"><button onclick="saveStory()">Save the story</button><button class="ghost" onclick="storyPreview()">Preview</button><span class="mut">Your words win: the director builds on this file.</span></div>
+  <div class="box sv-md" id="st-prev" style="margin-top:12px;display:none"></div>`;
+  watchJob("story", refresh);
+}
+function draftStory() {
+  if (S.story.written && !confirm("Replace the current story with a new draft? (The old one is kept in cache/story/.)")) return;
+  startJob("story");
+}
+async function saveStory() { try { await post(`/api/p/${S.name}/story`, {text: $("#st-text").value}); toast("Story saved"); refresh(); } catch (e) { toast(e.message); } }
+function storyPreview() { const el = $("#st-prev"); el.style.display = ""; el.innerHTML = mdHtml($("#st-text").value); }
+
+// ---------------------------------------------------------------- 5. direct
+function vDirect() {
+  const d = S.project.director || {}, latest = S.versions.filter(v => v.n).slice(-1)[0];
+  const open = latest ? S.notes.filter(n => !n.done && String(n.version).replace("v", "") === String(latest.n)) : [];
+  const cmd = `/musicvideo ${S.name}`;
+  $("#pane").innerHTML = `<h2>Direct</h2>
+  <div class="cards2"><div class="box"><div class="hand">on its own</div><h2 style="font-size:24px">Let Claude direct it</h2>
+    <p class="mut">Claude Code works alone for the time you give it: concept, style frames, scenes, previews, looking at them, revising, the final render, the checks and a report. You can watch it work here. Uses your Claude plan.</p>
+    <div class="two"><div><label>Time budget (minutes)</label><input id="d-budget" type="number" min="5" value="${parseInt(d.budget) || 90}"></div>
+      <div><label>Effort</label><select id="d-effort">${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${((d.effort || "high") === e) ? "selected" : ""}>${e}</option>`).join("")}</select></div></div>
+    <label>Model</label><input id="d-model" value="${esc(d.model || "opus")}">
+    <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
+    ${open.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto"> Review round: address my ${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n} and make v${latest.n + 1}</label>` : ""}
+    <div class="row" style="margin-top:12px"><button id="go-direct" onclick="startDirect()" ${S.song.map ? "" : "disabled"}>Start the director</button><button class="ghost small" id="stop-direct" onclick="stopJob()" style="display:none">Stop it (wraps up cleanly)</button></div>
+    ${S.song.map ? "" : `<p class="hint" style="color:var(--bad)">Analyse the song first.</p>`}</div>
+  <div class="box"><div class="hand">with you</div><h2 style="font-size:24px">Direct it together</h2>
+    <p class="mut">Open Claude Code in the studio folder and run the skill. Same workflow, but you can talk along.</p>
+    <code class="cmd" style="font-size:12px">${esc(S.studio)}</code><code class="cmd">${esc(cmd)}</code><button class="small" onclick="navigator.clipboard.writeText('${cmd}');toast('Copied')">Copy command</button></div></div>
+  <div id="dir-live" style="margin-top:16px"></div>`;
+  watchJob("direct", refresh);
+  dirLive(); clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
+}
+async function startDirect() {
+  const body = {budget: $("#d-budget").value, effort: $("#d-effort").value, model: $("#d-model").value, seed_notes: $("#d-seed").value,
+                revise: !!($("#d-revise") && $("#d-revise").checked)};
+  await post(`/api/p/${S.name}/brief`, {director: {model: body.model, effort: body.effort, budget: body.budget}});
+  startJob("direct", body);
+  setTimeout(dirLive, 1500);
+}
+async function dirLive() {
+  const el = $("#dir-live"); if (!el) return clearInterval(dpoll);
+  let d; try { d = await api(`/api/p/${S.name}/director`); } catch (e) { return; }
+  if (!d || !d.run) { el.innerHTML = ""; return; }
+  const running = ["running", "finishing"].includes(d.state), left = d.deadline - d.now;
+  const pct = Math.min(100, Math.max(0, (d.now - d.started) / d.budget_s * 100));
+  el.innerHTML = `<div class="box"><div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : ""}">${esc(d.state)}</span>
+      <span class="mut">${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)} &middot; budget ${esc(d.budget)}</span><span class="sp" style="flex:1"></span>
+      <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; $${(d.cost_usd || 0).toFixed(2)}${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
+    ${running ? `<div class="prog"><div style="width:${pct}%"></div></div>` : `<p class="hint">${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}
+    <pre class="log" id="dir-ev" style="max-height:420px">${esc((d.events || []).map(e => `${dur(e.t).padStart(8)}  ${e.text}`).join("\n"))}</pre>
+    ${d.brief ? `<a href="${d.brief}" target="_blank">the brief</a>` : ""}</div>`;
+  const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
+  if (!running) clearInterval(dpoll);
+}
+
+// ---------------------------------------------------------------- 6. watch & review
+let wsel = null;
+async function vWatch() {
+  svStop();
+  if (!S.versions.length) { $("#pane").innerHTML = `<h2>Watch &amp; review</h2><p class="mut">No video yet. Start the director on the Direct page.</p>`; return; }
+  const v = S.versions.find(x => x.label === wsel) || S.versions[S.versions.length - 1];
+  wsel = v.label;
+  const vkey = v.n ? `v${v.n}` : "current", notes = S.notes.filter(n => n.version === vkey).sort((a, b) => a.t - b.t);
+  const rep = v.report || S.files.report;
+  $("#pane").innerHTML = `<h2>Watch &amp; review</h2>
+  <div class="vtabs">${S.versions.map(x => `<span class="chip ${x.label === wsel ? "on" : ""}" onclick="wsel='${x.label}';vWatch()">${esc(x.label)}${x.at ? ` <span class="mut" style="font-size:11px">${esc(x.at)}</span>` : ""}</span>`).join("")}</div>
+  <video id="vid" controls preload="metadata" src="${v.url}"></video>
+  ${S.song.map ? `<div class="sv-now" style="margin-top:8px"><div><div class="big" id="sv-sec">&nbsp;</div><div class="pos" id="sv-pos">&nbsp;</div></div><div class="ly" id="sv-ly"></div><div class="nx" id="sv-nx"></div></div>
+  <div class="row sv-ctl"><span class="t" id="sv-t">0:00.0</span><span class="sep"></span>${[[8, "8 bars"], [16, "16"], [32, "32"], [0, "whole song"]].map(([z, l]) => `<span class="chip ${SV.zoom === z ? "on" : ""}" data-zoom="${z}" onclick="svZoom(${z})">${l}</span>`).join("")}
+    <span class="sep"></span><span class="chip ${SV.follow ? "on" : ""}" id="sv-follow" onclick="svFollow(!SV.follow)">follow</span></div>
+  <canvas class="sv" id="sv-ov"></canvas><canvas class="sv" id="sv-cv" style="height:380px"></canvas><div class="sv-hov" id="sv-hov">&nbsp;</div>` : ""}
+  <div class="row" style="margin-top:6px"><button onclick="addNote()">+ Note at <span id="nt">0:00.0</span></button><span class="mut">or press <b>N</b> while watching. ${v.n ? "" : "Notes on an undelivered cut are kept, but a review round reads the newest delivered version."}</span>
+    <span class="sp" style="flex:1"></span><a href="${v.url}" download>Download</a></div>
+  <div id="nbox"></div>
+  <div style="margin-top:14px">${notes.map(n => `<div class="note ${n.done ? "done" : ""}"><span class="ts" onclick="vidSeek(${n.t})">${fmt(n.t)}</span><span class="tx">${esc(n.text)}${n.fix ? `<span class="fx">fixed: ${esc(n.fix)}</span>` : ""}</span>
+    <button class="ghost small" onclick="noteEdit(${n.id},{done:${!n.done}})">${n.done ? "undo" : "&#10003;"}</button><button class="ghost small" onclick="noteEdit(${n.id},{delete:true})">&#10005;</button></div>`).join("") || '<p class="mut">No notes on this version yet.</p>'}</div>
+  ${notes.some(n => !n.done) && v.n ? `<div class="row"><button onclick="go('${S.name}/direct')">Make the next version with these notes &rarr;</button><span class="mut">or in Claude Code: <code>/musicvideo ${esc(S.name)}</code></span></div>` : ""}
+  ${v.checks ? `<p class="hint">checks: ${Object.entries(v.checks).map(([k, x]) => `${esc(k)} <b style="color:${x === "PASS" ? "var(--ok)" : x === "WARN" ? "var(--acc)" : "var(--bad)"}">${esc(x)}</b>`).join(" &middot; ")}${S.files.checks ? ` &middot; <a href="${S.files.checks}" target="_blank">details</a>` : ""}</p>` : ""}
+  <div class="box sv-md" id="wrep" style="margin-top:14px">${rep ? '<span class="mut">loading the report&hellip;</span>' : '<span class="mut">No report.</span>'}</div>`;
+  if (rep) fetch(rep).then(r => r.text()).then(t => { const el = $("#wrep"); if (el) el.innerHTML = mdHtml(t); });
+  const vid = $("#vid");
+  vid.addEventListener("timeupdate", () => { const el = $("#nt"); if (el) el.textContent = fmt(vid.currentTime); });
+  if (S.song.map) { await svEnsure(); SV.click = false; svWire(); }
+  else document.onkeydown = e => { if (e.key.toLowerCase() === "n" && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); addNote(); } };
+}
+function vidSeek(t) { const v = $("#vid"); if (v) { v.currentTime = Math.max(0, t - 1); v.play(); } }
+function addNote() {
+  const v = $("#vid"); const t = v ? v.currentTime : 0; if (v) v.pause();
+  $("#nbox").innerHTML = `<div class="box" style="margin-top:10px"><b>${fmt(t)}</b> <textarea id="ntx" placeholder="What should change here? e.g. 'the drop should hit harder', 'the type comes too late', 'love this'"></textarea>
+    <div class="row" style="margin-top:8px"><button class="small" id="nsave">Save note</button><button class="ghost small" onclick="$('#nbox').innerHTML=''">Cancel</button></div></div>`;
+  $("#ntx").focus();
+  $("#nsave").onclick = async () => {
+    const tx = $("#ntx").value.trim(); if (!tx) return;
+    const v_ = S.versions.find(x => x.label === wsel);
+    S.notes = await post(`/api/p/${S.name}/note`, {version: v_ && v_.n ? `v${v_.n}` : "current", t, text: tx});
+    toast("Note saved"); vWatch();
+  };
+  $("#ntx").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#nsave").click(); e.stopPropagation(); };
+}
+async function noteEdit(id, ch) { S.notes = await post(`/api/p/${S.name}/note-edit`, {id, ...ch}); vWatch(); }
+
+async function doctor() {
+  $("#main").innerHTML = `<h1>Install check</h1><pre class="log" style="max-height:none">checking (this takes a little while)&hellip;</pre>`;
+  const r = await api("/api/doctor"); $("#main pre").textContent = r.text;
+}
+
+// ---------------------------------------------------------------- the song viewer (carried over from aftermovie-studio)
+// Reads song/song-map.json + envelopes.json (tools/song_kit.py) and draws the same lanes as overview.png,
+// playing along: sections, loud & quiet with the moments, melody + bass notes, chords, beats, the four stems, lyrics.
+const SV = {slug: null, mapUrl: null, m: null, env: null, story: "", src: "mix", zoom: 16, follow: true, click: false, rate: 1,
+            w0: 0, raf: 0, ctx: null, sched: -1, hover: null, dirty: true, lastLine: null, lastSec: null};
+const SEC_COL = {chorus: "#e8734a", "pre-chorus": "#d9a441", "post-chorus": "#d98a41", refrain: "#d98a41", verse: "#5b8fd9",
+                 bridge: "#a46fd9", intro: "#6c7a89", outro: "#6c7a89", instrumental: "#3fae8f", break: "#2f6f60"};
+const PC = {C: 0, "B#": 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, Fb: 4, F: 5, "E#": 5, "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8,
+            A: 9, "A#": 10, Bb: 10, B: 11, Cb: 11};
+const SV_LANES = [["sections", 26], ["loud & quiet", 74], ["notes", 96], ["chords", 26], ["beats", 28], ["voice", 44],
+                  ["drums", 44], ["bass", 44], ["other", 44], ["lyrics", 58]];
+const SV_LX = 108;                                     // the lanes' label column (px)
+const SV_STEM_LANE = {vocals: "voice", drums: "drums", bass: "bass", other: "other"};
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const bsearch = (arr, t) => { let lo = 0, hi = arr.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= t) lo = mid + 1; else hi = mid; } return lo; };
+const secCol = s => SEC_COL[(s.label || "").split(" ")[0]] || "#6c7a89";
+function chordCol(c, a = 1) {
+  const r = (c.match(/^[A-G][b#]?/) || ["C"])[0], minor = /^[A-G][b#]?m/.test(c);
+  return `hsla(${((PC[r] ?? 0) * 7 % 12) * 30},${minor ? 36 : 58}%,${minor ? 48 : 55}%,${a})`;    // circle of fifths = hue
+}
+function svStop() { const a = svMedia(); if (a) a.pause(); cancelAnimationFrame(SV.raf); SV.raf = 0; }
+function svIndex() {
+  const m = SV.m, near = t => { const i = bsearch(m.beats, t); return i > 0 && (i >= m.beats.length || t - m.beats[i - 1] < m.beats[i] - t) ? i - 1 : i; };
+  SV.bt = m.bars.map(b => b.t);
+  SV.dbi = m.bars.map(b => near(b.t));
+  SV.dbset = new Set(SV.dbi);
+  SV.ct = m.chords.map(c => c.t);
+  SV.lt = m.lyrics.map(x => x.t);
+  const pct = (xs, p) => xs.length ? xs[clamp(Math.round(p * (xs.length - 1)), 0, xs.length - 1)] : 0;
+  const vs = m.notes.vocal.filter(n => n.in_lyric !== false).map(n => n.midi).sort((a, b) => a - b);
+  const bs = m.notes.bass.map(n => n.midi).sort((a, b) => a - b);
+  [SV.vlo, SV.vhi] = vs.length ? [pct(vs, .01), pct(vs, .99) + 1] : [48, 72];
+  [SV.blo, SV.bhi] = bs.length ? [pct(bs, .01), pct(bs, .99) + 1] : [28, 52];
+  SV.lineSec = {};
+  m.sections.forEach(s => s.lines.forEach(li => SV.lineSec[li] = s));
+}
+function svPos(t) {
+  const m = SV.m, B = m.beats, bs = m.tempo.beat_s;
+  if (!B.length || t < B[0] - 2 * bs || t > m.music.grid_end + 0.5 * bs) return null;
+  const i = clamp(bsearch(SV.bt, t + 0.03) - 1, 0, m.bars.length - 1);
+  let jb = bsearch(B, t + 0.03) - 1, k;
+  if (jb < 0) { k = (t - B[0]) / bs; jb = 0; } else k = (t - B[jb]) / (jb + 1 < B.length ? B[jb + 1] - B[jb] : bs);
+  k += jb - SV.dbi[i];
+  return [i, Math.abs(k) < 0.05 ? 0 : k];
+}
+const svPosStr = t => { const p = svPos(t); return p ? `${p[0]}:${Math.round(p[1] * 10) / 10}` : "–"; };
+function svSection(t) {
+  const m = SV.m, mu = m.music, s = m.sections.find(s => t >= s.t0 && t < s.t1);
+  if (s) return {name: s.name, col: secCol(s), s};
+  if (mu.before && t < mu.before.t1) return {name: "before the music", col: "#3a3a40", note: mu.before.kind};
+  if (mu.tail && t >= mu.tail.t0 && t < mu.tail.t1) return {name: "after the last bar", col: "#3a3a40", note: "no beat grid"};
+  if (mu.after && t >= mu.after.t0) return {name: "after the music", col: "#3a3a40", note: mu.after.kind};
+  return {name: "", col: "#3a3a40"};
+}
+function svChord(t) { const c = SV.m.chords[bsearch(SV.ct, t) - 1]; return c && t < c.end && c.chord !== "N" ? c.chord : ""; }
+const svCur = () => S.song;
+const svMedia = () => $("#sv-au") || $("#vid");
+const svMix = () => S.song.url;
+const svLen = () => SV.zoom ? SV.zoom * SV.m.tempo.bar_s : SV.m.music.end - SV.m.music.start + 2;
+function svCenter(t, at = 0.3) {
+  const len = svLen();
+  SV.w0 = SV.zoom ? clamp(t - len * at, 0, Math.max(0, SV.m.duration - len)) : Math.max(0, SV.m.music.start - 1);
+}
+function chordsTxt(c) {
+  if (c.loop) return c.loop.join(" ") + (c.repeats >= 1.5 ? ` ×${c.repeats}` : "");
+  const seq = (c.bars || []).filter((x, i, a) => x && x !== a[i - 1]);
+  return seq.slice(0, 7).join(" ") + (seq.length > 7 ? " …" : "");
+}
+function mdHtml(src) {
+  const inl = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+                         .replace(/(^|[\s(])[*_]([^*_]+)[*_](?=[\s).,;:!?]|$)/g, "$1<i>$2</i>");
+  const out = []; let para = [], rows = null;
+  const flushP = () => { if (para.length) out.push(`<p>${inl(para.join(" "))}</p>`); para = []; };
+  const flushT = () => { if (rows) out.push(`<table>${rows.map((r, i) => `<tr>${r.map(c => i ? `<td>${inl(c)}</td>` : `<th>${inl(c)}</th>`).join("")}</tr>`).join("")}</table>`); rows = null; };
+  for (const line of src.split(/\r?\n/)) {
+    const l = line.trim();
+    if (l.startsWith("|")) { flushP(); const cells = l.replace(/^\||\|$/g, "").split("|").map(c => c.trim()); if (!cells.every(c => /^:?-+:?$/.test(c))) (rows = rows || []).push(cells); continue; }
+    flushT();
+    const h = l.match(/^(#{1,4})\s+(.*)/);
+    if (!l) flushP();
+    else if (h) { flushP(); out.push(`<h${h[1].length + 1}>${inl(h[2])}</h${h[1].length + 1}>`); }
+    else if (l.startsWith(">")) { flushP(); out.push(`<blockquote>${inl(l.replace(/^>\s?/, ""))}</blockquote>`); }
+    else if (/^[-*]\s/.test(l)) { flushP(); out.push(`<div>&bull; ${inl(l.slice(2))}</div>`); }
+    else para.push(l);
+  }
+  flushP(); flushT();
+  return out.join("");
+}
+
+
+function svWire() {
+  const a = svMedia(), cv = $("#sv-cv"), ov = $("#sv-ov");
+  a.playbackRate = SV.rate;
+  a.onplay = a.onpause = () => { const pb = $("#sv-play"); if (pb) pb.innerHTML = a.paused ? "&#9654; Play" : "&#10074;&#10074; Pause"; SV.sched = -1; SV.dirty = true; };
+  a.onseeked = () => { SV.dirty = true; };
+  const rows = id => { const el = $(id); if (el) el.onclick = e => { const r = e.target.closest("[data-t]"); if (r) svSeek(+r.dataset.t, true); }; };
+  rows("#sv-secs"); rows("#sv-mom"); rows("#sv-lyr");
+  const tAt = (el, x) => {
+    if (el === ov) return x / el.clientWidth * SV.m.duration;
+    const [w0, w1] = [SV.w0, SV.w0 + svLen()], LX = SV_LX;
+    return x < LX ? null : w0 + (x - LX) / (el.clientWidth - LX - 8) * (w1 - w0);
+  };
+  for (const el of [cv, ov]) {
+    el.onmousemove = e => { SV.hover = tAt(el, e.offsetX); SV.dirty = true; svHover(); };
+    el.onmouseleave = () => { SV.hover = null; SV.dirty = true; $("#sv-hov").innerHTML = "&nbsp;"; };
+    el.onclick = e => { const t = tAt(el, e.offsetX); if (t != null) svSeek(t, false, el === ov); };
+  }
+  cv.addEventListener("wheel", e => {
+    e.preventDefault(); svFollow(false);
+    const len = svLen(), px = (cv.clientWidth - SV_LX - 8) / len;
+    SV.w0 = clamp(SV.w0 + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) / px * 0.5, 0, Math.max(0, SV.m.duration - len));
+    SV.dirty = true;
+  }, {passive: false});
+  document.onkeydown = e => {
+    if (!["listen", "watch"].includes(step) || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (step === "watch" && e.key.toLowerCase() === "n") { e.preventDefault(); return addNote(); }
+    const k = e.key, m = SV.m, now = a.currentTime;
+    if (k === " ") { e.preventDefault(); svToggle(); }
+    else if (k === "ArrowRight" || k === "ArrowLeft") {
+      e.preventDefault();
+      const i = clamp(bsearch(SV.bt, now + 0.03) - 1, 0, m.bars.length - 1);
+      const j = k === "ArrowRight" ? i + 1 : (now - m.bars[i].t > 0.4 ? i : i - 1);
+      svSeek(m.bars[clamp(j, 0, m.bars.length - 1)].t, !a.paused);
+    } else if (k === "]" || k === "[") {
+      const st = m.sections.map(s => s.t0), i = bsearch(st, now + 0.05) - 1;
+      const j = k === "]" ? i + 1 : (i >= 0 && now - st[i] > 1 ? i : i - 1);
+      svSeek(st[clamp(j, 0, st.length - 1)], !a.paused);
+    } else if (step === "listen" && {m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]) svSource({m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]);
+    else if (step === "listen" && k.toLowerCase() === "k") svClick();
+  };
+  SV.dirty = true;
+  SV.raf = requestAnimationFrame(svLoop);
+}
+function svToggle() { const a = svMedia(); if (!a) return; if (a.paused) { if (SV.ctx) SV.ctx.resume(); a.play(); } else a.pause(); }
+function svSeek(t, play, recenter) {
+  const a = svMedia(); if (!a) return;
+  t = clamp(t, 0, SV.m.duration - 0.05);
+  a.currentTime = t; SV.sched = -1;
+  const len = svLen();
+  if (recenter || play || t < SV.w0 || t > SV.w0 + len) svCenter(t, play ? 0.3 : 0.25);
+  if (play) a.play();
+  SV.dirty = true;
+}
+function svSource(k) {
+  const a = svMedia(), cur = svCur(); if (!a || !cur || (k !== "mix" && !cur.stems[k])) return;
+  const t = a.currentTime, playing = !a.paused;
+  SV.src = k;
+  a.src = k === "mix" ? svMix() : cur.stems[k];
+  a.addEventListener("loadedmetadata", () => { a.currentTime = t; a.playbackRate = SV.rate; if (playing) a.play(); }, {once: true});
+  document.querySelectorAll(".sv-ctl [data-src]").forEach(c => c.classList.toggle("on", c.dataset.src === k));
+  SV.dirty = true;
+}
+function svRate(r) { SV.rate = r; const a = svMedia(); if (a) a.playbackRate = r; SV.sched = -1; document.querySelectorAll(".sv-ctl [data-rate]").forEach(c => c.classList.toggle("on", +c.dataset.rate === r)); }
+function svZoom(z) { SV.zoom = z; svCenter(svMedia().currentTime, 0.3); SV.dirty = true; document.querySelectorAll(".sv-ctl [data-zoom]").forEach(c => c.classList.toggle("on", +c.dataset.zoom === z)); }
+function svFollow(on) { SV.follow = on; const c = $("#sv-follow"); if (c) c.classList.toggle("on", on); }
+function svClick() {
+  SV.click = !SV.click; SV.sched = -1;
+  if (SV.click) { SV.ctx = SV.ctx || new (window.AudioContext || window.webkitAudioContext)(); SV.ctx.resume(); }
+  const c = $("#sv-click"); if (c) c.classList.toggle("on", SV.click);
+}
+function svClicks(a) {                     // a click on every beat (accent on the downbeat), scheduled 150 ms ahead
+  if (!SV.click || !SV.ctx || a.paused) { SV.sched = -1; return; }
+  const ctx = SV.ctx, t = a.currentTime, rate = a.playbackRate || 1, B = SV.m.beats;
+  if (SV.sched < t - 0.05 || SV.sched > t + 0.5) SV.sched = t;
+  const until = t + 0.15 * rate;
+  for (let j = bsearch(B, SV.sched); j < B.length && B[j] <= until; j++) {
+    const when = ctx.currentTime + (B[j] - t) / rate, acc = SV.dbset.has(j);
+    const o = ctx.createOscillator(), gn = ctx.createGain();
+    o.frequency.value = acc ? 1760 : 1100;
+    gn.gain.setValueAtTime(0.0001, when);
+    gn.gain.exponentialRampToValueAtTime(acc ? 0.45 : 0.22, when + 0.002);
+    gn.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
+    o.connect(gn).connect(ctx.destination); o.start(when); o.stop(when + 0.06);
+  }
+  SV.sched = until;
+}
+function svLoop() {
+  const a = svMedia(), cv = $("#sv-cv");
+  if (!a || !cv || !SV.m) { SV.raf = 0; return; }
+  const t = a.currentTime, playing = !a.paused;
+  if (playing && SV.follow && SV.zoom) { svCenter(t, 0.3); SV.dirty = true; }
+  if (playing || SV.dirty) { svDraw(t); svOverview(t); svNow(t); SV.dirty = false; }
+  svClicks(a);
+  SV.raf = requestAnimationFrame(svLoop);
+}
+function svHover() {
+  const t = SV.hover; if (t == null) return;
+  const sc = svSection(t), ch = svChord(t), m = SV.m;
+  const mo = m.moments.find(e => Math.abs(e.t - t) < svLen() / 120);
+  const ln = m.lyrics[bsearch(SV.lt, t) - 1], w = ln && t < ln.end + 0.3 ? [...ln.words].reverse().find(w => w.t <= t) : null;
+  $("#sv-hov").textContent = `${fmt(t)}  ·  bar ${svPosStr(t)}  ·  ${sc.name || "–"}${ch ? "  ·  " + ch : ""}${w ? `  ·  “${w.w}”${w.note ? " " + w.note : ""}` : ""}${mo ? `  ·  ${"★".repeat(mo.stars)} ${mo.text}` : ""}`;
+}
+function svNow(t) {
+  const m = SV.m, sc = svSection(t), p = svPos(t), ch = svChord(t);
+  $("#sv-t").textContent = `${fmt(t)} / ${fmt(m.duration)}`;
+  $("#sv-sec").innerHTML = `<i style="background:${sc.col}"></i>${esc(sc.name || " ")}`;
+  const where = !p ? "" : p[1] < 0 ? `${Math.ceil(-p[1] - 1e-6)} beat${Math.ceil(-p[1] - 1e-6) > 1 ? "s" : ""} before bar ${p[0]}` : `bar ${p[0]} : beat ${Math.floor(p[1] + 1e-6) + 1}`;
+  $("#sv-pos").textContent = p ? `${where}${ch ? "   ·   " + ch : ""}` : (sc.note || " ");
+  const li = bsearch(SV.lt, t + 0.15) - 1, ln = m.lyrics[li], nx = m.lyrics[li + 1];
+  let html = "";
+  if (ln && t <= ln.end + 0.8) html = ln.words.map((w, k) => { const end = k + 1 < ln.words.length ? ln.words[k + 1].t : ln.end + 0.3; return `<span class="${t >= end ? "on" : t >= w.t ? "now" : ""}">${esc(w.w)}</span>`; }).join(" ");
+  else if (nx) html = `<small>next line in ${(nx.t - t).toFixed(1)} s</small><span>${esc(nx.text)}</span>`;
+  $("#sv-ly").innerHTML = html;
+  const big = m.moments.find(e => e.stars >= 3 && e.t > t + 0.05), ns = m.sections.find(s => s.t0 > t + 0.05);
+  $("#sv-nx").innerHTML = (ns ? `next: <b>${esc(ns.name)}</b> in ${(ns.t0 - t).toFixed(1)} s<br>` : "") + (big ? `<span class="stars">★★★</span> in ${(big.t - t).toFixed(1)} s: ${esc(big.text)}` : "");
+  const curLine = ln && t <= ln.end + 0.8 ? ln.i : null;
+  if (curLine !== SV.lastLine) {
+    SV.lastLine = curLine;
+    document.querySelectorAll("#sv-lyr .l.on").forEach(e => e.classList.remove("on"));
+    const el = curLine != null && $(`#sv-lyr .l[data-li="${curLine}"]`), box = $("#sv-lyr");
+    if (el) { el.classList.add("on"); if (!svMedia().paused) box.scrollTop = el.offsetTop - box.clientHeight / 3; }
+  }
+  const si = sc.s ? m.sections.indexOf(sc.s) : -1;
+  if (si !== SV.lastSec) {
+    SV.lastSec = si;
+    document.querySelectorAll("#sv-secs tr").forEach(r => r.classList.toggle("on", r.dataset.si !== undefined && +r.dataset.si === si));
+  }
+}
+function svCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  return [g, W, H];
+}
+function svText(g, text, x0, x1, y, color, font, minX = 0) {   // centred in [x0, x1] when it fits
+  g.font = font; const w = g.measureText(text).width, a = Math.max(x0, minX), b = x1;
+  if (b - a < w + 6) return;
+  g.fillStyle = color; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, (a + b) / 2, y);
+}
+function svDraw(now) {
+  const [g, W, H] = svCanvas($("#sv-cv")), m = SV.m, E = SV.env;
+  const w0 = SV.w0, span = svLen(), w1 = w0 + span, LX = SV_LX, RX = 8, pxs = (W - LX - RX) / span;
+  const X = t => LX + (t - w0) * pxs, fg = "#e8e6e1", dim = "#6f7278", acc = "#ffd23f";
+  const gap = 4, k = (H - 6) / SV_LANES.reduce((s, l) => s + l[1] + gap, 0), lane = {};
+  let y = 3;
+  for (const [name, h0] of SV_LANES) {
+    const h = h0 * k; lane[name] = [y, h];
+    g.fillStyle = SV_STEM_LANE[SV.src] === name ? acc : "#c9c7c2"; g.font = "12px SpaceMono, Consolas, monospace";
+    g.textAlign = "right"; g.textBaseline = "middle"; g.fillText(name, LX - 10, y + h / 2);
+    g.fillStyle = "rgba(255,255,255,.025)"; g.fillRect(LX, y, W - LX - RX, h);
+    y += h + gap * k;
+  }
+  g.save(); g.beginPath(); g.rect(LX, 0, W - LX - RX, H); g.clip();
+  const env = (arr, y0, h, fill, line, lo = 0, hi = 1) => {
+    const f = E.fps, i0 = Math.max(0, Math.floor(w0 * f) - 1), i1 = Math.min(arr.length - 1, Math.ceil(w1 * f) + 1);
+    if (i1 <= i0) return;
+    const Y = v => y0 + h - clamp((v - lo) / (hi - lo), 0, 1) * (h - 3);
+    g.beginPath(); g.moveTo(X(i0 / f), y0 + h);
+    for (let i = i0; i <= i1; i++) g.lineTo(X(i / f), Y(arr[i]));
+    g.lineTo(X(i1 / f), y0 + h); g.closePath(); g.fillStyle = fill; g.fill();
+    g.beginPath(); for (let i = i0; i <= i1; i++) (i === i0 ? g.moveTo : g.lineTo).call(g, X(i / f), Y(arr[i]));
+    g.strokeStyle = line; g.lineWidth = 1; g.stroke();
+  };
+  // sections (+ the stretches without a beat)
+  { const [y0, h] = lane.sections, mu = m.music;
+    const grey = (a, b, txt) => { if (b < w0 || a > w1) return; g.fillStyle = "#26262a"; g.fillRect(X(a), y0 + 2, X(b) - X(a), h - 4); svText(g, txt, X(a), X(b), y0 + h / 2, dim, "11px system-ui", LX); };
+    if (mu.before) grey(mu.before.t0, mu.before.t1, mu.before.kind);
+    if (mu.tail) grey(mu.tail.t0, mu.tail.t1, "no beat grid");
+    if (mu.after) grey(mu.after.t0, mu.after.t1, mu.after.kind);
+    for (const s of m.sections) {
+      if (s.t1 < w0 || s.t0 > w1) continue;
+      g.fillStyle = secCol(s); g.fillRect(X(s.t0) + 1, y0 + 2, X(s.t1) - X(s.t0) - 2, h - 4);
+      svText(g, s.name, X(s.t0), Math.min(X(s.t1), W - RX), y0 + h / 2, "#101114", "bold 12px system-ui", LX);
+    } }
+  // loud & quiet + the moments
+  { const [y0, h] = lane["loud & quiet"], ref = m.loudness.integrated_lufs;
+    env(E.loudness_lufs, y0 + 12, h - 12, "rgba(232,115,74,.42)", "#e8734a", ref - 24, ref + 6);
+    let lastX = -1e9;
+    for (const e of m.moments) {
+      if (e.t < w0 || e.t > w1 || (e.stars < 2 && span > 70)) continue;
+      const x = X(e.t);
+      g.strokeStyle = e.stars >= 3 ? acc : "rgba(232,230,225,.4)"; g.lineWidth = e.stars >= 3 ? 1.5 : 1;
+      g.beginPath(); g.moveTo(x, y0 + 12); g.lineTo(x, y0 + h); g.stroke();
+      g.fillStyle = e.stars >= 3 ? acc : "#b9b7b2"; g.textAlign = "left"; g.textBaseline = "top"; g.font = "11px system-ui";
+      const lab = "★".repeat(e.stars) + (span <= 80 ? " " + e.short : "");
+      if (x - lastX > 14) { g.fillText(lab, x + 2, y0); lastX = x + g.measureText(lab).width + 4; }
+    } }
+  // notes: the melody (top, grey = off the lyric: backing vocals or bleed) and the bass line (bottom, blue)
+  { const [y0, h] = lane.notes;
+    const vy = n => y0 + 4 + (1 - clamp((n - SV.vlo) / (SV.vhi - SV.vlo), 0, 1)) * h * 0.56;
+    const by = n => y0 + h * 0.7 + (1 - clamp((n - SV.blo) / (SV.bhi - SV.blo), 0, 1)) * h * 0.26;
+    g.textAlign = "left"; g.textBaseline = "bottom"; g.font = "10px system-ui";
+    for (const n of m.notes.vocal) {
+      if (n.end < w0 || n.t > w1) continue;
+      const off = n.in_lyric === false, yy = vy(n.midi);
+      g.fillStyle = off ? "rgba(111,114,120,.55)" : (now >= n.t && now < n.end ? acc : fg);
+      g.fillRect(X(n.t), yy, Math.max(1.5, n.dur * pxs), 3);
+      if (!off && span <= 40 && n.dur * pxs > 22) { g.fillStyle = "#b9b7b2"; g.fillText(n.name, X(n.t), yy - 1); }
+    }
+    for (const n of m.notes.bass) {
+      if (n.end < w0 || n.t > w1) continue;
+      const yy = by(n.midi);
+      g.fillStyle = now >= n.t && now < n.end ? acc : "#7fb2ff"; g.fillRect(X(n.t), yy, Math.max(1.5, n.dur * pxs), 3);
+      if (span <= 40 && n.dur * pxs > 26) { g.fillStyle = "#7fb2ff"; g.fillText(n.name, X(n.t), yy - 1); }
+    } }
+  // chords
+  { const [y0, h] = lane.chords;
+    for (const c of m.chords) {
+      if (c.end < w0 || c.t > w1 || c.chord === "N") continue;
+      g.fillStyle = chordCol(c.chord, .85); g.fillRect(X(c.t), y0 + 2, X(c.end) - X(c.t) - 1, h - 4);
+      if ((X(c.end) - X(c.t)) > 30) { g.fillStyle = "#101114"; g.font = "bold 12px system-ui"; g.textAlign = "left"; g.textBaseline = "middle"; g.fillText(c.chord, Math.max(X(c.t), LX) + 4, y0 + h / 2); }
+    } }
+  // beats + bar numbers (= F.bar(n))
+  { const [y0, h] = lane.beats, B = m.beats, barPx = m.tempo.bar_s * pxs, every = barPx > 24 ? 1 : barPx > 7 ? 4 : 8;
+    g.strokeStyle = dim; g.lineWidth = 1; g.beginPath();
+    for (let j = Math.max(0, bsearch(B, w0) - 1); j < B.length && B[j] <= w1; j++) if (!SV.dbset.has(j)) { g.moveTo(X(B[j]), y0 + h * .55); g.lineTo(X(B[j]), y0 + h); }
+    g.stroke();
+    g.strokeStyle = fg; g.fillStyle = fg; g.font = "11px SpaceMono, Consolas, monospace"; g.textAlign = "left"; g.textBaseline = "top";
+    for (const b of m.bars) {
+      if (b.t < w0 || b.t > w1) continue;
+      g.beginPath(); g.moveTo(X(b.t), y0 + h * .3); g.lineTo(X(b.t), y0 + h); g.stroke();
+      if (b.i % every === 0) g.fillText(b.i, X(b.t) + 2, y0);
+    } }
+  // the four stems
+  for (const [name, key] of [["voice", "voice"], ["drums", "drums"], ["bass", "bass"], ["other", "other"]]) {
+    const [y0, h] = lane[name], on = SV_STEM_LANE[SV.src] === name;
+    env(E[key], y0, h, on ? "rgba(255,210,63,.25)" : "rgba(232,230,225,.14)", on ? acc : "#cfcdc8");
+  }
+  // lyrics: every word at its sung time when zoomed in (three rows, a word only where it fits), the line when zoomed out
+  { const [y0, h] = lane.lyrics, wordMode = pxs >= 38, ends = [-1e9, -1e9, -1e9];
+    g.textAlign = "left"; g.textBaseline = "top";
+    for (const x of m.lyrics) {
+      if (x.end < w0 || x.t > w1) continue;
+      const x0 = X(x.t), x1 = X(Math.max(x.end, x.t + 0.3));
+      g.fillStyle = "rgba(168,164,156,.2)"; g.fillRect(x0, y0 + 2, x1 - x0, h - 4);
+      if (wordMode) {
+        g.font = "12px system-ui";
+        x.words.forEach((w, i) => {
+          const end = i + 1 < x.words.length ? x.words[i + 1].t : x.end + 0.3, wx = X(w.t) + 1, ww = g.measureText(w.w).width;
+          const row = [0, 1, 2].find(r => wx > ends[r] + 3);
+          if (row === undefined) return;
+          ends[row] = wx + ww;
+          g.fillStyle = now >= w.t && now < end ? acc : fg;
+          g.fillText(w.w, wx, y0 + 4 + row * (h - 18) / 2);
+        });
+      } else if (x1 - x0 >= 46) {                // the line, cut to its block (it is in the lyrics panel in full)
+        g.save(); g.beginPath(); g.rect(x0, y0, Math.max(0, x1 - x0 - 2), h); g.clip();
+        g.font = "11.5px system-ui"; g.fillStyle = now >= x.t && now < x.end + 0.3 ? acc : "#d8d6d0";
+        g.fillText(x.text, Math.max(x0, LX) + 3, y0 + h / 2 - 7);
+        g.restore();
+      }
+    } }
+  g.restore();
+  // playhead + hover
+  if (now >= w0 && now <= w1) { g.strokeStyle = acc; g.lineWidth = 2; g.beginPath(); g.moveTo(X(now), 0); g.lineTo(X(now), H); g.stroke(); }
+  if (SV.hover != null && SV.hover >= w0 && SV.hover <= w1) { g.strokeStyle = "rgba(255,255,255,.35)"; g.lineWidth = 1; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(SV.hover), 0); g.lineTo(X(SV.hover), H); g.stroke(); g.setLineDash([]); }
+}
+function svOverview(now) {
+  const [g, W, H] = svCanvas($("#sv-ov")), m = SV.m, E = SV.env, D = m.duration, X = t => t / D * W, mu = m.music;
+  for (const r of [mu.before, mu.tail, mu.after].filter(Boolean)) { g.fillStyle = "#26262a"; g.fillRect(X(r.t0), 4, X(r.t1) - X(r.t0), 16); }
+  for (const s of m.sections) { g.fillStyle = secCol(s); g.fillRect(X(s.t0) + .5, 4, X(s.t1) - X(s.t0) - 1, 16); }
+  const L = E.loudness_lufs, ref = m.loudness.integrated_lufs, f = E.fps;
+  g.beginPath(); g.moveTo(0, H);
+  for (let i = 0; i < L.length; i += 2) g.lineTo(X(i / f), H - clamp((L[i] - (ref - 24)) / 30, 0, 1) * (H - 26));
+  g.lineTo(W, H); g.closePath(); g.fillStyle = "rgba(232,115,74,.45)"; g.fill();
+  g.fillStyle = "#ffd23f";
+  for (const e of m.moments) if (e.stars >= 3) { const x = X(e.t); g.beginPath(); g.moveTo(x - 4, 22); g.lineTo(x + 4, 22); g.lineTo(x, 29); g.fill(); }
+  if (SV.zoom) { g.strokeStyle = "rgba(255,255,255,.7)"; g.lineWidth = 1; g.strokeRect(X(SV.w0) + .5, 1.5, X(SV.w0 + svLen()) - X(SV.w0) - 1, H - 3); }
+  g.strokeStyle = "#ffd23f"; g.lineWidth = 2; g.beginPath(); g.moveTo(X(now), 0); g.lineTo(X(now), H); g.stroke();
+}
+route();
+</script>
+</body>
+</html>

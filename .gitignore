@@ -32,3 +32,6 @@ projects/*/work/scenes/**/*.png
 projects/*/work/scenes/**/*.mp4
 # internal projects (smoke tests) are never committed
 projects/_*/
+
+# test outputs
+tests/out/
