@@ -6,10 +6,12 @@ Starts `studio.py serve` on a free port with the stand-in for Claude Code (tests
 new project -> upload the synthetic song -> brief (notes, format, lyrics) -> reference pictures (upright, no metadata,
 named, noted, removed) -> ingest with progress -> the song data (song-map, envelopes, frames, hits, a stem with a range
 request) -> story: draft (stand-in Claude) and save -> the lyric timing editor's save (LRC timed on this file, used
-as it is; the song analysed again) -> a director run with live progress (its brief lists the pictures) -> the video
+as it is; the song analysed again) -> lyrics placed where Whisper heard them (a stand-in transcription: the editor's
+align job, then plain-text lyrics analysed with it) -> a director run with live progress (its brief lists the pictures) -> the video
 (range request) -> notes (add, done, delete) -> a review round -> stopping a running director cleanly -> doctor. Then
 each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in tests/out/ui/; on the brief
-page a picture is added and named, on the song page the lyric timing editor opens, taps, undoes and closes.
+page a picture is added and named, on the song page the lyric timing editor opens, taps, undoes and closes, and
+aligns with Whisper.
 Exit code 0 = all passed.
 """
 import argparse, io, json, os, shutil, socket, subprocess, sys, time
@@ -121,6 +123,7 @@ def main():
         r = requests.post(f"{B}/api/p/{name}/story", json={"text": text}).json()
         say("grandmother" in r.get("text", ""), "POST story (the user's edit saved)")
         lyric_timing_check(B, name)
+        whisper_check(B, name)
         # a director run
         say(requests.post(f"{B}/api/p/{name}/direct", json={"budget": 4, "effort": "low", "model": "fake"}).json().get("ok"), "POST direct")
         seen_running = False
@@ -231,6 +234,41 @@ def lyric_timing_check(B, name):
         "word-timed lines keep their word times through the editor", (m3.get("lyrics_meta") or {}).get("source", ""))
 
 
+def whisper_check(B, name):
+    """Lyrics placed where Whisper heard them. Whisper can't be downloaded in a test, so its transcription is a
+    stand-in written for this song file: the truth's words with two misheard and one missed. The timing editor's
+    "Align with Whisper" job places lines written with the second "hold the light" left out (it comes back as a
+    repeat); then the same plain-text lyrics are analysed, placed on the transcription."""
+    pdir = os.path.join(STUDIO, "projects", name)
+    truth = json.load(open(os.path.join(TESTS, "out", "test_song_truth.json"), encoding="utf-8"))
+    song = next(f for f in os.listdir(os.path.join(pdir, "song")) if f.endswith(".mp3"))
+    words = [dict(w, end=round(w["t"] + 0.3, 3)) for w in truth["words"]]
+    words[3]["w"], words[10]["w"] = "fallin", "lites"
+    del words[20]
+    tr = {"model": "openai/whisper-large-v3-turbo", "language": "en",
+          "song": {"file": song, "size": os.path.getsize(os.path.join(pdir, "song", song))},
+          "lines": [{"t": words[0]["t"], "end": words[-1]["end"], "text": " ".join(w["w"] for w in words), "words": words}]}
+    os.makedirs(os.path.join(pdir, "cache", "lyrics"), exist_ok=True)
+    json.dump(tr, open(os.path.join(pdir, "cache", "lyrics", "transcribed.json"), "w", encoding="utf-8"))
+    texts = [x["text"] for x in truth["lines"]]
+    sent = texts[:6] + texts[7:]
+    r = requests.post(f"{B}/api/p/{name}/lyrics-align", json={"lines": [{"text": t} for t in sent]}).json()
+    say(r.get("ok"), "POST lyrics-align (Whisper places the editor's lines: a job)", str(r)[:100])
+    j, _ = wait_job(B, name, want="align")
+    al = requests.get(f"{B}/p/{name}/cache/lyrics/aligned.json").json() if j.get("returncode") == 0 else {"lines": [], "stats": {}}
+    err = max([abs(a["t"] - b["t"]) for a, b in zip(al["lines"], truth["lines"])] or [99])
+    say(j.get("returncode") == 0 and [x["text"] for x in al["lines"]] == texts and err < 0.15 and al["stats"].get("repeats_added") == 1,
+        "placed where Whisper heard them: every line in place, the line written once comes back as a repeat",
+        f"{len(al['lines'])} lines, worst start {err:.2f} s off, {al['stats'].get('repeats_added')} repeat(s); {(j.get('log') or [''])[-1][:80]}")
+    pj = requests.post(f"{B}/api/p/{name}/brief", json={"lyrics": "\n".join(sent)}).json()
+    requests.post(f"{B}/api/p/{name}/ingest")
+    j, _ = wait_job(B, name, want="ingest")
+    m = requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()
+    err = max([abs(a["t"] - b["t"]) for a, b in zip(m["lyrics"], truth["lines"])] or [99])
+    say(j.get("returncode") == 0 and "timed with Whisper" in (m.get("lyrics_meta") or {}).get("source", "") and len(m["lyrics"]) == len(texts) and err < 0.35,
+        "plain-text lyrics analysed: placed on the transcription", f"{(m.get('lyrics_meta') or {}).get('source')}, {len(m['lyrics'])} lines, worst start {err:.2f} s off")
+
+
 def refs_check(B, name):
     """Reference pictures: upright (the EXIF rotation applied) without metadata, named from the file name unless it's a
     camera's, transparency kept, broken files and HEIC refused, a name and a note saved, one removed (to trash/)."""
@@ -328,6 +366,12 @@ def browser_pages(B, name, out):
                 page.keyboard.press("Backspace")
                 page.wait_for_timeout(200)
                 undone = page.locator("#lx-list .lx-r.set").count()
+                page.click("#lx-align")                                   # the stand-in transcription is there
+                page.wait_for_function("SV.ed && !SV.ed.aligning", timeout=120000)
+                truth = json.load(open(os.path.join(TESTS, "out", "test_song_truth.json"), encoding="utf-8"))
+                got = page.evaluate("SV.ed.lines.map(x => [x.text, x.t])")
+                aligned = len(got) == len(truth["lines"]) and all(a[0] == b["text"] and abs(a[1] - b["t"]) < 0.4 for a, b in zip(got, truth["lines"]))
+                say(aligned, "UI: Align with Whisper fills in the lines", f"{len(got)} lines; first {got[:2]}")
                 page.once("dialog", lambda d: d.accept())
                 page.click("#lx button:has-text('Cancel')")
                 page.wait_for_timeout(300)

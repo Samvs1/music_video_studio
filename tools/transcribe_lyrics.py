@@ -1,7 +1,10 @@
 """Transcribe the lyric from the vocal stem with Whisper, for songs LRCLIB has no synced lyrics for (local or
-non-English songs often). analyze_audio.py uses the result when there is no LRC; align_words.py then aligns it.
+non-English songs often). analyze_audio.py uses the result when there is no LRC; align_words.py then aligns it. With
+the user's own lyrics as plain text, the transcription is where their lines get their times (align_lyrics.py).
 
-  python tools/studio.py run <project> transcribe_lyrics.py [--language nl] [--model openai/whisper-large-v3-turbo]
+  python tools/studio.py run <project> transcribe_lyrics.py [--language nl] [--model openai/whisper-large-v3-turbo] [--force]
+
+A transcription made for this very song file (and model and language) is reused; --force makes it again.
 
 Only stretches where the vocal stem is clearly singing are transcribed (Whisper invents text over instrumentals),
 in pieces of up to 28 s. Writes cache/lyrics/transcribed.json: {"model", "language", "lines": [{t, end, text,
@@ -13,7 +16,7 @@ import numpy as np
 import librosa
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mv.common import CACHE, STEMS, need_project  # noqa: E402
+from mv.common import CACHE, STEMS, need_project, song_file  # noqa: E402
 from mv import device as D  # noqa: E402
 
 SR = 16000
@@ -56,10 +59,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--language", default=None, help="ISO code (en, nl, fr, ...); default: Whisper detects it")
     ap.add_argument("--model", default="openai/whisper-large-v3-turbo")
+    ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
+    need_project()
+    p = os.path.join(CACHE, "lyrics", "transcribed.json")
+    sf_ = song_file()
+    me = {"file": os.path.basename(sf_), "size": os.path.getsize(sf_)} if sf_ else None
+    old = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+    if not a.force and me and old.get("song") == me and old.get("model") == a.model and old.get("language") == (a.language or "auto"):
+        print(f"this song's transcription is there ({len(old.get('lines') or [])} lines, {a.model}): reusing it (--force to redo)")
+        return
     import torch
     from transformers import pipeline
-    need_project()
     dev = D.pick(2.5)
     v, _ = librosa.load(os.path.join(STEMS, "vocals.wav"), sr=SR, mono=True)
     regs = sung_regions(v)
@@ -101,9 +112,8 @@ def main():
                           "words": [dict(x, w=x["w"].strip(",.!?")) for x in cur if x["w"].strip(",.!?")]})
             cur = []
     lines = [x for x in lines if x["words"]]
-    p = os.path.join(CACHE, "lyrics", "transcribed.json")
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    json.dump({"model": a.model, "language": a.language or "auto", "lines": lines}, open(p, "w", encoding="utf-8"),
+    json.dump({"model": a.model, "language": a.language or "auto", "song": me, "lines": lines}, open(p, "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     print(f"{len(lines)} lines, {len(words)} words -> {p}")
 

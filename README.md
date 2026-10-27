@@ -37,7 +37,9 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 2. **Analyse** (a few minutes): stems, beats and bars, lyrics, melody, chords, sections, moments → the song folder.
 3. **The song**: the song the way Claude reads it, playing along: sections, loudness and the ★★★ moments, melody and
    bass notes, chords, beats, the four stems (hear any of them alone: M V D B O), a beat click (K), every sung word.
-   Lyrics out of step (plain-text lyrics are only placed roughly)? **Fix the timing**: play the song (Voice only, 0.75×)
+   Lyrics out of step? **Fix the timing** → **Align with Whisper** places every line where Whisper hears its words
+   (lines it didn't hear are marked ?, a chorus you wrote once comes back as a repeat, singing that isn't in your
+   lyrics is listed to add). Then fix what's left by hand: play the song (Voice only, 0.75×)
    and press Enter as each line starts, or hold Enter while the line is sung to set where it ends too; drag a line's
    edges in the lyrics lane to stretch it; nudge starts and ends by a beat or a tenth of a second, fix words, add
    repeated lines. Saving writes the lines as LRC to the brief (an end is a time tag after the last word:
@@ -58,6 +60,7 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `ingest <p> [--force] [--cpu] [--fallback]` | the song → the song folder (progress in `cache/status.json`) |
 | `song <p>` · `curves <p> [--fps N]` | remake the song folder · remake the per-frame files for another fps |
 | `story <p> [--model M]` | Claude drafts `song/song-story.md` (headless, read-only) |
+| `align-lyrics <p> [--in lines.json]` | the lyric lines placed where Whisper hears them (`cache/lyrics/aligned.json`; the timing editor's button) |
 | `direct <p> --budget 90m [--effort high] [--model opus] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run]` | the autonomous director |
 | `clock <p>` · `stop <p>` | time left in a running budget · ask a running director to stop cleanly |
 | `check <p> [video]` | every check on the final (spec, flashes, text, sync) |
@@ -131,6 +134,12 @@ director how they look, so it can draw them; the pictures never appear in the vi
 - **The voice follows the lyric lines**: inside a line, the vocal stem's level counts as the voice even where it has no
   pitch (rap, spoken words); outside the lines only pitched singing does, since the level alone could be other
   instruments bleeding into the vocal stem. So lyric lines in the wrong place also hide the voice: fix the timing first.
+- **Your own lyrics are placed with Whisper**: when they have no times (plain text), analysing runs Whisper on the
+  vocal stem (once per song, cached) and matches your words to the words it heard, in order and forgiving
+  mishearings (`tools/align_lyrics.py`): each line starts where its first words were heard. Before, the lines were
+  only spread over the singing by syllable count, and the word aligner could correct them by about a second at most.
+  Whisper's word times are good to ~0.2 s; the forced aligner then refines each word inside its line. Without Whisper
+  (no download) it falls back to that estimate and says so.
 - **Lyrics timed in the web app are used as they are** (project.json `lyrics_synced`): no offset search, unlike a pasted
   or downloaded LRC; changing the lyrics on the brief page drops the mark.
 - **Extra signals** only where they are measurements (spectral bands, transients, stereo width, brightness), each

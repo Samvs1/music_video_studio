@@ -165,6 +165,20 @@ def main():
     r = studio("run", P, "songq.py", "at", str(truth["stop"]["t0"] + 0.5))
     say("PASS" if "bar" in r.stdout else "FAIL", "songq.py at the stop", r.stdout.strip()[:140])
 
+    print("== 3c. plain lyrics placed on a transcription (align_lyrics.anchor; a stand-in for Whisper)", flush=True)
+    sys.path.insert(0, os.path.join(STUDIO, "tools"))
+    from align_lyrics import anchor
+    heard = [dict(w, end=w["t"] + 0.3) for w in truth["words"]]
+    heard[3]["w"], heard[10]["w"] = "fallin", "lites"                 # misheard
+    del heard[20]                                                     # missed
+    heard.insert(15, {"w": "yeah", "t": heard[14]["t"] + 0.6, "end": heard[14]["t"] + 0.9})    # an ad-lib
+    texts = [x["text"] for x in truth["lines"]]
+    res = anchor(texts[:6] + texts[7:], heard)                        # the second "hold the light" written once only
+    err = max([abs(a["t"] - b["t"]) for a, b in zip(res["lines"], truth["lines"])] or [99])
+    say("PASS" if [x["text"] for x in res["lines"]] == texts and err < 0.15 and res["stats"]["repeats_added"] == 1 else "FAIL",
+        "lyric lines placed on heard words (mishearings, a missed word, an ad-lib, a repeat written once)",
+        f"worst start {err:.2f} s off; {res['stats']}")
+
     print("== 4. mini director: web engine + Blender -> compose", flush=True)
     sys.path.insert(0, TESTS)
     import mini_director

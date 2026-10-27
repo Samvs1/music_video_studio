@@ -207,6 +207,10 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 .lx-r .nd button{padding:2px 7px;font-size:12px;border-radius:6px}
 .lx-next{max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lx-add{padding:8px 4px}
+.lx-r.ab .lx-n::after{content:" ?";color:var(--acc)}
+.lx-r.ar .lx-n::after{content:" +";color:var(--acc)}
+.lx-heard{margin-top:8px;font-size:13px}
+.lx-heard div{display:flex;gap:8px;align-items:center;padding:2px 0}
 .sv-md h2{font-size:24px;margin:4px 0}.sv-md h3{font:600 15px system-ui;margin:14px 0 4px;color:var(--acc)}
 .sv-md table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
 .sv-md td,.sv-md th{border:1px solid var(--line);padding:4px 7px;text-align:left;vertical-align:top}
@@ -244,7 +248,7 @@ const STEPS = [["song", "Song & brief"], ["analyse", "Analyse"], ["listen", "The
 function go(hash) { location.hash = hash; }
 window.onhashchange = route;
 async function route() {
-  clearInterval(poll); clearInterval(dpoll);
+  clearInterval(poll); clearInterval(dpoll); clearInterval(lxPoll);
   lxRestore(); svStop(); document.onkeydown = document.onkeyup = null;
   const h = location.hash.slice(1).split("/");
   if (!h[0]) return home();
@@ -398,7 +402,7 @@ function watchJob(kinds, onDone) {
   const tick = async () => {
     const j = await api(`/api/p/${S.name}/job`);
     renderJob(j);
-    if (j.running) { sawRunning = true; return; }
+    if (j.running) { if (jobKinds.includes(j.job)) sawRunning = true; return; }
     clearInterval(poll);
     if (sawRunning) {
       sawRunning = false;
@@ -652,10 +656,13 @@ function lxRender() {
     <div class="row" style="margin-top:8px"><button id="lx-tap" onpointerdown="lxTapDown()" onpointerup="lxTapUp()" onpointerleave="lxTapUp()" ${nx ? "" : "disabled"}>${nx ? `Tap: line ${ed.cur + 1} starts now <span style="font-weight:400">(Enter; hold to its end)</span>` : "All lines tapped"}</button>
       <span class="mut lx-next">${nx ? "&#9656; " + esc(nx.text) : ""}</span><span style="flex:1"></span>
       <span class="mut" id="lx-st">${nset} of ${n} set by you${none ? ` &middot; ${none} without a time` : ""}</span>
-      <button class="ghost small" onclick="lxUndo()">Undo</button><button class="ghost small" onclick="lxPasteBox()">Paste lyrics&hellip;</button>
+      <button class="ghost small" onclick="lxUndo()">Undo</button><button class="ghost small" id="lx-align" onclick="lxAlign()" ${ed.aligning ? "disabled" : ""} title="Whisper listens to the vocals and places every line you haven't set yourself">Align with Whisper</button><button class="ghost small" onclick="lxPasteBox()">Paste lyrics&hellip;</button>
       <button class="ghost small" onclick="lxClose()">Cancel</button><button class="small" id="lx-save" onclick="lxSave()">Save &amp; analyse again</button></div>
+    <div id="lx-al" class="hint">${ed.aligning ? '<span class="spin"></span> Whisper is listening to the vocals&hellip; (the first time it downloads its model, ~1.6 GB)' : ""}</div>
+    ${(ed.heardOnly || []).length ? `<div class="lx-heard"><b>Whisper also heard</b> <span class="mut">singing that isn't in your lyrics (its spelling: fix the words after adding):</span>
+      ${ed.heardOnly.map((h, q) => `<div><span class="mut" style="font:12px SpaceMono,monospace">${fmt(h.t)}</span> &ldquo;${esc(h.text)}&rdquo; <button class="ghost small" onclick="lxAddHeard(${q})">add as a line</button></div>`).join("")}</div>` : ""}
     <div id="lx-paste"></div>
-    <div class="lx-list" id="lx-list">${ed.lines.map((x, i) => `<div class="lx-r ${i === ed.cur ? "cur" : ""} ${x.set ? "set" : ""}" data-i="${i}">
+    <div class="lx-list" id="lx-list">${ed.lines.map((x, i) => `<div class="lx-r ${i === ed.cur ? "cur" : ""} ${x.set ? "set" : ""} ${!x.set && x.auto === "between" ? "ab" : ""} ${!x.set && x.auto === "repeat" ? "ar" : ""}" data-i="${i}" title="${!x.set && x.auto === "between" ? "Whisper didn't hear this line: it is placed between its neighbours, check it" : !x.set && x.auto === "repeat" ? "Whisper heard this line again here: added as a repeat" : ""}">
       <span class="lx-n" onclick="lxCur(${i}, true)" title="tap this line next">${i === ed.cur ? "&#9656; " : ""}${i + 1}</span>
       <button class="ghost tm" onclick="lxPlay(${i})" title="play from just before this line">${x.t == null ? "&ndash;:&ndash;&ndash;" : "&#9654; " + fmt(x.t)}</button>
       <span class="mut lx-pos" title="bar:beat">${x.t == null ? "" : svPosStr(x.t)}</span>
@@ -686,9 +693,9 @@ function lxKey(e) {
   return false;
 }
 function lxBlur() { const a = document.activeElement; if (a && a.tagName === "BUTTON") a.blur(); }   // so Space / Enter don't press it again
-function lxPush() { const ed = SV.ed; ed.hist.push(JSON.stringify([ed.lines, ed.cur])); if (ed.hist.length > 300) ed.hist.shift(); ed.dirty = true; }
+function lxPush() { const ed = SV.ed; ed.hist.push(JSON.stringify([ed.lines, ed.cur, ed.heardOnly || []])); if (ed.hist.length > 300) ed.hist.shift(); ed.dirty = true; }
 function lxChanged() { lxView(); lxRender(); }
-function lxUndo() { lxBlur(); const ed = SV.ed, h = ed.hist.pop(); if (!h) return toast("Nothing to undo"); [ed.lines, ed.cur] = JSON.parse(h); lxChanged(); }
+function lxUndo() { lxBlur(); const ed = SV.ed, h = ed.hist.pop(); if (!h) return toast("Nothing to undo"); [ed.lines, ed.cur, ed.heardOnly] = JSON.parse(h); lxChanged(); }
 function lxSetT(i, t) {           // a line's new start; the lines after it that you haven't set yet move along by as much
   const ed = SV.ed, x = ed.lines[i], d = x.t == null ? null : t - x.t;
   t = clamp(t, 0, SV.m.duration);
@@ -780,6 +787,47 @@ function lxDel(i) { lxBlur(); const ed = SV.ed; lxPush(); ed.lines.splice(i, 1);
 function lxAdd() {
   lxBlur(); const ed = SV.ed; lxPush(); ed.lines.push({t: null, end: null, text: "", words: null, set: false, eset: false}); lxChanged();
   const ins = document.querySelectorAll("#lx-list input"); if (ins.length) ins[ins.length - 1].focus();
+}
+let lxPoll = null;
+async function lxAlign() {        // Whisper places every line you haven't set yourself (a background job on the server)
+  lxBlur(); const ed = SV.ed, idx = [];
+  const lines = ed.lines.map((x, i) => [x, i]).filter(([x]) => x.text.trim()).map(([x, i]) => { idx.push(i); return {text: x.text}; });
+  if (lines.length < 2) return toast("Add the lyric lines first (Paste lyrics…)");
+  try { await post(`/api/p/${S.name}/lyrics-align`, {lines}); } catch (e) { return toast(e.message); }
+  ed.aligning = true; lxRender();
+  clearInterval(lxPoll);
+  lxPoll = setInterval(async () => {
+    let j; try { j = await api(`/api/p/${S.name}/job`); } catch (e) { return; }
+    const el = $("#lx-al");
+    if (j.running) { if (el && j.steps) el.innerHTML = `<span class="spin"></span> ${esc(j.steps[j.i] || "")}&hellip; <span class="mut">${esc((j.log || []).slice(-1)[0] || "")}</span>`; return; }
+    clearInterval(lxPoll);
+    if (!SV.ed) return;
+    SV.ed.aligning = false;
+    if (j.returncode !== 0) { lxRender(); return toast(j.error || "Whisper couldn't align the lyrics: see the log on the Analyse page"); }
+    try { lxApplyAligned(await (await fetch(`/p/${S.name}/cache/lyrics/aligned.json?v=${Date.now()}`)).json(), idx); }
+    catch (e) { lxRender(); toast("No alignment came back"); }
+  }, 1500);
+}
+function lxApplyAligned(r, idx) {
+  const ed = SV.ed, out = [];
+  lxPush();
+  for (const x of r.lines) {
+    if (x.i == null) { out.push({t: x.t, end: x.end, text: x.text, words: null, set: false, eset: false, auto: "repeat"}); continue; }
+    const old = ed.lines[idx[x.i]];
+    out.push(old.set ? {...old} : {...old, t: x.t, end: old.eset ? old.end : x.end, words: null, auto: x.src === "whisper" ? "heard" : "between"});
+  }
+  ed.lines = out.sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9));
+  ed.heardOnly = r.heard_only || [];
+  ed.cur = Math.max(0, ed.lines.findIndex(x => !x.set && x.auto === "between"));
+  lxChanged();
+  const s = r.stats || {};
+  toast(`${s.lines_heard} of ${s.lines} lines placed where Whisper heard them` + (s.repeats_added ? `, ${s.repeats_added} repeats added (+)` : "") +
+        (s.lines - s.lines_heard ? `; check the ones marked ?` : ""));
+}
+function lxAddHeard(q) {
+  const ed = SV.ed, h = ed.heardOnly[q]; lxPush();
+  ed.lines.push({t: h.t, end: h.end, text: h.text, words: null, set: false, eset: false, auto: "heard"});
+  ed.lines.sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9)); ed.heardOnly.splice(q, 1); lxChanged();
 }
 function lxPasteBox() {
   lxBlur();

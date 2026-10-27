@@ -506,8 +506,28 @@ def analyze():
                     acc += sy
             lyrics.append({"t": round(t0, 3), "end": round(float(t1), 3), "text": s, **mine,
                            "words": [{"w": w, "t": tt} for w, tt in zip(words, wt)]})
-    if best is None and ukind == "plain":           # the user's text without times: rough times, align_words places the words
+    placed = None
+    if best is None and ukind == "plain":           # the user's text without times: placed on Whisper's words if there are any
+        from align_lyrics import anchor, transcription_for
         plain = [x.strip() for x in utext.splitlines() if x.strip() and not x.strip().startswith(("[", "#"))]
+        heard = transcription_for(os.path.join(CACHE, "lyrics", "transcribed.json"), path)
+        placed = anchor(plain, heard) if heard else None
+        if placed and not placed["stats"]["usable"]:
+            print(f"   lyrics: Whisper's words match only {placed['stats']['share'] * 100:.0f}% of the lyric: timed by estimate instead")
+            placed = None
+    if placed:
+        for x in placed["lines"]:
+            ws = [{"w": w, "t": t, "src": "whisper"} for w, t in x["words"]]
+            if ws:
+                ws[-1]["t_end"] = x["end"]
+            lyrics.append({"t": x["t"], "end": x["end"], "text": x["text"], "words": ws})
+        st_ = placed["stats"]
+        meta = {"source": "user (plain text, timed with Whisper)", "match_z": None, "whisper": st_,
+                "heard_only": placed["heard_only"][:20]}
+        print(f"   lyrics: the user's {st_['lines']} lines placed on Whisper's words ({st_['lines_heard']} heard, "
+              f"{st_['words_heard'] * 100:.0f}% of the words), {st_['repeats_added']} repeats added, "
+              f"{st_['heard_only']} stretches heard that are not in the lyrics")
+    elif best is None and ukind == "plain":         # no transcription: rough times, align_words places the words
         timed = time_plain_lines(plain, voc_act, dur)
         for i, (t0, text) in enumerate(timed):
             t1 = timed[i + 1][0] if i + 1 < len(timed) else min(dur, t0 + 5)
@@ -522,8 +542,10 @@ def analyze():
         meta = {"source": "user (plain text, timed by estimate)", "match_z": None}
         print(f"   lyrics: {len(lyrics)} lines of the user's text, timed roughly (forced alignment places the words)")
     tp = os.path.join(CACHE, "lyrics", "transcribed.json")
-    if best is None and not lyrics and os.path.exists(tp):      # no synced LRC: the Whisper transcription (transcribe_lyrics.py)
-        tr = json.load(open(tp, encoding="utf-8"))
+    tr = json.load(open(tp, encoding="utf-8")) if os.path.exists(tp) else None
+    if tr and tr.get("song") and tr["song"] != {"file": os.path.basename(path), "size": os.path.getsize(path)}:
+        tr = None                                      # made for another song file
+    if best is None and not lyrics and tr:         # no synced LRC: the Whisper transcription (transcribe_lyrics.py)
         lyrics = [{"t": x["t"], "end": x["end"], "text": x["text"], "words": [{"w": w["w"], "t": w["t"]} for w in x["words"]]}
                   for x in tr["lines"]]
         meta = {"source": f"transcribed ({tr.get('model')})", "match_z": None}

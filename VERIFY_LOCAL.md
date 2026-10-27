@@ -87,7 +87,8 @@ key, sections, `lyrics: N lines (lrclib)`, `stems: htdemucs_ft (cuda) ...`, `bea
 **The song**: press Space and check *by ear*: the beat click (K) sits on the beat, bar 0 is the first downbeat, the
 lyric line lights up as it's sung, V / D / B / O solo the stems. Check the "warnings" line. Lines out of step (plain-text
 lyrics are only placed roughly): **Fix the timing** in the Lyrics box, press V and 0.75×, Play, and press Enter as each
-line starts; **Save & analyse again** and check by ear once more.
+line starts (or first **Align with Whisper**, then fix the lines marked ?); **Save & analyse again** and check by ear
+once more.
 (Command-line form: `.venv\Scripts\python.exe tools\studio.py new my-song --song "C:\path\song.mp3"` then
 `.venv\Scripts\python.exe tools\studio.py ingest my-song`.)
 

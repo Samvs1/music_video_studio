@@ -14,6 +14,8 @@ API (JSON):
                                                                                  .jpg/.png/.webp = a reference picture)
   POST /api/p/<p>/ref {id, name | note | delete}                         (a reference picture: who it is, a note)
   POST /api/p/<p>/lyrics-timing {lines: [{t, end?, text, words?}]}       (the lyric timing editor: LRC, then re-analyse)
+  POST /api/p/<p>/lyrics-align {lines: [{text}]}                          (Whisper places them: job "align" ->
+                                                                           /p/<p>/cache/lyrics/aligned.json)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
   POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, effort, model, seed_notes, revise}
   POST /api/p/<p>/stop                   POST /api/p/<p>/note {version, t, text}
@@ -404,6 +406,23 @@ def save_lyric_timing(name, body):
     return {"ok": True, "lines": len(out)}
 
 
+def align_lyrics(name, body):
+    """The timing editor's "Align with Whisper": its lines go to studio.py align-lyrics (Whisper transcribes the vocal
+    stem once per song, then align_lyrics.py matches the lines to what it heard) as a background job; the editor reads
+    cache/lyrics/aligned.json when the job is done."""
+    d = pdir(name)
+    lines = [{"text": re.sub(r"\s+", " ", str(x.get("text") or "")).strip()[:400]} for x in body.get("lines") or []]
+    if len([x for x in lines if x["text"]]) < 2:
+        raise ValueError("at least 2 lyric lines are needed")
+    cd = os.path.join(d, "cache", "lyrics")
+    os.makedirs(cd, exist_ok=True)
+    if os.path.exists(os.path.join(cd, "aligned.json")):
+        os.remove(os.path.join(cd, "aligned.json"))
+    json.dump(lines, open(os.path.join(cd, "align_in.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    start_job(name, "align", ["align-lyrics", name, "--in", os.path.join(cd, "align_in.json")])
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ reference pictures (refs/)
 # The people in the song (or anything whose look matters), so the director knows how they look. It draws them in the
 # video's own language: the pictures never appear in the video. project.json "refs": [{id, file, name, note, added}].
@@ -653,6 +672,8 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json(edit_ref(name, body))
                 if act == "lyrics-timing":
                     return self.send_json(save_lyric_timing(name, body))
+                if act == "lyrics-align":
+                    return self.send_json(align_lyrics(name, body))
                 if act == "deliver":
                     r = subprocess.run([PY, os.path.join(TOOLS, "studio.py"), "deliver", name], capture_output=True, text=True,
                                        encoding="utf-8", errors="replace", cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"))

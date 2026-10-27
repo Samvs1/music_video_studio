@@ -154,7 +154,7 @@ def lyric_lines(A, G, warn):
         cap = max(3.0, 0.9 * len(ws))
         # a line spread this wide without forced alignment is a failed estimate; force-aligned lines are trusted (slow
         # songs hold words for seconds: "Sweet disposition" is sung over ~8 s)
-        if t1 - t0 > cap and not mine and not all("fa" in w for w in ws):
+        if t1 - t0 > cap and not mine and not all("fa" in w or w.get("src") == "whisper" for w in ws):
             warn.append(f"words of \"{Lr['text']}\" are spread over {t1 - t0:.0f} s from {t0:.1f} s: check the alignment "
                         f"(align_words.py) before trusting its word times")
             t1 = t0 + cap
@@ -484,8 +484,13 @@ def analyse(tags=True, cpu=False):
     # ---- voice: CREPE on the vocal stem, gated by the stem's level; "sung" = voiced inside a lyric line (brass and
     # synths that leak into the vocal stem are voiced too, but they don't sit on the lyric)
     lines = lyric_lines(A, G, warn)
+    whisper = any(w.get("src") == "whisper" for x in lines for w in x["words"])
     if lines and not any("fa" in w for x in lines for w in x["words"]):
-        warn.append("the lyric was never force-aligned (no align_words.py run): word times are estimates")
+        warn.append("the lyric was never force-aligned (no align_words.py run): word times are " +
+                    ("where Whisper heard them (good to ~0.2 s)" if whisper else "estimates"))
+    for h in ((A.get("lyrics_meta") or {}).get("heard_only") or [])[:8]:
+        warn.append(f"Whisper heard singing at {int(h['t'] // 60)}:{h['t'] % 60:04.1f} that is not in your lyrics: "
+                    f"\"{h['text']}\" (add it on The song page: Fix the timing)")
     lyr = np.zeros(nf, bool)
     for x in lines:
         lyr[max(0, int((x["t"] - 0.3) * FPS)):int((x["end"] + 0.6) * FPS)] = True
@@ -667,6 +672,7 @@ def analyse(tags=True, cpu=False):
     user_timed = bool(lines) and all(w.get("src") == "user" for x in lines for w in x["words"])
     signals["hits.words"] = {"what": "sung word onsets", "confidence":
                              "high (the user's own word times)" if user_timed else "high (force-aligned)" if aligned else
+                             "medium (where Whisper heard them: not force-aligned)" if whisper else
                              "low (estimated: not force-aligned)" if lines else "none (no lyrics)"}
     report = {"project": os.path.basename(ROOT), "created": time.strftime("%Y-%m-%d %H:%M"), "device": D.info(),
               "vram_peak_gb": D.peak_gb(),

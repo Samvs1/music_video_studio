@@ -80,13 +80,14 @@ compose.py mux work/renders/layered.mp4                                         
 |---|---|---|
 | stems | `separate.py [--force] [--fallback]` (Demucs htdemucs_ft on the GPU, htdemucs on the CPU; offline: an estimate) | `song/stems/*.wav` + `model.txt` |
 | synced lyrics | `fetch_lyrics.py "<artist>" "<title>"` (LRCLIB) | `cache/lyrics/search.json` |
-| lyrics without LRC | `transcribe_lyrics.py [--language nl]` (Whisper on the vocal stem) | `cache/lyrics/transcribed.json` |
+| lyrics without LRC | `transcribe_lyrics.py [--language nl] [--force]` (Whisper on the vocal stem, once per song file) | `cache/lyrics/transcribed.json` |
+| your plain-text lyrics placed | `align_lyrics.py [--in lines.json]` (your words matched to what Whisper heard; analyze_audio uses the same) | `cache/lyrics/aligned.json` |
 | beats, drums, lyric times | `analyze_audio.py [--fallback-beats]` (beat_this; offline: librosa with a moving tempo) | `cache/audio.json` |
 | sung word onsets | `align_words.py` (MMS forced alignment on the vocal stem) then `fix_lyrics.py` | words in `cache/audio.json` |
 | the song folder | `song_kit.py [--cpu] [--no-tags] [--curves-only --fps N]` | `song/*` |
 Lyrics: the user's own (project.json `lyrics` or `song/lyrics.lrc|.txt`; plain text, LRC, or LRC with `<mm:ss.xx>` word
 times; a time tag after a line's last word is where the line ends: `[00:12.00] hold the light <00:14.10>`) come first,
-then LRCLIB, then Whisper. The web app's lyric timing editor (The song page) writes LRC there with
+then LRCLIB, then Whisper. Plain-text lyrics are placed where Whisper heard their words (`align_lyrics.py`). The web app's lyric timing editor (The song page) writes LRC there with
 `lyrics_synced: true` (timed on this very file: used as is, no offset search). Repairs that survive re-ingest:
 project.json `lyrics_fix` (`held_lines`, `words`, `text`; see `fix_lyrics.py`).
 

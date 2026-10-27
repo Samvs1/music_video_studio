@@ -6,6 +6,8 @@
   python tools/studio.py song <project> [--cpu] [--no-tags]          remake the song folder only (tools/song_kit.py)
   python tools/studio.py curves <project> [--fps N]                  remake song/frames.json + hits.json (e.g. after changing the fps)
   python tools/studio.py story <project> [--model M]                 Claude drafts song/song-story.md (headless, read-only)
+  python tools/studio.py align-lyrics <project> [--in lines.json]    the lyric lines placed where Whisper hears them
+                                                                     (cache/lyrics/aligned.json; the web app's timing editor)
   python tools/studio.py direct <project> --budget 90m [--effort high] [--model opus] [--seed-notes "..."] [--revise]
                                                                      the autonomous director (Claude Code headless) -> final/music-video.mp4
   python tools/studio.py clock <project>                             time left in the running director's budget
@@ -134,6 +136,19 @@ def song_path(pdir):
     return song_file(pdir)
 
 
+def user_lyrics_kind(pdir, pj):
+    """'lrc' (line times given), 'plain' (text only) or None: the user's own lyrics, as analyze_audio.py reads them."""
+    import re
+    txt = pj.get("lyrics")
+    txt = (txt.get("text") if isinstance(txt, dict) else txt) or ""
+    for fn in ("lyrics.lrc", "lyrics.txt"):
+        if not txt.strip() and os.path.exists(os.path.join(pdir, "song", fn)):
+            txt = open(os.path.join(pdir, "song", fn), encoding="utf-8").read()
+    if not txt.strip():
+        return None
+    return "lrc" if len(re.findall(r"\[\d+:\d+(?:\.\d+)?\]", txt)) >= 3 else "plain"
+
+
 # ------------------------------------------------------------------ commands
 def cmd_new(a):
     slug = ("_" if a.name.startswith("_") else "") + slugify(a.name)      # "_name" = internal (tests), hidden
@@ -197,11 +212,17 @@ def cmd_ingest(a):
         st.step(0)
         run(pdir, ["separate.py"] + (["--force"] if a.force else []) + (["--fallback"] if a.fallback else []), log)
         st.step(1)
-        has_user = bool(str(pj.get("lyrics") or "").strip()) or any(
-            os.path.exists(os.path.join(pdir, "song", f)) for f in ("lyrics.lrc", "lyrics.txt"))
-        lyr = has_user
+        kind = user_lyrics_kind(pdir, pj)
+        lyr = has_user = kind is not None
         if has_user:
             log.append("using your own lyrics (project.json / song/lyrics.*)")
+            if kind == "plain" and not a.no_transcribe:  # text without times: Whisper hears where each line is sung
+                log.append("your lyrics have no times: Whisper listens to the vocals to place them")
+                lang = sm.get("language")
+                if run(pdir, ["transcribe_lyrics.py"] + (["--language", lang] if lang else []) + (["--force"] if a.force else []),
+                       log, check=False):
+                    st.warn("Whisper couldn't run (model download from huggingface.co?): your lyric lines are placed by "
+                            "estimate; fix them on The song page (Fix the timing)")
         elif artist and title:
             try:
                 run(pdir, ["fetch_lyrics.py", artist, title], log)
@@ -268,6 +289,21 @@ def cmd_curves(a):
 def cmd_story(a):
     import director
     director.story(project_dir(a.project), model=a.model)
+
+
+def cmd_align_lyrics(a):
+    pdir = project_dir(a.project)
+    st = Status(pdir, "align", ["Whisper listens to the vocals", "matching your lines to what it heard"])
+    try:
+        lang = (load_project(pdir).get("song") or {}).get("language")
+        if run(pdir, ["transcribe_lyrics.py"] + (["--language", lang] if lang else []), st.d["log"], check=False):
+            raise RuntimeError("Whisper couldn't run (the model downloads from huggingface.co on first use): see the log")
+        st.step(1)
+        run(pdir, ["align_lyrics.py"] + (["--in", a.inp] if a.inp else []), st.d["log"])
+        st.done()
+    except Exception as e:
+        st.done("error", str(e))
+        raise
 
 
 def cmd_direct(a):
@@ -350,6 +386,7 @@ def main():
     p = sp.add_parser("song"); p.add_argument("project"); p.add_argument("--no-tags", action="store_true"); p.add_argument("--cpu", action="store_true")
     p = sp.add_parser("curves"); p.add_argument("project"); p.add_argument("--fps", type=int)
     p = sp.add_parser("story"); p.add_argument("project"); p.add_argument("--model")
+    p = sp.add_parser("align-lyrics"); p.add_argument("project"); p.add_argument("--in", dest="inp")
     p = sp.add_parser("direct"); p.add_argument("project"); p.add_argument("--budget", default="90m")
     p.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--model", default=None); p.add_argument("--seed-notes", default="")
@@ -368,7 +405,7 @@ def main():
     p = sp.add_parser("benchmark"); p.add_argument("args", nargs=argparse.REMAINDER)
     p = sp.add_parser("smoke"); p.add_argument("args", nargs=argparse.REMAINDER)
     a = ap.parse_args()
-    globals()["cmd_" + a.cmd](a)
+    globals()["cmd_" + a.cmd.replace("-", "_")](a)
 
 
 if __name__ == "__main__":
