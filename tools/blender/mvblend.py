@@ -12,7 +12,7 @@ mv.curve(name) (one value per frame), mv.value(name, f), mv.t(f) (song time of f
 mv.random(f, key) (stable per frame), mv.text(...) (declare on-screen text for the checks), mv.scene (bpy scene).
 Blender frame numbers ARE song frames (frame 0 = song time 0).
 """
-import importlib.util, json, math, os, random, sys, time
+import importlib.util, json, os, random, sys, time
 
 import bpy
 

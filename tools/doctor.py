@@ -46,7 +46,7 @@ def main():
         except Exception as e:
             line(f"module {mod}", False, str(e)[:80], "pip install -r requirements.txt (inside the venv)")
     # ffmpeg
-    from mv.common import ffmpeg, has_nvenc
+    from mv.common import has_nvenc
     ff = shutil.which("ffmpeg")
     ver = ""
     if ff:

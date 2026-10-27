@@ -51,10 +51,6 @@ def machine():
     info = {"date": time.strftime("%Y-%m-%d %H:%M"), "host": platform.node(), "os": f"{platform.system()} {platform.release()}",
             "cpu": platform.processor() or platform.machine(), "cores": multiprocessing.cpu_count()}
     try:
-        import psutil  # noqa: F401
-    except Exception:
-        pass
-    try:
         if os.name != "nt":
             info["ram_gb"] = round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9, 1)
             for ln in open("/proc/cpuinfo"):
@@ -91,7 +87,7 @@ def bench_web(scene, frames, scale, workers, log):
     side = web.render(scene, out, BENCH, (0, frames), scale=scale, workers=workers, chunk_s=frames / 30 / max(1, workers),
                       quality="preview" if scale < 1 else "final", fresh=True, log=lambda *a: None)
     el = time.time() - t0
-    log(f"   web {os.path.basename(scene)} {int(1920 * scale)}p x{workers}: {el / frames:.3f} s/frame (incl. startup)")
+    log(f"   web {os.path.basename(scene)} {int(1920 * scale)}x{int(1080 * scale)} x{workers} workers: {el / frames:.3f} s/frame (incl. startup)")
     return {"s_per_frame": round(el / frames, 4), "frames": frames, "workers": workers, "width": int(1920 * scale),
             "browser": (side.get("browser") or {}).get("browser"), "webgl": (side.get("browser") or {}).get("webgl"),
             "gpu": (side.get("browser") or {}).get("gpu")}
@@ -107,7 +103,7 @@ def bench_blender(engine, frames, scale, log, samples=None):
     brun.render(scene, out, BENCH, (0, frames), engine=engine, samples=samples, scale=scale, preview=scale < 1, fresh=True,
                 log=lambda *a: None)
     el = time.time() - t0
-    log(f"   blender {engine} {int(1920 * scale)}p: {el / frames:.3f} s/frame (incl. ~startup)")
+    log(f"   blender {engine} {int(1920 * scale)}x{int(1080 * scale)}: {el / frames:.3f} s/frame (incl. ~startup)")
     return {"s_per_frame": round(el / frames, 4), "frames": frames, "width": int(1920 * scale), "samples": samples}
 
 

@@ -9,7 +9,7 @@ a director run with live progress -> the video (range request) -> notes (add, do
 stopping a running director cleanly -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a
 screenshot per page in tests/out/ui/. Exit code 0 = all passed.
 """
-import argparse, json, os, shutil, socket, subprocess, sys, time
+import argparse, os, shutil, socket, subprocess, sys, time
 
 import requests
 

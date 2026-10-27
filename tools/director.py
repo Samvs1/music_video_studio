@@ -18,7 +18,7 @@ The autonomous run (checked against `claude --help` of Claude Code 2.1.x):
   period (or when work/director/STOP appears) it ends the session. Afterwards: the cut is archived as
   final/music-video_vN.mp4, the checks run, and report.md gets the run settings (model, effort, budget, wall time, cost).
 """
-import json, os, re, shutil, signal, subprocess, sys, threading, time
+import json, os, re, shutil, subprocess, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STUDIO = os.path.dirname(HERE)
@@ -105,12 +105,16 @@ def story(pdir, model=None, log=print):
         title = f"{sm.get('artist')} – {sm.get('title')}" if sm.get("artist") else sm.get("title") or sm["file"]
         prompt = fill(open(os.path.join(TEMPLATES, "story-prompt.md"), encoding="utf-8").read(),
                       {"notes": user_notes(pj) or "(no notes given)", "title": title, "date": time.strftime("%Y-%m-%d")})
-        cmd = [*cl, "-p", prompt, "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools", "Read",
-               "--disallowedTools", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "--no-session-persistence"]
+        # the prompt goes in on stdin, not as an argument: on Windows an npm `claude.cmd` passes arguments through
+        # cmd.exe, which mangles newlines, quotes and parentheses
+        cmd = [*cl, "-p", "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools", "Read",
+               "--disallowedTools", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "--strict-mcp-config",
+               "--no-session-persistence"]
         if model or (pj.get("director") or {}).get("model"):
             cmd += ["--model", model or pj["director"]["model"]]
         log("Claude is reading the song folder (1-3 min)...")
-        r = subprocess.run(cmd, cwd=pdir, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1200)
+        r = subprocess.run(cmd, cwd=pdir, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=1200)
         try:
             res = json.loads(r.stdout)
             text = res.get("result", "")
@@ -291,9 +295,12 @@ def claude_args(pdir, model, effort):
         rp = rule_path(os.path.join(STUDIO, d))
         deny += [f"Edit({rp}/**)", f"Write({rp}/**)"]
     settings = {"permissions": {"deny": deny + ["WebFetch", "WebSearch"]}}
+    sp = os.path.join(pdir, "work", "director", "settings.json")    # a file, not inline JSON (cmd.exe-safe on Windows)
+    os.makedirs(os.path.dirname(sp), exist_ok=True)
+    json.dump(settings, open(sp, "w", encoding="utf-8"), indent=1)
     cmd = [*cl, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
            "--permission-mode", "dontAsk", "--allowedTools", *ALLOWED, "--disallowedTools", *DISALLOWED,
-           "--settings", json.dumps(settings), "--add-dir", os.path.join(STUDIO, "tools"), os.path.join(STUDIO, "assets"),
+           "--settings", sp, "--add-dir", os.path.join(STUDIO, "tools"), os.path.join(STUDIO, "assets"),
            os.path.join(STUDIO, ".claude", "skills"), os.path.join(STUDIO, "templates"),
            "--strict-mcp-config", "--append-system-prompt", SYSTEM_APPEND]
     if model:
@@ -452,12 +459,13 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
                     reminders += 1
                     send(f"There is no final/music-video.mp4 from this run yet and {fmt_dur(left)} are left. Carry on "
                          f"and deliver it (then the checks and report.md).", "no final yet")
-                elif nudge and have_final and left > max(8 * 60, 0.25 * budget_s) and nudges < 2:
+                elif nudge and have_final and left > max(6 * 60, 0.12 * budget_s) and nudges < 3:
                     nudges += 1
                     send(f"You delivered a cut with {fmt_dur(left)} still on the clock. Spend it making the video better: "
                          f"look at it again with the eyes tools (sheets of each section, the beat sheets of the biggest "
                          f"sections, the motion plot), pick the weakest parts and improve them, then render, check and "
-                         f"deliver again. Keep the current final until the new one passes the checks. Update report.md.", "use the time left")
+                         f"deliver again. Keep the current final until the new one passes the checks. Then rewrite report.md so it "
+                         f"describes the cut you delivered (no 'Round' heading: those are for the user's review rounds).", "use the time left")
                 else:
                     stdin_open = False
                     try:

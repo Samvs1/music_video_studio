@@ -95,7 +95,9 @@ have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at 1080p)? R
 - `report.md` (project folder): what you made and the idea behind it; how you made it (renderers, scenes, passes);
   what you checked (the numbers); what you're unsure about, with **the timestamps a human should check by ear**
   (QA can't hear: phrase-level musical awkwardness, a moment that may land a beat late in feel, the ending).
-  The studio appends the run settings (model, effort, budget, wall time) itself.
+  The studio appends the run settings (model, effort, budget, wall time) itself. Improving a cut within the same
+  run: rewrite the report so it describes the cut you deliver (a short "Changes since the first cut" list is fine);
+  "Round N" sections are only for the user's review rounds.
 - Interactive runs: `studio.py deliver <p>` archives the cut as `final/music-video_vN.mp4` and records it (the
   autonomous runner does this for you).
 

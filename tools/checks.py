@@ -25,7 +25,7 @@ text: uses the on-screen text recorded by the renderers (VIDEO.mv.json sidecars,
   the beat or 8th at or just before the sung word (never after), at least 34 px tall at 1080p.
 Carried over from aftermovie-studio's qa.py and am/checks.py (reading time, contrast, audio), now EDL-free.
 """
-import argparse, json, os, re, subprocess, sys
+import argparse, os, re, subprocess, sys
 
 import numpy as np
 
@@ -490,7 +490,7 @@ def main():
             verdicts["sync"] = PASS if (sync["share"] or 0) >= 0.9 or not sync["events"] else WARN
         jsave(os.path.join(WORK, "checks", "report.json"), {"video": os.path.relpath(video, ROOT), "verdicts": verdicts,
                                                             "sync": {k: v for k, v in (sync or {}).items() if k != "rows"}})
-        print(f"\nchecks: " + ", ".join(f"{k} {v}" for k, v in verdicts.items()) + f" -> {os.path.join(WORK, 'checks', 'report.md')}")
+        print("\nchecks: " + ", ".join(f"{k} {v}" for k, v in verdicts.items()) + f" -> {os.path.join(WORK, 'checks', 'report.md')}")
     sys.exit(1 if any(R.verdict == FAIL for R in results) else 0)
 
 

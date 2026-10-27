@@ -93,6 +93,7 @@ def main():
     elif "stream-json" in a:
         director()
     elif "-p" in a:
+        sys.stdin.read()                           # the prompt comes in on stdin
         story()
     else:
         print("fake claude: nothing to do", file=sys.stderr)

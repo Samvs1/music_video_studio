@@ -23,7 +23,7 @@ GPU: pitch (CREPE full) and the tagger (CLAP) run on CUDA when there is room (mv
 (CREPE tiny). The tagger only runs when the file has a stretch without a beat (a music-video rip's film intro): it
 tells film / talking / ambience / silence from quiet music. --no-tags skips it.
 """
-import argparse, glob, json, os, re, sys, time
+import argparse, json, os, re, sys, time
 from collections import Counter
 from difflib import SequenceMatcher
 

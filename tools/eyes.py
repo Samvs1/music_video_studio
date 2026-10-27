@@ -15,7 +15,7 @@ VIDEO is a path relative to the project (a preview at any size works). It must s
 .mv.json sidecar says where it sits (a section render: range [a, b) in song frames).
 Sync check carried over from aftermovie-studio's qa.py, without the EDL: events are found in the rendered pixels.
 """
-import argparse, json, os, subprocess, sys
+import argparse, os, subprocess, sys
 
 import numpy as np
 

@@ -10,7 +10,7 @@ Used by tools/web-engine/render.py (the CLI) and the benchmark. Pieces:
                   (finished chunks are kept per scene version), H.264 chunks joined frame-exact, or PNG sequences
                   with alpha; a sidecar <out>.mv.json with the frame range and every text that was on screen.
 """
-import base64, glob, hashlib, json, mimetypes, os, re, shutil, subprocess, sys, time, urllib.parse
+import base64, glob, hashlib, json, mimetypes, os, re, shutil, subprocess, time, urllib.parse
 
 from .common import STUDIO, FONTS_DIR, ROOT, ffmpeg, h264_args, delivery, jsave, jload
 

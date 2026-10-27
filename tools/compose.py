@@ -12,14 +12,15 @@
   python tools/studio.py run <p> compose.py mux picture.mp4 [-o final/music-video.mp4] [--audio song/x.mp3]
       Add the original song: AAC sources are stream-copied; anything else (MP3, WAV, FLAC) is encoded straight to
       AAC 320k (no filters, no resample, no level change, no offset). The video is stream-copied when it is
-      already H.264 yuv420p at the delivery size and fps, else encoded once. No -shortest: the audio is never cut.
+      already H.264 yuv420p at the delivery size and fps, else encoded once (to the delivery size for the final;
+      any other -o, e.g. a preview, keeps its own size). No -shortest: the audio is never cut.
   python tools/studio.py run <p> compose.py encode work/renders/b/ -o work/renders/b.mp4   PNG folder -> H.264
 
 Encoder: h264_nvenc when the GPU encoder works, libx264 otherwise (--preview: fast settings). Every output gets an
 <out>.mv.json sidecar (range, fps, size, the on-screen texts in song time, intents), so the checks can follow the text
 from the passes to the final.
 """
-import argparse, glob, json, os, re, subprocess, sys, time
+import argparse, glob, os, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mv.common import ROOT, ffmpeg, probe, h264_args, delivery, jload, jsave, song_file, frames_of, audio_duration  # noqa: E402
@@ -222,6 +223,9 @@ def mux(video, out=None, audio=None, preview=False, force=False, log=print):
                          "Render the whole song (or --force to mux anyway)")
     ap = probe(audio)
     acodec = next(s for s in ap["streams"] if s["codec_type"] == "audio")["codec_name"]
+    is_final = os.path.abspath(out) == os.path.abspath(os.path.join(ROOT, "final", "music-video.mp4"))
+    if not is_final:                       # a preview keeps its own size; only the final must be the delivery size
+        d = dict(d, width=vi["w"], height=vi["h"])
     copy_v = vi["kind"] == "video" and vi["codec"] == "h264" and vi["pix_fmt"] == "yuv420p" and \
         (vi["w"], vi["h"]) == (d["width"], d["height"]) and abs(vi.get("fps", 0) - fps) < 0.01
     vargs = ["-c:v", "copy"] if copy_v else [*h264_args("preview" if preview else "final"), "-r", str(fps)]
@@ -233,7 +237,7 @@ def mux(video, out=None, audio=None, preview=False, force=False, log=print):
          *vargs, *aargs, "-movflags", "+faststart", tmp])
     os.replace(tmp, out)
     jsave(out + ".mv.json", merge_side([vi["side"]], (0, have), fps, d["width"], d["height"],
-                                       {"made_by": "compose mux", "audio": os.path.relpath(audio, ROOT or "."),
+                                       {"made_by": "compose mux", "audio_file": os.path.relpath(audio, ROOT or "."),
                                         "audio_codec_in": acodec, "audio": "stream copy" if acodec == "aac" else "AAC 320k, no filters",
                                         "video": "stream copy" if copy_v else "encoded"}))
     log(f"mux: {have} frames + {os.path.basename(audio)} ({'copied' if acodec == 'aac' else 'AAC 320k'}) "
