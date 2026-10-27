@@ -345,7 +345,7 @@ def browser_pages(B, name, out):
                 page.click("#lx-open")
                 page.wait_for_selector("#lx-list .lx-r", timeout=5000)
                 rows = page.locator("#lx-list .lx-r").count()
-                page.locator("#lx-list").click(position={"x": 5, "y": 5})     # off the button: Enter taps, not presses it
+                page.evaluate("document.activeElement.blur()")             # off the button: Enter taps, not presses it
                 page.evaluate("svSeek(10, false, true)")
                 page.keyboard.down("Enter")                                  # held from 10 s to 12.5 s of the song
                 page.evaluate("svMedia().currentTime = 12.5")
@@ -353,6 +353,7 @@ def browser_pages(B, name, out):
                 page.wait_for_timeout(300)
                 held = page.evaluate("[SV.ed.lines[0].t, SV.ed.lines[0].end]")
                 tapped = page.locator("#lx-list .lx-r.set").count()
+                page.wait_for_function("() => new Promise(r => { const y = scrollY; setTimeout(() => r(scrollY === y && !!SV.xmap && Math.abs(SV.xmap.w0 - SV.w0) < 1e-6), 300); })", timeout=10000)    # the scroll done, the lanes drawn as they are
                 geo = page.evaluate("""() => { const v = SV.m.lyrics.find(y => y.k === 0), M = SV.xmap, L = SV.lyLane, r = $('#sv-cv').getBoundingClientRect();
                                          return {x: r.left + M.LX + (v.end - M.w0) * M.pxs - 2, y: r.top + L[0] + L[1] / 2, pxs: M.pxs}; }""")
                 page.mouse.move(geo["x"], geo["y"])

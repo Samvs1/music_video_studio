@@ -191,6 +191,7 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 /* the lyric timing editor */
 #pane.lxon #sv-cv{height:300px}
 .lx{border-color:var(--acc);margin:0 0 16px}
+#lx,#lx *{overflow-anchor:none}          /* re-drawing the editor must not make the browser scroll the page */
 .lx-list{position:relative;max-height:46vh;overflow:auto;margin-top:10px;border-top:1px solid var(--line)}
 .lx-r{display:grid;grid-template-columns:46px 92px 52px auto 1fr auto auto;gap:6px;align-items:center;padding:3px 4px;border-bottom:1px solid var(--line)}
 .lx-r.now{background:#2b2814}
@@ -624,7 +625,7 @@ function lxOpen() {
   $("#pane").classList.add("lxon");
   lxRender(); lxView();
   if (!SV.ed.lines.length) lxPasteBox();
-  const top = $(".sv-now"); if (top) window.scrollTo({top: top.getBoundingClientRect().top + window.scrollY - 76, behavior: "smooth"});
+  const top = $(".sv-now"); if (top) window.scrollTo(0, top.getBoundingClientRect().top + window.scrollY - 76);   // at once: nothing still moving when you tap
 }
 function lxRestore() {            // the song's own lines back in the lanes (the edit itself is kept until saved or cancelled)
   const ed = SV.ed; if (!ed || !ed.open) return;
@@ -647,6 +648,7 @@ function lxView() {               // the edit, as the song map's lyric lines: th
 }
 function lxRender() {
   const ed = SV.ed, el = $("#lx"); if (!el || !ed) return;
+  const y0 = window.scrollY;                        // the page stays where it is while the editor is drawn again
   const n = ed.lines.length, nset = ed.lines.filter(x => x.set).length, none = ed.lines.filter(x => x.t == null).length, nx = ed.lines[ed.cur];
   el.innerHTML = `<div class="box lx">
     <div class="row"><b>Lyric timing</b><span class="mut" style="flex:1;font-size:13px">Play the song (<b>Voice</b> only and <b>0.75&times;</b> help) and press <b>Enter</b> each time a line starts: the line marked &#9656; gets the time.
@@ -675,6 +677,7 @@ function lxRender() {
     inp.onchange = () => lxText(+inp.dataset.i, inp.value);
     inp.onkeydown = e => { if (e.key === "Enter" || e.key === "Escape") inp.blur(); };
   });
+  if (window.scrollY !== y0) window.scrollTo(0, y0);
   const list = $("#lx-list"), row = list.querySelector(".lx-r.cur");
   if (row && (row.offsetTop < list.scrollTop || row.offsetTop > list.scrollTop + list.clientHeight - 40)) list.scrollTop = row.offsetTop - list.clientHeight / 3;
 }
