@@ -192,13 +192,15 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 #pane.lxon #sv-cv{height:300px}
 .lx{border-color:var(--acc);margin:0 0 16px}
 .lx-list{position:relative;max-height:46vh;overflow:auto;margin-top:10px;border-top:1px solid var(--line)}
-.lx-r{display:grid;grid-template-columns:46px 92px 52px auto 1fr auto;gap:6px;align-items:center;padding:3px 4px;border-bottom:1px solid var(--line)}
+.lx-r{display:grid;grid-template-columns:46px 92px 52px auto 1fr auto auto;gap:6px;align-items:center;padding:3px 4px;border-bottom:1px solid var(--line)}
 .lx-r.now{background:#2b2814}
 .lx-r.cur{box-shadow:inset 3px 0 0 var(--acc)}
 .lx-n{cursor:pointer;color:var(--mut);font:12px SpaceMono,monospace;text-align:right;user-select:none}
 .lx-r.cur .lx-n{color:var(--acc);font-weight:700}
 .lx-r .tm{font:12px SpaceMono,monospace;padding:3px 6px;border-radius:6px}
 .lx-r.set .tm{color:var(--ok);border-color:#2f5a3e}
+.lx-r .te{font:12px SpaceMono,monospace;padding:2px 6px;border-radius:6px;min-width:78px;color:var(--mut)}
+.lx-r .te.on{color:var(--ok);border-color:#2f5a3e}
 .lx-pos{font:11px SpaceMono,monospace}
 .lx-r input{padding:4px 8px}
 .lx-r .nd{display:flex;gap:2px}
@@ -243,7 +245,7 @@ function go(hash) { location.hash = hash; }
 window.onhashchange = route;
 async function route() {
   clearInterval(poll); clearInterval(dpoll);
-  lxRestore(); svStop(); document.onkeydown = null;
+  lxRestore(); svStop(); document.onkeydown = document.onkeyup = null;
   const h = location.hash.slice(1).split("/");
   if (!h[0]) return home();
   step = STEPS.some(s => s[0] === h[1]) ? h[1] : "song";
@@ -590,13 +592,13 @@ function lxParse(text) {          // lyrics text -> [{t, text, words}]: LRC time
   for (const raw of String(text || "").split(/\r?\n/)) {
     const line = raw.trim(); if (!line || line.startsWith("#")) continue;
     const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)].map(m => +m[1] * 60 + +m[2]);
-    const body = line.replace(/\[[^\]]*\]/g, "");
+    const body = line.replace(/\[[^\]]*\]/g, ""), em = body.match(/<(\d+):(\d+(?:\.\d+)?)>\s*$/), e0 = em ? +em[1] * 60 + +em[2] : null;
     const words = [...body.matchAll(/<(\d+):(\d+(?:\.\d+)?)>\s*([^<]*)/g)].flatMap(m => m[3].trim().split(/\s+/).filter(Boolean).map((w, j) => [w, +m[1] * 60 + +m[2] + 0.001 * j]));
     const txt = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
     if (!txt) continue;
-    if (!stamps.length) { out.push({t: null, text: txt, words: null, key: last + 1e-6 * ++k}); continue; }
+    if (!stamps.length) { out.push({t: null, end: null, text: txt, words: null, key: last + 1e-6 * ++k}); continue; }
     last = stamps[0];
-    stamps.forEach(t => out.push({t, text: txt, key: t,
+    stamps.forEach(t => out.push({t, text: txt, key: t, end: e0 != null && e0 > stamps[0] + 0.05 ? e0 - stamps[0] + t : null,
       words: words.length && words.map(x => x[0]).join(" ") === txt ? words.map(([w, wt]) => [w, wt - stamps[0] + t]) : null}));
   }
   return out.sort((a, b) => a.key - b.key).map(({key, ...x}) => x);
@@ -605,14 +607,15 @@ function lxFromSong() {           // where the editor starts: your own LRC as wr
   const m = SV.m, meta = m.lyrics_meta || {}, ly = S.project.lyrics, txt = ly && typeof ly === "object" ? ly.text : ly;
   if (/^user \(LRC/.test(meta.source || "") && txt) {
     const off = meta.offset || 0;
-    return lxParse(txt).map(x => ({...x, t: x.t == null ? null : x.t + off, words: x.words && x.words.map(([w, t]) => [w, t + off])}));
+    return lxParse(txt).map(x => ({...x, t: x.t == null ? null : x.t + off, end: x.end == null ? null : x.end + off,
+                                   words: x.words && x.words.map(([w, t]) => [w, t + off])}));
   }
-  if (m.lyrics.length) return m.lyrics.map(x => ({t: x.t, text: x.text, words: null}));
+  if (m.lyrics.length) return m.lyrics.map(x => ({t: x.t, end: x.end_src === "user" ? x.end : null, text: x.text, words: null}));
   return lxParse(txt);
 }
 function lxOpen() {
   if (!SV.m) return;
-  if (!SV.ed) SV.ed = {lines: lxFromSong().map(x => ({...x, set: false})), cur: 0, hist: [], dirty: false, now: null};
+  if (!SV.ed) SV.ed = {lines: lxFromSong().map(x => ({...x, set: false, eset: false})), cur: 0, hist: [], dirty: false, now: null};
   if (!SV.ed.open) { SV.ed.orig = SV.m.lyrics; SV.ed.open = true; }
   $("#pane").classList.add("lxon");
   lxRender(); lxView();
@@ -632,9 +635,9 @@ function lxView() {               // the edit, as the song map's lyric lines: th
   const xs = SV.ed.lines.map((x, k) => ({...x, k})).filter(x => x.t != null && x.text).sort((a, b) => a.t - b.t);
   SV.m.lyrics = xs.map((x, j) => {
     const nx = xs[j + 1], ws = x.text.split(/\s+/);
-    const end = Math.max(x.t + 0.3, Math.min(nx ? nx.t - 0.05 : x.t + 6, x.t + Math.max(1.2, 0.42 * ws.length)));
+    const end = x.end != null ? Math.max(x.t + 0.2, x.end) : Math.max(x.t + 0.3, Math.min(nx ? nx.t - 0.05 : x.t + 6, x.t + Math.max(1.2, 0.42 * ws.length)));
     const words = x.words ? x.words.map(([w, t]) => ({w, t})) : ws.map((w, i) => ({w, t: x.t + (end - x.t) * i / ws.length}));
-    return {i: -1 - x.k, k: x.k, t: x.t, end, text: x.text, words};
+    return {i: -1 - x.k, k: x.k, t: x.t, end, uend: x.end != null, text: x.text, words};
   });
   SV.lt = SV.m.lyrics.map(x => x.t); SV.lastLine = null; SV.ed.now = undefined; SV.dirty = true;
 }
@@ -643,9 +646,10 @@ function lxRender() {
   const n = ed.lines.length, nset = ed.lines.filter(x => x.set).length, none = ed.lines.filter(x => x.t == null).length, nx = ed.lines[ed.cur];
   el.innerHTML = `<div class="box lx">
     <div class="row"><b>Lyric timing</b><span class="mut" style="flex:1;font-size:13px">Play the song (<b>Voice</b> only and <b>0.75&times;</b> help) and press <b>Enter</b> each time a line starts: the line marked &#9656; gets the time.
-      The lines after it that you haven't set yet move along with it. Click a line's number to pick it &middot; <b>&uarr; &darr;</b> pick &middot; <b>Backspace</b> undoes &middot;
-      &lsaquo;&lsaquo; &rsaquo;&rsaquo; move a line a beat, &lsaquo; &rsaquo; a tenth of a second, &#8982; to the playhead &middot; &#10697; copies a line below (a repeat). Within about a second is enough: after saving, every word is aligned to the voice.</span></div>
-    <div class="row" style="margin-top:8px"><button id="lx-tap" onclick="lxTap()" ${nx ? "" : "disabled"}>${nx ? `Tap: line ${ed.cur + 1} starts now <span style="font-weight:400">(Enter)</span>` : "All lines tapped"}</button>
+      <b>Hold Enter</b> while the line is sung to set where it ends too (let go when it stops). The lines after it that you haven't set yet move along with it.
+      Click a line's number to pick it &middot; <b>&uarr; &darr;</b> pick &middot; <b>Backspace</b> undoes &middot; &lsaquo;&lsaquo; &rsaquo;&rsaquo; move a line a beat, &lsaquo; &rsaquo; a tenth of a second, &#8982; to the playhead;
+      its end (&rarr;) has the same buttons &middot; in the lyrics lane, drag a line's edges to stretch it &middot; &#10697; copies a line below (a repeat). Within about a second is enough: after saving, every word is aligned to the voice.</span></div>
+    <div class="row" style="margin-top:8px"><button id="lx-tap" onpointerdown="lxTapDown()" onpointerup="lxTapUp()" onpointerleave="lxTapUp()" ${nx ? "" : "disabled"}>${nx ? `Tap: line ${ed.cur + 1} starts now <span style="font-weight:400">(Enter; hold to its end)</span>` : "All lines tapped"}</button>
       <span class="mut lx-next">${nx ? "&#9656; " + esc(nx.text) : ""}</span><span style="flex:1"></span>
       <span class="mut" id="lx-st">${nset} of ${n} set by you${none ? ` &middot; ${none} without a time` : ""}</span>
       <button class="ghost small" onclick="lxUndo()">Undo</button><button class="ghost small" onclick="lxPasteBox()">Paste lyrics&hellip;</button>
@@ -657,6 +661,7 @@ function lxRender() {
       <span class="mut lx-pos" title="bar:beat">${x.t == null ? "" : svPosStr(x.t)}</span>
       <span class="nd"><button class="ghost" onclick="lxNudge(${i},-1,1)" title="a beat earlier">&lsaquo;&lsaquo;</button><button class="ghost" onclick="lxNudge(${i},-0.1)" title="0.1 s earlier">&lsaquo;</button><button class="ghost" onclick="lxNudge(${i},0.1)" title="0.1 s later">&rsaquo;</button><button class="ghost" onclick="lxNudge(${i},1,1)" title="a beat later">&rsaquo;&rsaquo;</button><button class="ghost" onclick="lxSetNow(${i})" title="start it at the playhead">&#8982;</button></span>
       <input data-i="${i}" value="${esc(x.text)}" placeholder="the words of this line">
+      <span class="nd" title="when the line ends"><button class="ghost te ${x.end != null ? "on" : ""}" onclick="lxPlayEnd(${i})" title="${x.end != null ? "play up to the end" : "the end is worked out by the analysis: set it with these buttons, by holding Enter, or by dragging in the lyrics lane"}">&rarr; ${x.end != null ? fmt(x.end) : "auto"}</button><button class="ghost" onclick="lxEnd(${i},-1,1)" title="end a beat earlier">&lsaquo;&lsaquo;</button><button class="ghost" onclick="lxEnd(${i},-0.1)" title="end 0.1 s earlier">&lsaquo;</button><button class="ghost" onclick="lxEnd(${i},0.1)" title="end 0.1 s later">&rsaquo;</button><button class="ghost" onclick="lxEnd(${i},1,1)" title="end a beat later">&rsaquo;&rsaquo;</button><button class="ghost" onclick="lxEndNow(${i})" title="end it at the playhead">&#8982;</button></span>
       <span class="nd"><button class="ghost" onclick="lxDup(${i})" title="copy this line below (a repeat, e.g. the chorus)">&#10697;</button><button class="ghost" onclick="lxDel(${i})" title="remove this line">&#10005;</button></span></div>`).join("")}
       <div class="lx-add"><button class="ghost small" onclick="lxAdd()">+ a line</button></div></div></div>`;
   el.querySelectorAll("#lx-list input").forEach(inp => {
@@ -675,7 +680,7 @@ function lxTick(t) {              // the line playing now
 }
 function lxKey(e) {
   const k = e.key;
-  if (k === "Enter") { e.preventDefault(); lxTap(); return true; }
+  if (k === "Enter") { e.preventDefault(); if (!e.repeat) lxTapDown(); return true; }
   if (k === "Backspace") { e.preventDefault(); lxUndo(); return true; }
   if (k === "ArrowDown" || k === "ArrowUp") { e.preventDefault(); lxCur(SV.ed.cur + (k === "ArrowDown" ? 1 : -1)); return true; }
   return false;
@@ -688,18 +693,75 @@ function lxSetT(i, t) {           // a line's new start; the lines after it that
   const ed = SV.ed, x = ed.lines[i], d = x.t == null ? null : t - x.t;
   t = clamp(t, 0, SV.m.duration);
   x.words = x.words && d != null ? x.words.map(([w, wt]) => [w, wt + d]) : null;
+  x.end = x.end != null && d != null ? clamp(x.end + d, t + 0.2, SV.m.duration) : null;
   x.t = t; x.set = true;
   if (d == null) return;
   for (let j = i + 1; j < ed.lines.length && !ed.lines[j].set; j++) {
     const y = ed.lines[j]; if (y.t == null) continue;
     y.t = clamp(y.t + d, 0, SV.m.duration); if (y.words) y.words = y.words.map(([w, wt]) => [w, wt + d]);
+    if (y.end != null) y.end = clamp(y.end + d, y.t + 0.2, SV.m.duration);
   }
 }
-function lxTap() {
-  lxBlur(); const ed = SV.ed, a = svMedia();
+function lxTapDown() {           // Enter / the tap button pressed: the line starts now
+  const ed = SV.ed, a = svMedia(); if (!ed || ed.hold) return;
+  lxBlur();
   if (ed.cur >= ed.lines.length) return toast("That was the last line: save, or click a line's number to tap it again");
-  lxPush(); lxSetT(ed.cur, a.currentTime); ed.cur++; lxChanged();
+  lxPush(); lxSetT(ed.cur, a.currentTime); ed.hold = {i: ed.cur, t: a.currentTime}; ed.cur++; lxChanged();
 }
+function lxTapUp() {             // ... let go: held while it was sung (a third of a second or more of the song) = its end
+  const ed = SV.ed, h = ed && ed.hold; if (!h) return;
+  ed.hold = null;
+  const now = svMedia().currentTime, x = ed.lines[h.i];
+  if (x && now - h.t >= 0.33) { x.end = now; x.eset = true; lxChanged(); }
+}
+function lxEnd(i, d, beats) {
+  lxBlur(); const x = SV.ed.lines[i]; if (x.t == null) return toast("This line has no start yet");
+  const v = SV.m.lyrics.find(y => y.k === i), base = x.end != null ? x.end : v ? v.end : x.t + 1;
+  lxPush(); x.end = clamp(base + d * (beats ? SV.m.tempo.beat_s : 1), x.t + 0.2, SV.m.duration); x.eset = true; lxChanged();
+}
+function lxEndNow(i) {
+  lxBlur(); const x = SV.ed.lines[i], now = svMedia().currentTime;
+  if (x.t == null || now <= x.t + 0.1) return toast("Play past the start of this line first: the end goes where the playhead is");
+  lxPush(); x.end = now; x.eset = true; lxChanged();
+}
+function lxPlayEnd(i) { lxBlur(); const v = SV.m.lyrics.find(y => y.k === i); if (!v) return toast("This line has no time yet"); svSeek(Math.max(0, v.end - 2), true); }
+function lxHit(e) {               // the line block (and which part of it) under the mouse in the lyrics lane
+  const L = SV.lyLane, M = SV.xmap, ox = e.offsetX; if (!SV.ed || !SV.ed.open || !L || !M) return null;
+  if (e.offsetY < L[0] || e.offsetY > L[0] + L[1]) return null;
+  const X = t => M.LX + (t - M.w0) * M.pxs; let hit = null;
+  for (const v of SV.m.lyrics) {
+    const x0 = X(v.t), x1 = X(v.end);
+    if (ox >= x1 - 6 && ox <= x1 + 2) return {k: v.k, part: "end"};
+    if (!hit && ox >= x0 - 2 && ox <= x0 + 6) hit = {k: v.k, part: "start"};
+    else if (!hit && ox > x0 && ox < x1) hit = {k: v.k, part: "move"};
+  }
+  return hit;
+}
+function lxDragStart(e) {
+  const h = lxHit(e); if (!h) return;
+  const x = SV.ed.lines[h.k], v = SV.m.lyrics.find(y => y.k === h.k); if (!x || x.t == null || !v) return;
+  e.preventDefault(); lxPush();
+  SV.drag = {...h, ox: e.offsetX, t: x.t, end: v.end, words: x.words, moved: false};
+}
+function lxDragMove(e) {          // true while dragging (the lanes don't hover then)
+  const d = SV.drag, cv = $("#sv-cv");
+  if (!d) { const h = SV.ed && SV.ed.open ? lxHit(e) : null; cv.style.cursor = h ? (h.part === "move" ? "grab" : "ew-resize") : ""; return false; }
+  const x = SV.ed.lines[d.k], dt = (e.offsetX - d.ox) / SV.xmap.pxs, dur = SV.m.duration;
+  if (Math.abs(e.offsetX - d.ox) > 2) d.moved = true;
+  if (d.part === "end") { x.end = clamp(d.end + dt, x.t + 0.2, dur); x.eset = true; }
+  else {
+    x.t = clamp(d.t + dt, 0, d.part === "start" ? d.end - 0.2 : dur); x.set = true;
+    x.words = d.words && d.words.map(([w, wt]) => [w, wt + x.t - d.t]);
+    if (d.part === "move") { x.end = clamp(d.end + x.t - d.t, x.t + 0.2, dur); x.eset = true; }
+    else if (x.end != null && x.end < x.t + 0.2) x.end = x.t + 0.2;
+  }
+  lxView(); return true;
+}
+window.addEventListener("mouseup", () => {
+  const d = SV.drag; if (!d) return;
+  SV.drag = null;
+  if (d.moved) { SV.dragged = true; lxRender(); } else SV.ed.hist.pop();
+});
 function lxCur(i, seek) {
   lxBlur(); const ed = SV.ed; ed.cur = clamp(i, 0, ed.lines.length); lxRender();
   const x = ed.lines[ed.cur], a = svMedia(), t = x && (x.t != null ? x.t : (ed.lines[ed.cur - 1] || {}).t);
@@ -713,10 +775,10 @@ function lxText(i, v) {
   lxPush(); x.text = v; if (x.words && x.words.map(w => w[0]).join(" ") !== v) x.words = null;
   lxView();
 }
-function lxDup(i) { lxBlur(); const ed = SV.ed; lxPush(); ed.lines.splice(i + 1, 0, {t: null, text: ed.lines[i].text, words: null, set: false}); if (ed.cur > i) ed.cur++; lxChanged(); }
+function lxDup(i) { lxBlur(); const ed = SV.ed; lxPush(); ed.lines.splice(i + 1, 0, {t: null, end: null, text: ed.lines[i].text, words: null, set: false, eset: false}); if (ed.cur > i) ed.cur++; lxChanged(); }
 function lxDel(i) { lxBlur(); const ed = SV.ed; lxPush(); ed.lines.splice(i, 1); if (ed.cur > i) ed.cur--; lxChanged(); }
 function lxAdd() {
-  lxBlur(); const ed = SV.ed; lxPush(); ed.lines.push({t: null, text: "", words: null, set: false}); lxChanged();
+  lxBlur(); const ed = SV.ed; lxPush(); ed.lines.push({t: null, end: null, text: "", words: null, set: false, eset: false}); lxChanged();
   const ins = document.querySelectorAll("#lx-list input"); if (ins.length) ins[ins.length - 1].focus();
 }
 function lxPasteBox() {
@@ -727,7 +789,7 @@ function lxPasteBox() {
 }
 function lxPasteUse() {
   const xs = lxParse($("#lx-ptx").value); if (!xs.length) return toast("No lines in there");
-  const ed = SV.ed; lxPush(); ed.lines = xs.map(x => ({...x, set: x.t != null})); ed.cur = Math.max(0, ed.lines.findIndex(x => x.t == null)); lxChanged();
+  const ed = SV.ed; lxPush(); ed.lines = xs.map(x => ({...x, set: x.t != null, eset: x.end != null})); ed.cur = Math.max(0, ed.lines.findIndex(x => x.t == null)); lxChanged();
 }
 async function lxSave() {
   lxBlur(); const ed = SV.ed, L = ed.lines.filter(x => x.text.trim()).map(x => ({...x}));
@@ -744,7 +806,8 @@ async function lxSave() {
     for (let q = 0; q < n; q++) L[i + q].t = a != null && b != null ? a + (b - a) * (q + 1) / (n + 1) : a != null ? a + 2.5 * (q + 1) : Math.max(0, b - 2.5 * (n - q));
   }
   $("#lx-save").disabled = true;
-  try { await post(`/api/p/${S.name}/lyrics-timing`, {lines: L.map(x => ({t: Math.round(x.t * 100) / 100, text: x.text.trim(), words: x.words}))}); }
+  try { await post(`/api/p/${S.name}/lyrics-timing`, {lines: L.map(x => ({t: Math.round(x.t * 100) / 100, text: x.text.trim(), words: x.words,
+                                                                             end: x.end != null && x.end > x.t + 0.05 ? Math.round(x.end * 100) / 100 : null}))}); }
   catch (e) { $("#lx-save").disabled = false; return toast(e.message); }
   lxRestore(); SV.ed = null;
   toast("Lyric timing saved: the song is analysed again"); go(`${S.name}/analyse`);
@@ -858,10 +921,11 @@ function svWire() {
     return x < LX ? null : w0 + (x - LX) / (el.clientWidth - LX - 8) * (w1 - w0);
   };
   for (const el of [cv, ov]) {
-    el.onmousemove = e => { SV.hover = tAt(el, e.offsetX); SV.dirty = true; svHover(); };
+    el.onmousemove = e => { if (el === cv && lxDragMove(e)) return; SV.hover = tAt(el, e.offsetX); SV.dirty = true; svHover(); };
     el.onmouseleave = () => { SV.hover = null; SV.dirty = true; $("#sv-hov").innerHTML = "&nbsp;"; };
-    el.onclick = e => { const t = tAt(el, e.offsetX); if (t != null) svSeek(t, false, el === ov); };
+    el.onclick = e => { if (SV.dragged) { SV.dragged = false; return; } const t = tAt(el, e.offsetX); if (t != null) svSeek(t, false, el === ov); };
   }
+  cv.onmousedown = e => lxDragStart(e);
   cv.addEventListener("wheel", e => {
     e.preventDefault(); svFollow(false);
     const len = svLen(), px = (cv.clientWidth - SV_LX - 8) / len;
@@ -886,6 +950,7 @@ function svWire() {
     } else if (step === "listen" && {m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]) svSource({m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]);
     else if (step === "listen" && k.toLowerCase() === "k") svClick();
   };
+  document.onkeyup = e => { if (step === "listen" && e.key === "Enter" && SV.ed && SV.ed.open) lxTapUp(); };
   SV.dirty = true;
   SV.raf = requestAnimationFrame(svLoop);
 }
@@ -1077,12 +1142,14 @@ function svDraw(now) {
     env(E[key], y0, h, on ? "rgba(255,210,63,.25)" : "rgba(232,230,225,.14)", on ? acc : "#cfcdc8");
   }
   // lyrics: every word at its sung time when zoomed in (three rows, a word only where it fits), the line when zoomed out
-  { const [y0, h] = lane.lyrics, wordMode = pxs >= 38, ends = [-1e9, -1e9, -1e9];
+  { const [y0, h] = lane.lyrics, wordMode = pxs >= 38, ends = [-1e9, -1e9, -1e9], edit = SV.ed && SV.ed.open;
+    SV.lyLane = [y0, h]; SV.xmap = {w0, pxs, LX};
     g.textAlign = "left"; g.textBaseline = "top";
     for (const x of m.lyrics) {
       if (x.end < w0 || x.t > w1) continue;
       const x0 = X(x.t), x1 = X(Math.max(x.end, x.t + 0.3));
       g.fillStyle = "rgba(168,164,156,.2)"; g.fillRect(x0, y0 + 2, x1 - x0, h - 4);
+      if (edit) { g.fillStyle = "rgba(232,230,225,.6)"; g.fillRect(x0, y0 + 2, 2, h - 4); g.fillStyle = x.uend ? acc : "rgba(232,230,225,.6)"; g.fillRect(x1 - 2, y0 + 2, 2, h - 4); }
       if (wordMode) {
         g.font = "12px system-ui";
         x.words.forEach((w, i) => {

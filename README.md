@@ -38,8 +38,10 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 3. **The song**: the song the way Claude reads it, playing along: sections, loudness and the ★★★ moments, melody and
    bass notes, chords, beats, the four stems (hear any of them alone: M V D B O), a beat click (K), every sung word.
    Lyrics out of step (plain-text lyrics are only placed roughly)? **Fix the timing**: play the song (Voice only, 0.75×)
-   and press Enter as each line starts; nudge lines by a beat or a tenth of a second, fix words, add repeated lines.
-   Saving writes the lines as LRC to the brief and analyses the song again, which aligns every word inside its line.
+   and press Enter as each line starts, or hold Enter while the line is sung to set where it ends too; drag a line's
+   edges in the lyrics lane to stretch it; nudge starts and ends by a beat or a tenth of a second, fix words, add
+   repeated lines. Saving writes the lines as LRC to the brief (an end is a time tag after the last word:
+   `[00:12.00] hold the light <00:14.10>`) and analyses the song again, which aligns every word inside its line.
 4. **Story**: Claude drafts what the song is about and how its arc could carry a video, from the lyrics, the song map
    and your notes; edit it, it's yours. (Skip it and the director writes it first.)
 5. **Direct**: set a time budget (e.g. 90 min), effort and model, optionally a note for this run, and start. The

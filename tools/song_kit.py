@@ -148,10 +148,13 @@ def lyric_lines(A, G, warn):
             continue
         t0 = float(ws[0]["t"])
         t1 = float(max(w.get("t_end", w["t"] + 0.3) for w in ws))
+        mine = Lr.get("end_src") == "user"                # the user said when the line stops (the web app's editor)
+        if mine:
+            t1 = max(t0 + 0.2, float(Lr["end"]))
         cap = max(3.0, 0.9 * len(ws))
         # a line spread this wide without forced alignment is a failed estimate; force-aligned lines are trusted (slow
         # songs hold words for seconds: "Sweet disposition" is sung over ~8 s)
-        if t1 - t0 > cap and not all("fa" in w for w in ws):
+        if t1 - t0 > cap and not mine and not all("fa" in w for w in ws):
             warn.append(f"words of \"{Lr['text']}\" are spread over {t1 - t0:.0f} s from {t0:.1f} s: check the alignment "
                         f"(align_words.py) before trusting its word times")
             t1 = t0 + cap
@@ -161,7 +164,7 @@ def lyric_lines(A, G, warn):
         if p and p[0] == home and p[1] >= nbeats - 1.5 and home + 1 < G.nb:    # a pickup into the next bar
             home += 1
         out.append({"i": li, "t": round(t0, 3), "end": round(t1, 3), "text": Lr["text"], "home": home,
-                    "norm": L.norm_line(Lr["text"]), "words": ws})
+                    "norm": L.norm_line(Lr["text"]), "words": ws, **({"end_src": "user"} if mine else {})})
     for a in out:                           # how often the same (or nearly the same) line comes back elsewhere
         a["repeat"] = sum(1 for b in out if b is not a and abs(b["home"] - a["home"]) >= 1 and
                           (b["norm"] == a["norm"] or SequenceMatcher(None, a["norm"], b["norm"]).ratio() >= 0.8))

@@ -118,8 +118,24 @@ def lrc_words(text):
                 t = int(m) * 60 + float(s_)
                 for k, w in enumerate(chunk.split()):
                     ws.append((w, t + 0.001 * k))
-            for m, s_ in stamps[:1]:
-                out[round(int(m) * 60 + float(s_), 3)] = ws
+            if ws:                                   # a line with only an end tag (lrc_ends) has no word times
+                for m, s_ in stamps[:1]:
+                    out[round(int(m) * 60 + float(s_), 3)] = ws
+    return out
+
+
+def lrc_ends(text):
+    """{line time: end time} for lines that end in a time tag with no word after it: "[00:12.00] hold the light
+    <00:14.10>" = the line stops at 14.10 s (the web app's lyric timing editor writes them; word-timed lines too)."""
+    out = {}
+    for line in text.splitlines():
+        stamps = [int(m) * 60 + float(s_) for m, s_ in re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", line)]
+        e = re.search(r"<(\d+):(\d+(?:\.\d+)?)>\s*$", re.sub(r"\[[^\]]*\]", "", line))
+        if stamps and e:
+            end = int(e.group(1)) * 60 + float(e.group(2))
+            if end > stamps[0] + 0.05:
+                for t in stamps:
+                    out[round(t, 3)] = t + end - stamps[0]
     return out
 
 
@@ -452,20 +468,23 @@ def analyze():
         on_t = np.array([v["t"] for v in vocal_onsets])
         on_sv = np.array([v["s"] for v in vocal_onsets])
         timed = lrc_words(c["syncedLyrics"]) if c.get("user") else {}
+        ends = lrc_ends(c["syncedLyrics"]) if c.get("user") else {}
         if timed:
             meta["source"] = "user (LRC with word times)"
         for i, (t, s) in enumerate(lines):
+            ue = ends.get(round(t, 3))                     # the user said when the line stops: kept as the line's end
+            mine = {"end_src": "user"} if ue else {}
             if round(t, 3) in timed:                       # the user gave every word's time: keep them exactly
                 ws = timed[round(t, 3)]
-                t1 = lines[i + 1][0] + off if i + 1 < len(lines) else min(dur, ws[-1][1] + off + 1.0)
-                lyrics.append({"t": round(ws[0][1] + off, 3), "end": round(float(t1), 3), "text": s,
+                t1 = ue + off if ue else lines[i + 1][0] + off if i + 1 < len(lines) else min(dur, ws[-1][1] + off + 1.0)
+                lyrics.append({"t": round(ws[0][1] + off, 3), "end": round(float(t1), 3), "text": s, **mine,
                                "words": [{"w": w, "t": round(wt_ + off, 3), "fa": 1.0, "src": "user"} for w, wt_ in ws]})
                 continue
             t0 = t + off
             near = np.where(np.abs(on_t - t0) < 0.3)[0]
             if len(near):
                 t0 = float(on_t[near[np.argmax(on_sv[near] - np.abs(on_t[near] - t0))]])
-            t1 = lines[i + 1][0] + off if i + 1 < len(lines) else min(dur, t0 + 5)
+            t1 = ue + off if ue else lines[i + 1][0] + off if i + 1 < len(lines) else min(dur, t0 + 5)
             words = s.split()
             syl = [syllables(w) for w in words]
             cand = on_t[(on_t >= t0 - 0.01) & (on_t < t1 - 0.15)]
@@ -479,13 +498,13 @@ def analyze():
                     wt.append(round(float(cand[min(int(round(k * scale)), len(cand) - 1)]), 3))
                     k += sy
             else:
-                # not enough onsets: spread words by syllables over the sung part of the line
-                vend = t0 + max(0.4, min(t1 - t0, 0.32 * sum(syl) + 0.3))
+                # not enough onsets: spread words by syllables over the sung part of the line (all of it when its end is known)
+                vend = max(t0 + 0.2, t1 - 0.15) if ue else t0 + max(0.4, min(t1 - t0, 0.32 * sum(syl) + 0.3))
                 acc = 0
                 for sy in syl:
                     wt.append(round(t0 + (vend - t0) * acc / max(sum(syl), 1), 3))
                     acc += sy
-            lyrics.append({"t": round(t0, 3), "end": round(float(t1), 3), "text": s,
+            lyrics.append({"t": round(t0, 3), "end": round(float(t1), 3), "text": s, **mine,
                            "words": [{"w": w, "t": tt} for w, tt in zip(words, wt)]})
     if best is None and ukind == "plain":           # the user's text without times: rough times, align_words places the words
         plain = [x.strip() for x in utext.splitlines() if x.strip() and not x.strip().startswith(("[", "#"))]

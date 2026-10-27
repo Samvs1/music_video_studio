@@ -13,7 +13,7 @@ API (JSON):
   POST /api/projects {name, title}       PUT  /api/p/<p>/upload?filename=x.mp3 (body = the file; .lrc/.txt = lyrics;
                                                                                  .jpg/.png/.webp = a reference picture)
   POST /api/p/<p>/ref {id, name | note | delete}                         (a reference picture: who it is, a note)
-  POST /api/p/<p>/lyrics-timing {lines: [{t, text, words?}]}             (the lyric timing editor: LRC, then re-analyse)
+  POST /api/p/<p>/lyrics-timing {lines: [{t, end?, text, words?}]}       (the lyric timing editor: LRC, then re-analyse)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
   POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, effort, model, seed_notes, revise}
   POST /api/p/<p>/stop                   POST /api/p/<p>/note {version, t, text}
@@ -364,10 +364,11 @@ def lrc_time(t):
 
 
 def save_lyric_timing(name, body):
-    """The lyric timing editor (The song page): every line with its start, and its words' times where the user's LRC
-    had them, becomes LRC in project.json "lyrics", marked as timed on this very song file ("lyrics_synced": the
-    analysis then uses the times as they are, no offset search). The lyrics it replaces are kept in cache/lyrics/.
-    Then the song is analysed again (the stems are reused)."""
+    """The lyric timing editor (The song page): every line with its start, its end where the user set one (a time tag
+    after the last word: "[00:12.00] hold the light <00:14.10>") and its words' times where the user's LRC had them,
+    becomes LRC in project.json "lyrics", marked as timed on this very song file ("lyrics_synced": the analysis then
+    uses the times as they are, no offset search). The lyrics it replaces are kept in cache/lyrics/. Then the song is
+    analysed again (the stems are reused)."""
     d = pdir(name)
     out = []
     for x in body.get("lines") or []:
@@ -380,6 +381,9 @@ def save_lyric_timing(name, body):
         ws = x.get("words") or []
         if ws and " ".join(str(w[0]) for w in ws) == text:            # word-timed (enhanced LRC): keep the word times
             text = " ".join(f"<{lrc_time(float(wt))}> {w}" for w, wt in ws)
+        end = x.get("end")
+        if end is not None and t + 0.05 < float(end) < 6 * 3600:      # when the line stops
+            text += f" <{lrc_time(float(end))}>"
         out.append((t, f"[{lrc_time(t)}] {text}"))
     if len(out) < 3:
         raise ValueError("at least 3 lyric lines are needed")

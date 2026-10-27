@@ -199,6 +199,7 @@ def lyric_timing_check(B, name):
     m = requests.get(B + st["song"]["map"]).json()
     true = [{"t": x["t"], "text": x["text"], "words": [[w["w"], w["t"]] for w in x["words"]]} for x in m["lyrics"]]
     shifted = [{"t": round(x["t"] + 3.0, 2), "text": x["text"]} for x in true]
+    shifted[0]["end"] = round(shifted[0]["t"] + 1.7, 2)                    # the user said when the first line stops
     r = requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted}).json()
     say(r.get("ok") and r.get("lines") == len(shifted), "POST lyrics-timing (saved; the song is analysed again)", str(r)[:120])
     say("error" in requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted}).json(), "lyrics-timing waits for a running job")
@@ -211,6 +212,9 @@ def lyric_timing_check(B, name):
         and "timed in the studio" in meta.get("source", "") and len(m2["lyrics"]) == len(shifted) and abs(sorted(dt)[len(dt) // 2]) <= 0.35,
         "analysed again with the timed lines as they are (no offset search)", f"{meta.get('source')}, offset {meta.get('offset')}, "
         f"line starts moved {min(dt)}..{max(dt)} s (snapped to the voice)")
+    l0 = m2["lyrics"][0] if m2["lyrics"] else {}
+    say(l0.get("end_src") == "user" and abs(l0.get("end", 0) - shifted[0]["end"]) < 0.02 and f"<{shifted[0]['end'] // 60:02.0f}:" in pj["lyrics"],
+        "a line's end set in the editor is kept (an end tag in the LRC)", f"end {l0.get('end')} (set {shifted[0]['end']})")
     kept = os.listdir(os.path.join(STUDIO, "projects", name, "cache", "lyrics"))
     say(any(f.startswith("lyrics_") for f in kept), "the lyrics it replaced are kept in cache/lyrics/")
     say("error" in requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted[:2]}).json(), "lyrics-timing needs 3 lines")
@@ -298,24 +302,39 @@ def browser_pages(B, name, out):
             if h.endswith("/watch"):
                 page.keyboard.press("n")
                 page.wait_for_timeout(300)
-            if h.endswith("/listen"):                             # the lyric timing editor: open, tap, undo, close
+            if h.endswith("/listen"):                             # the lyric timing editor: open, hold, drag, undo, close
                 n_lyr = len(requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()["lyrics"])
                 page.click("#lx-open")
                 page.wait_for_selector("#lx-list .lx-r", timeout=5000)
                 rows = page.locator("#lx-list .lx-r").count()
                 page.locator("#lx-list").click(position={"x": 5, "y": 5})     # off the button: Enter taps, not presses it
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(200)
+                page.evaluate("svSeek(10, false, true)")
+                page.keyboard.down("Enter")                                  # held from 10 s to 12.5 s of the song
+                page.evaluate("svMedia().currentTime = 12.5")
+                page.keyboard.up("Enter")
+                page.wait_for_timeout(300)
+                held = page.evaluate("[SV.ed.lines[0].t, SV.ed.lines[0].end]")
                 tapped = page.locator("#lx-list .lx-r.set").count()
+                geo = page.evaluate("""() => { const v = SV.m.lyrics.find(y => y.k === 0), M = SV.xmap, L = SV.lyLane, r = $('#sv-cv').getBoundingClientRect();
+                                         return {x: r.left + M.LX + (v.end - M.w0) * M.pxs - 2, y: r.top + L[0] + L[1] / 2, pxs: M.pxs}; }""")
+                page.mouse.move(geo["x"], geo["y"])
+                page.mouse.down()
+                page.mouse.move(geo["x"] + 40, geo["y"], steps=5)
+                page.mouse.up()
+                page.wait_for_timeout(300)
+                dragged = page.evaluate("SV.ed.lines[0].end")
                 page.screenshot(path=os.path.join(shots, "listen-lyric-timing.png"), full_page=True)
+                page.keyboard.press("Backspace")
                 page.keyboard.press("Backspace")
                 page.wait_for_timeout(200)
                 undone = page.locator("#lx-list .lx-r.set").count()
                 page.once("dialog", lambda d: d.accept())
                 page.click("#lx button:has-text('Cancel')")
                 page.wait_for_timeout(300)
-                say(rows == n_lyr and tapped == 1 and undone == 0 and page.locator("#lx-list").count() == 0,
-                    "UI: the lyric timing editor (open, tap with Enter, undo, cancel)", f"{rows}/{n_lyr} lines, tapped {tapped}, after undo {undone}")
+                ok = (rows == n_lyr and tapped == 1 and abs(held[0] - 10) < 0.05 and abs((held[1] or 0) - 12.5) < 0.05
+                      and abs((dragged or 0) - 12.5 - 40 / geo["pxs"]) < 0.15 and undone == 0 and page.locator("#lx-list").count() == 0)
+                say(ok, "UI: the lyric timing editor (hold Enter = start + end, drag a line's end, undo, cancel)",
+                    f"{rows}/{n_lyr} lines; held {held}; end dragged to {dragged and round(dragged, 2)}; after undo {undone} set")
             if h.endswith("/song"):                               # add a picture through the page and name it
                 from PIL import Image
                 pic = os.path.join(out, "ui_ref.png")
