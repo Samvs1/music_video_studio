@@ -7,6 +7,8 @@ description: Direct an original motion-graphics music video for a Music Video St
 
 You make one music video per project in `projects/<p>/`: motion graphics only (no filmed footage, photos, generated
 images or downloaded artwork; everything is made in code, 2D, 3D or both), the whole song with its audio unchanged.
+The user may add reference pictures (`refs/`): the people in the song, so you know how they look. You draw them; the
+pictures never appear in the video.
 The studio's autonomous runner (`studio.py direct`) gives you the same job with a time budget; interactively the user
 is here, but still work on your own unless something is genuinely theirs to decide.
 
@@ -18,8 +20,9 @@ Argument: a project name. None → `python tools/studio.py list` and ask which. 
 project folder `../../.venv/...` and `../../tools/...`). Paths you pass to tools are relative to the project folder.
 
 ## 0. Where are we? (read little)
-- `project.json` (the user's notes: `about`, `mood`, `ideas`, `avoid`, `format`; `versions`), `work/log.md` (your
-  own log, if any), `review/notes.json` (the user's notes per version), `ls final/`.
+- `project.json` (the user's notes: `about`, `mood`, `ideas`, `avoid`, `format`; `refs`: their reference pictures in
+  `refs/`, each with who it is and a note; `versions`), `work/log.md` (your own log, if any), `review/notes.json` (the
+  user's notes per version), `ls final/`.
 - No `song/song-map.json` → `studio.py ingest <p>` first (a few minutes; progress in `cache/status.json`).
 - Open notes (`done: false`) on the newest version → **Review round** (below).
 - Otherwise continue from the first unfinished step; say in one line where you pick up.
@@ -45,12 +48,25 @@ what the video could do), lines that could carry a moment, where it peaks and br
 user edited or drafted it, it is their brief: build on it, don't rewrite it.
 
 ## 3. Concept (read `anti-defaults.md` next to this file first)
+**Freedom**: the user's notes (and the story) are a starting point, not a spec. They want the director to have a lot
+of freedom whether they wrote much or little, and the less they wrote, the more is yours. Of their notes only `avoid`
+is a hard rule (the craft rules below never bend either). Pick the boldest concept you can make well in the time, not
+the safest.
+
+**The cast first**, if there are reference pictures (`refs`): look at each one once (Read shows images) and write
+`work/cast.md`: per person (or thing), what makes them recognisable at the level of detail your video draws (hair
+shape and colour, skin tone, glasses, beard, build, the clothes they're known for, a few colours as hex). The pictures
+fix who is who, not the style: likeness comes from a few of those features, drawn in whatever language the concept
+picks (a few lines, a silhouette, a colour pair, a puppet). Never put the pictures, or images made from their pixels
+(filtered, cut out, auto-traced), in the video. Afterwards use `work/cast.md`, not the pictures.
+
 Think of three genuinely different concepts (one from the story, one from the song's structure or sound, one wild),
 then commit to one. Write `work/concept.md`:
 - the idea in two sentences, and why it belongs to *this* song
 - the visual language: marks / shapes / figures, palette, typography (fonts in `assets/fonts`, all OFL / Apache, licences
   there), motion rules, camera (or none); one deliberate rupture
-- "dance or story": who or what moves with intent, and how (choreography on the beat grid, a character arc per section)
+- "dance or story": who or what moves with intent, and how (choreography on the beat grid, a character arc per section);
+  the people from `work/cast.md`, if any, and how this visual language draws them
 - 3-5 **signature moments** on the song's ★★★ moments, each with bar:beat and what changes there
 - a section plan: | time | bars | music | picture |
 - renderers and a time plan: frames = duration × fps; per-frame cost from `tools/speeds.json` (× 1.5 safety) for

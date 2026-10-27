@@ -90,6 +90,43 @@ def user_notes(pj, seed=""):
     return "\n".join(out)
 
 
+def refs_list(pdir, pj):
+    """The user's reference pictures that exist (project.json "refs", files in refs/): [(file, name, note)]."""
+    out = []
+    for r in pj.get("refs") or []:
+        f = str(r.get("file") or "").replace("\\", "/")
+        if f and os.path.isfile(os.path.join(pdir, f)):
+            out.append((f, re.sub(r"\s+", " ", str(r.get("name") or "")).strip(),
+                        re.sub(r"\s+", " ", str(r.get("note") or "")).strip()))
+    return out
+
+
+def refs_people(pdir, pj):
+    """One line naming who (or what) the reference pictures show, for the story step (which reads text only)."""
+    seen = []
+    for _, name, note in refs_list(pdir, pj):
+        x = name + (f" ({note})" if note else "") if name else note
+        if x and x not in seen:
+            seen.append(x)
+    return f"In my reference pictures (the director will draw them): {'; '.join(seen)}" if seen else ""
+
+
+def refs_brief(pdir, pj):
+    """The brief's bullet on the reference pictures, after the bullet that ends in {{refs}}; "" when there are none."""
+    rs = refs_list(pdir, pj)
+    if not rs:
+        return ""
+    return ("\n- I put reference pictures in refs/: the people in the song (or anything else whose look matters to me), "
+            "so you know how they look. Look at each one once (the Read tool shows images) and write down what makes "
+            "each recognisable in work/cast.md (hair, skin tone, face, glasses, build, clothes, colours as hex; if "
+            "work/cast.md exists, add only the pictures it doesn't cover). They say who is in the song and how they look, "
+            "not how to draw them: the style is yours, as free as the rest of the video (a few lines, a silhouette, a "
+            "colour pair, a puppet, a dancer made of type), as long as I can tell who is who. They are references, not "
+            "material: the pictures, or images made from their pixels (filtered, cut out, auto-traced), never appear in "
+            "the video.\n" +
+            "\n".join(f"  - {f}: {name or '(no name given)'}" + (f" ({note})" if note else "") for f, name, note in rs))
+
+
 # ------------------------------------------------------------------ the story step
 def story(pdir, model=None, log=print):
     from studio import Status
@@ -103,8 +140,9 @@ def story(pdir, model=None, log=print):
         if not sm:
             raise RuntimeError("no song folder yet: run Analyse (ingest) first")
         title = f"{sm.get('artist')} – {sm.get('title')}" if sm.get("artist") else sm.get("title") or sm["file"]
+        notes = "\n".join(x for x in (user_notes(pj), refs_people(pdir, pj)) if x)
         prompt = fill(open(os.path.join(TEMPLATES, "story-prompt.md"), encoding="utf-8").read(),
-                      {"notes": user_notes(pj) or "(no notes given)", "title": title, "date": time.strftime("%Y-%m-%d")})
+                      {"notes": notes or "(no notes given)", "title": title, "date": time.strftime("%Y-%m-%d")})
         # the prompt goes in on stdin, not as an argument: on Windows an npm `claude.cmd` passes arguments through
         # cmd.exe, which mangles newlines, quotes and parentheses
         cmd = [*cl, "-p", "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools", "Read",
@@ -251,7 +289,8 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
             "height": d["height"], "fps": d["fps"], "budget": fmt_dur(budget_s), "tools": tools, "project": name,
             "python": venv_python(pdir), "started": time.strftime("%H:%M", time.localtime(started)),
             "deadline": time.strftime("%H:%M", time.localtime(deadline)) + f" (in {fmt_dur(budget_s)})",
-            "skill": rel(SKILL, pdir), "anti": rel(os.path.join(os.path.dirname(SKILL), "anti-defaults.md"), pdir)}
+            "skill": rel(SKILL, pdir), "anti": rel(os.path.join(os.path.dirname(SKILL), "anti-defaults.md"), pdir),
+            "refs": refs_brief(pdir, pj)}
     notes = user_notes(pj, seed_notes)
     if revise:
         from mv.song import Song

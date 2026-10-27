@@ -1,16 +1,18 @@
-"""Music Video Studio local web app (standard library only; listens on 127.0.0.1). Carried over from
-aftermovie-studio's server (jobs, range requests, project files) and rebuilt for this workflow.
+"""Music Video Studio local web app (standard library, plus Pillow for reference pictures; listens on 127.0.0.1).
+Carried over from aftermovie-studio's server (jobs, range requests, project files) and rebuilt for this workflow.
 
   python tools/studio.py serve            -> http://127.0.0.1:8765/
 
-Pages: Song & brief (upload, notes, delivery format, lyrics) · Analyse (ingest with progress) · The song (the song
-viewer) · Story (draft with Claude, edit) · Direct (the autonomous director with live progress, or the interactive
-command) · Watch (each version above the song lanes, notes with N, the report and the checks).
+Pages: Song & brief (upload, notes, reference pictures, delivery format, lyrics) · Analyse (ingest with progress) ·
+The song (the song viewer) · Story (draft with Claude, edit) · Direct (the autonomous director with live progress, or
+the interactive command) · Watch (each version above the song lanes, notes with N, the report and the checks).
 
 API (JSON):
   GET  /api/projects                     GET  /api/p/<p>                GET  /api/p/<p>/job
   GET  /api/p/<p>/director               GET  /api/doctor               GET  /api/formats
-  POST /api/projects {name, title}       PUT  /api/p/<p>/upload?filename=x.mp3 (body = the file; .lrc/.txt = lyrics)
+  POST /api/projects {name, title}       PUT  /api/p/<p>/upload?filename=x.mp3 (body = the file; .lrc/.txt = lyrics;
+                                                                                 .jpg/.png/.webp = a reference picture)
+  POST /api/p/<p>/ref {id, name | note | delete}                         (a reference picture: who it is, a note)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
   POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, effort, model, seed_notes, revise}
   POST /api/p/<p>/stop                   POST /api/p/<p>/note {version, t, text}
@@ -29,6 +31,9 @@ from mv.common import FORMATS, AUDIO_EXT  # noqa: E402
 PY = sys.executable
 JOBS = {}            # project -> {"proc", "job", "log", "started"}
 LOCK = threading.Lock()
+PJ_LOCK = threading.Lock()          # project.json: one writer at a time (the brief, uploads, reference pictures)
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp")
+MAX_REFS, MAX_REF_BYTES, REF_SIDE = 24, 40 << 20, 1600      # Claude sees images at ~1568 px on the long side at most
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("audio/mp4", ".m4a")
 
@@ -214,6 +219,19 @@ BRIEF_KEYS = {"title", "about", "mood", "ideas", "avoid", "lyrics"}
 
 def save_brief(name, body):
     d = pdir(name)
+    with PJ_LOCK:
+        pj = update_brief(d, body)
+    if (pj.get("status") or {}).get("frames_stale"):
+        subprocess.run([PY, "-W", "ignore", os.path.join(TOOLS, "studio.py"), "curves", name], cwd=STUDIO,
+                       capture_output=True, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        with PJ_LOCK:
+            pj = jload(os.path.join(d, "project.json"), {})
+            pj.get("status", {}).pop("frames_stale", None)
+            studio.save_project(d, pj)
+    return pj
+
+
+def update_brief(d, body):
     pj = jload(os.path.join(d, "project.json"), {})
     for k in BRIEF_KEYS & set(body):
         pj[k] = str(body[k])[:20000 if k == "lyrics" else 6000]
@@ -236,12 +254,6 @@ def save_brief(name, body):
     if isinstance(body.get("director"), dict):
         pj["director"] = {k: str(v)[:40] for k, v in body["director"].items() if k in ("model", "effort", "budget")}
     studio.save_project(d, pj)
-    if (pj.get("status") or {}).get("frames_stale"):
-        subprocess.run([PY, "-W", "ignore", os.path.join(TOOLS, "studio.py"), "curves", name], cwd=STUDIO,
-                       capture_output=True, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
-        pj = jload(os.path.join(d, "project.json"), {})
-        pj.get("status", {}).pop("frames_stale", None)
-        studio.save_project(d, pj)
     return pj
 
 
@@ -256,9 +268,10 @@ def save_story(name, body):
         os.makedirs(os.path.join(d, "cache", "story"), exist_ok=True)
         shutil.copyfile(sp, os.path.join(d, "cache", "story", f"song-story_{time.strftime('%Y%m%d-%H%M%S')}.md"))
     open(sp, "w", encoding="utf-8").write(text.rstrip() + "\n")
-    pj = jload(os.path.join(d, "project.json"), {})
-    pj.setdefault("status", {})["story"] = {"by": "user", "at": time.strftime("%Y-%m-%d %H:%M")}
-    studio.save_project(d, pj)
+    with PJ_LOCK:
+        pj = jload(os.path.join(d, "project.json"), {})
+        pj.setdefault("status", {})["story"] = {"by": "user", "at": time.strftime("%Y-%m-%d %H:%M")}
+        studio.save_project(d, pj)
     return story_state(d)
 
 
@@ -293,18 +306,8 @@ def edit_note(name, body):
     return notes
 
 
-def upload(name, filename, rfile, n):
-    d = pdir(name)
-    fn = safe_name(filename)
-    ext = os.path.splitext(fn)[1]
-    if ext in AUDIO_EXT:
-        dst = os.path.join(d, "song", fn)
-    elif ext in (".lrc", ".txt"):
-        dst = os.path.join(d, "song", "lyrics" + ext)
-    else:
-        raise ValueError(f"unsupported file type {ext}: upload the song (mp3, wav, m4a, flac) or lyrics (.lrc, .txt)")
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    with open(dst + ".part", "wb") as f:
+def receive(rfile, n, dst):
+    with open(dst, "wb") as f:
         left = n
         while left > 0:
             chunk = rfile.read(min(1 << 20, left))
@@ -312,6 +315,25 @@ def upload(name, filename, rfile, n):
                 break
             f.write(chunk)
             left -= len(chunk)
+
+
+def upload(name, filename, rfile, n):
+    d = pdir(name)
+    fn = safe_name(filename)
+    ext = os.path.splitext(fn)[1]
+    if ext in IMAGE_EXT:
+        return add_ref(d, fn, rfile, n)
+    if ext in AUDIO_EXT:
+        dst = os.path.join(d, "song", fn)
+    elif ext in (".lrc", ".txt"):
+        dst = os.path.join(d, "song", "lyrics" + ext)
+    elif ext in (".heic", ".heif"):
+        raise ValueError("HEIC photos can't be read here: save them as JPEG first")
+    else:
+        raise ValueError(f"unsupported file type {ext}: upload the song (mp3, wav, m4a, flac), lyrics (.lrc, .txt) "
+                         f"or a reference picture (.jpg, .png, .webp)")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    receive(rfile, n, dst + ".part")
     os.replace(dst + ".part", dst)
     if ext in AUDIO_EXT:
         trash = os.path.join(d, "trash")                     # a new song: the old one and everything made from it go
@@ -323,13 +345,102 @@ def upload(name, filename, rfile, n):
                 for c in ("audio.json", "beat_this.json", "curves.npz", "curves_extra.json"):
                     if os.path.exists(os.path.join(d, "cache", c)):
                         os.remove(os.path.join(d, "cache", c))
-        pj = jload(os.path.join(d, "project.json"), {})
-        pj["song"] = dict(pj.get("song") or {}, file=fn)
-        pj.pop("analysis", None)
-        pj.setdefault("status", {})["stage"] = "song uploaded"
-        studio.save_project(d, pj)
+        with PJ_LOCK:
+            pj = jload(os.path.join(d, "project.json"), {})
+            pj["song"] = dict(pj.get("song") or {}, file=fn)
+            pj.pop("analysis", None)
+            pj.setdefault("status", {})["stage"] = "song uploaded"
+            studio.save_project(d, pj)
         return {"ok": True, "kind": "song", "name": fn}
     return {"ok": True, "kind": "lyrics", "name": os.path.basename(dst)}
+
+
+# ------------------------------------------------------------------ reference pictures (refs/)
+# The people in the song (or anything whose look matters), so the director knows how they look. It draws them in the
+# video's own language: the pictures never appear in the video. project.json "refs": [{id, file, name, note, added}].
+def ref_name(fn):
+    """A name from the file name ("sam.jpg" -> "sam"), none from a camera's ("IMG_2041.jpg", "PXL_20240611_...")."""
+    s = re.sub(r"[\s_.-]+", " ", os.path.splitext(fn)[0]).strip()
+    return "" if len(re.findall(r"\d", s)) >= 3 else s[:80]
+
+
+def tidy_image(src, stem, ext):
+    """Save src as stem + .jpg (or .png when it has transparency, a unique name): upright (the EXIF rotation applied),
+    at most REF_SIDE px on its long side, without its metadata (GPS, camera). Returns the path written."""
+    def unique(e):
+        p, i = stem + e, 2
+        while os.path.exists(p):
+            p, i = f"{stem}-{i}{e}", i + 1
+        return p
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:                                 # not the studio's venv: keep the file as it came
+        dst = unique(".jpg" if ext == ".jpeg" else ext)
+        os.replace(src, dst)
+        return dst
+    try:
+        with Image.open(src) as im0:
+            im = ImageOps.exif_transpose(im0)
+            icc = im.info.get("icc_profile")
+            alpha = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+            im = im.convert("RGBA" if alpha else "RGB")
+            im.thumbnail((REF_SIDE, REF_SIDE), Image.LANCZOS)
+            dst = unique(".png" if alpha else ".jpg")
+            im.save(dst, **({"optimize": True} if alpha else {"quality": 90}), **({"icc_profile": icc} if icc else {}))
+            return dst
+    except Image.DecompressionBombError:
+        raise ValueError("that image has too many pixels")
+    except Exception:
+        raise ValueError("can't read that image: is it a JPEG, PNG or WebP?")
+
+
+def add_ref(d, fn, rfile, n):
+    if n > MAX_REF_BYTES:
+        raise ValueError(f"that image is {n >> 20} MB: {MAX_REF_BYTES >> 20} MB at most")
+    rd = os.path.join(d, "refs")
+    os.makedirs(rd, exist_ok=True)
+    part = os.path.join(rd, f"upload-{time.time_ns()}.part")
+    try:
+        receive(rfile, n, part)
+        with PJ_LOCK:
+            pj = jload(os.path.join(d, "project.json"), {})
+            refs = pj.get("refs") or []
+            if len(refs) >= MAX_REFS:
+                raise ValueError(f"{MAX_REFS} reference pictures at most: a few clear ones per person are enough")
+            base, ext = os.path.splitext(fn)
+            stem = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:40] or "ref"
+            dst = tidy_image(part, os.path.join(rd, stem), ext)
+            r = {"id": max([int(time.time() * 1000)] + [x.get("id", 0) + 1 for x in refs]),
+                 "file": "refs/" + os.path.basename(dst), "name": ref_name(fn), "note": "", "added": time.strftime("%Y-%m-%d %H:%M")}
+            pj["refs"] = refs + [r]
+            studio.save_project(d, pj)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+    return {"ok": True, "kind": "ref", "name": r["file"], "ref": r}
+
+
+def edit_ref(name, body):
+    d = pdir(name)
+    with PJ_LOCK:
+        pj = jload(os.path.join(d, "project.json"), {})
+        refs = pj.get("refs") or []
+        r = next((x for x in refs if x.get("id") == body.get("id")), None)
+        if r is None:
+            raise ValueError("no such reference picture")
+        if body.get("delete"):
+            refs.remove(r)
+            f = os.path.join(d, "refs", os.path.basename(r.get("file", "")))
+            if os.path.isfile(f):                         # kept in trash/, like a replaced song
+                os.makedirs(os.path.join(d, "trash"), exist_ok=True)
+                os.replace(f, os.path.join(d, "trash", os.path.basename(f)))
+        else:
+            for k, most in (("name", 80), ("note", 600)):
+                if k in body:
+                    r[k] = str(body[k]).strip()[:most]
+        pj["refs"] = refs
+        studio.save_project(d, pj)
+    return refs
 
 
 # ------------------------------------------------------------------ HTTP
@@ -489,6 +600,8 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json(add_note(name, body))
                 if act == "note-edit":
                     return self.send_json(edit_note(name, body))
+                if act == "ref":
+                    return self.send_json(edit_ref(name, body))
                 if act == "deliver":
                     r = subprocess.run([PY, os.path.join(TOOLS, "studio.py"), "deliver", name], capture_output=True, text=True,
                                        encoding="utf-8", errors="replace", cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"))

@@ -10,6 +10,8 @@ choice that this song earns, never as the starting point:
 - a camera flying through an endless tunnel of shapes
 - glitch / RGB-split / VHS noise as a substitute for an idea
 - everything reacting to everything: when every element pulses on every beat, nothing lands
+- the people from the reference pictures as portraits: faces floating over a background, a slideshow of the cast,
+  a realistic likeness copied from the photo (the pictures say who is who; the concept decides how they're drawn)
 
 Where the concept comes from instead:
 - **This song's story** (song-story.md, the lyric's meaning, the user's own notes): who is in it, what happens to

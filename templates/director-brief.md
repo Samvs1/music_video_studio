@@ -1,10 +1,10 @@
 Make a music video for the song in this folder.
 
-What I want: a full music video like a real official music video, with a lot of dance or some story, but made as motion graphics only. No filmed footage. It can be 2D, 3D or both. What matters to me is that it's creative and unique.
+What I want: a full music video like a real official music video, with a lot of dance or some story, but made as motion graphics only. No filmed footage. It can be 2D, 3D or both. What matters to me is that it's creative and unique. My notes on the song and the look (below, if any) are a starting point, not a spec: take them as inspiration and go further, and the less I say, the more is up to you. A bold idea beats a safe one; surprise me. Of my notes, only what I ask you to avoid is a hard rule.
 {{direction}}
 
 - The song is song/{{file}}. Use all of it ({{duration}} seconds), with its audio unchanged.
-- Read song/README.md first. The folder has what the whole song is about, the lyrics, and measurements of the music: beats, bars, notes, chords, drum hits, loud and quiet parts, and each instrument separately.
+- Read song/README.md first. The folder has what the whole song is about, the lyrics, and measurements of the music: beats, bars, notes, chords, drum hits, loud and quiet parts, and each instrument separately.{{refs}}
 - {{tools}}/README.md lists ready-made tools and what is installed on this machine; {{tools}}/speeds.json says how fast each renderer is here. Using the tools is optional, but check the render speeds before choosing heavy 3D.
 - Deliver one finished video: final/music-video.mp4, {{width}}×{{height}}, {{fps}} fps, H.264 yuv420p with AAC audio, the same length as the song file.
 - You have about {{budget}}; check the clock. Spend it making the video better, not just finishing: plan, make style frames, render low-res previews, look at them with the eyes tools, revise. Leave enough time for the final render and checks.

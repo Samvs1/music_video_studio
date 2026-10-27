@@ -3,13 +3,14 @@
   python tests/test_server.py [--keep] [--no-browser]
 
 Starts `studio.py serve` on a free port with the stand-in for Claude Code (tests/fake_claude.py: no usage spent), then:
-new project -> upload the synthetic song -> brief (notes, format, lyrics) -> ingest with progress -> the song data
-(song-map, envelopes, frames, hits, a stem with a range request) -> story: draft (stand-in Claude) and save ->
-a director run with live progress -> the video (range request) -> notes (add, done, delete) -> a review round ->
-stopping a running director cleanly -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a
-screenshot per page in tests/out/ui/. Exit code 0 = all passed.
+new project -> upload the synthetic song -> brief (notes, format, lyrics) -> reference pictures (upright, no metadata,
+named, noted, removed) -> ingest with progress -> the song data (song-map, envelopes, frames, hits, a stem with a range
+request) -> story: draft (stand-in Claude) and save -> a director run with live progress (its brief lists the
+pictures) -> the video (range request) -> notes (add, done, delete) -> a review round -> stopping a running director
+cleanly -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
+tests/out/ui/; on the brief page a picture is added and named. Exit code 0 = all passed.
 """
-import argparse, os, shutil, socket, subprocess, sys, time
+import argparse, io, json, os, shutil, socket, subprocess, sys, time
 
 import requests
 
@@ -86,6 +87,7 @@ def main():
         say(pj.get("format", {}).get("width") == 480 and pj.get("avoid") == "spectrum bars", "POST brief (notes, format, lyrics)")
         r = requests.post(f"{B}/api/p/{name}/brief", json={"format": {"preset": "custom", "width": 99999}}).json()
         say("error" in r, "brief rejects an impossible format", r.get("error", ""))
+        refs_check(B, name)
         # ingest with progress
         say(requests.post(f"{B}/api/p/{name}/ingest").json().get("ok"), "POST ingest (starts the job)")
         r = requests.post(f"{B}/api/p/{name}/ingest").json()
@@ -128,6 +130,9 @@ def main():
             time.sleep(2)
         say(seen_running, "GET director: live events while running")
         say(d.get("state") == "done" and d.get("version") == 1, "director run delivered v1", f"{d.get('stop_reason')}; {len(d.get('events', []))} events")
+        b = requests.get(B + d["brief"]).text if d.get("brief") else ""
+        say("refs/sam-rivers.jpg: Sam Rivers (the singer; yellow raincoat)" in b and "work/cast.md" in b and "refs/img-2041" not in b,
+            "the brief lists the reference pictures", next((x.strip() for x in b.splitlines() if "refs/sam" in x), "not in the brief"))
         st = requests.get(f"{B}/api/p/{name}").json()
         v1 = next((v for v in st["versions"] if v.get("n") == 1), None)
         r = requests.get(B + v1["url"], headers={"Range": "bytes=0-1023"}) if v1 else None
@@ -183,6 +188,53 @@ def main():
     sys.exit(1 if bad else 0)
 
 
+def refs_check(B, name):
+    """Reference pictures: upright (the EXIF rotation applied) without metadata, named from the file name unless it's a
+    camera's, transparency kept, broken files and HEIC refused, a name and a note saved, one removed (to trash/)."""
+    from PIL import Image
+    pdir = os.path.join(STUDIO, "projects", name)
+    buf = io.BytesIO()
+    ex = Image.Exif()
+    ex[0x0112] = 6                                     # stored sideways: shown turned 90° clockwise
+    ex[0x010F] = "TestCam"                             # the camera make: metadata that must not survive
+    Image.new("RGB", (64, 32), (200, 120, 90)).save(buf, "JPEG", exif=ex)
+    r = requests.put(f"{B}/api/p/{name}/upload?filename=Sam Rivers.jpg", data=buf.getvalue()).json()
+    ref, size, meta = r.get("ref") or {}, None, None
+    if ref.get("file"):
+        with Image.open(os.path.join(pdir, ref["file"])) as im:
+            size, meta = im.size, dict(im.getexif())
+    say(r.get("kind") == "ref" and ref.get("name") == "Sam Rivers" and size == (32, 64) and not meta,
+        "PUT upload (a reference picture: upright, no metadata, named from the file)", f"{ref.get('file')} {size} exif {meta}")
+    buf = io.BytesIO()
+    Image.new("RGBA", (40, 40), (0, 0, 0, 0)).save(buf, "PNG")
+    r2 = requests.put(f"{B}/api/p/{name}/upload?filename=IMG_2041.png", data=buf.getvalue()).json()
+    ref2 = r2.get("ref") or {}
+    say(ref2.get("file", "").endswith(".png") and ref2.get("name") == "", "a camera's file name gives no name; transparency stays PNG",
+        ref2.get("file", str(r2)))
+    r = requests.put(f"{B}/api/p/{name}/upload?filename=broken.jpg", data=b"not an image").json()
+    left = [f for f in os.listdir(os.path.join(pdir, "refs")) if f.endswith(".part") or f.startswith("broken")]
+    say("can't read" in r.get("error", "") and not left, "a broken image is refused, nothing left behind", r.get("error", "")[:60])
+    r = requests.put(f"{B}/api/p/{name}/upload?filename=IMG_0001.HEIC", data=b"x").json()
+    say("JPEG" in r.get("error", ""), "HEIC refused with a hint", r.get("error", ""))
+    requests.post(f"{B}/api/p/{name}/ref", json={"id": ref.get("id"), "note": "the singer;\n yellow raincoat"})
+    refs = requests.post(f"{B}/api/p/{name}/ref", json={"id": ref2.get("id"), "name": "Lena"}).json()
+    st = requests.get(f"{B}/api/p/{name}").json()["project"]
+    say([(x["name"], x["note"]) for x in st.get("refs", [])] == [("Sam Rivers", "the singer;\n yellow raincoat"), ("Lena", "")] and refs == st["refs"],
+        "POST ref (a name, a note)")
+    g = requests.get(f"{B}/p/{name}/{ref.get('file')}")
+    say(g.ok and g.headers.get("Content-Type") == "image/jpeg", "GET a reference picture")
+    refs = requests.post(f"{B}/api/p/{name}/ref", json={"id": ref2.get("id"), "delete": True}).json()
+    f2 = os.path.basename(ref2.get("file", "-"))
+    say(len(refs) == 1 and not os.path.exists(os.path.join(pdir, "refs", f2)) and os.path.exists(os.path.join(pdir, "trash", f2)),
+        "POST ref (delete: the file goes to trash/)")
+    say("error" in requests.post(f"{B}/api/p/{name}/ref", json={"id": 1, "name": "x"}).json(), "POST ref refuses an unknown id")
+    sys.path.insert(0, os.path.join(STUDIO, "tools"))
+    import director
+    pj = json.load(open(os.path.join(pdir, "project.json"), encoding="utf-8"))
+    line = director.refs_people(pdir, pj)
+    say(line.endswith("Sam Rivers (the singer; yellow raincoat)"), "the story step gets who is in the pictures", line)
+
+
 def browser_pages(B, name, out):
     """Every page once in headless Chromium: no JS errors; a screenshot each (tests/out/ui/)."""
     sys.path.insert(0, os.path.join(STUDIO, "tools"))
@@ -207,6 +259,18 @@ def browser_pages(B, name, out):
             if h.endswith("/watch"):
                 page.keyboard.press("n")
                 page.wait_for_timeout(300)
+            if h.endswith("/song"):                               # add a picture through the page and name it
+                from PIL import Image
+                pic = os.path.join(out, "ui_ref.png")
+                Image.new("RGB", (48, 64), (90, 140, 200)).save(pic)
+                page.set_input_files("#rfi", pic)
+                page.wait_for_selector(".ref:nth-child(2) input[data-k=name]", timeout=10000)
+                page.fill(".ref:nth-child(2) input[data-k=name]", "Mo")
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(800)
+                refs = requests.get(f"{B}/api/p/{name}").json()["project"]["refs"]
+                say(len(refs) == 2 and refs[1]["name"] == "Mo" and page.locator(".ref img").count() == 2,
+                    "UI: a picture added on the brief page and named", str([r["name"] for r in refs]))
             fn = os.path.join(shots, (h.split("/")[-1] or "home") + ".png")
             page.screenshot(path=fn, full_page=True)
             ok = len(errs) == n0

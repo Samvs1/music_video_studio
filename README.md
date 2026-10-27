@@ -30,8 +30,10 @@ version. Earlier versions are kept.
 ## Make a video
 Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 → **Start a music video**, then the steps:
 1. **Song & brief**: drop the MP3. Optional: artist + title (for the synced-lyrics lookup), the language, what the
-   song is about to you, mood or direction, ideas, things to avoid, the delivery format (1080p 30/60/24, 4K, vertical,
-   square, or custom), and the lyrics if they aren't online (plain text, or LRC with line or word times).
+   song is about to you, mood or direction, ideas, things to avoid, **people & references** (photos of the people in
+   the song, each with who it is, so Claude knows what everyone looks like: it draws them in the video's own style,
+   the photos never appear in the video), the delivery format (1080p 30/60/24, 4K, vertical, square, or custom), and
+   the lyrics if they aren't online (plain text, or LRC with line or word times).
 2. **Analyse** (a few minutes): stems, beats and bars, lyrics, melody, chords, sections, moments → the song folder.
 3. **The song**: the song the way Claude reads it, playing along: sections, loudness and the ★★★ moments, melody and
    bass notes, chords, beats, the four stems (hear any of them alone: M V D B O), a beat click (K), every sung word.
@@ -86,7 +88,7 @@ The tools are documented in **`tools/README.md`** (with `tools/web-engine/README
 ## What's in git
 The studio (app, tools, skill, templates, fonts with licences, tests), `tools/speeds.json`, and each project's small
 text files (`project.json`, `report.md`, review notes, the song folder's markdown and `song-map.json`, the director's
-markdown notes and scene code). Songs, stems, renders and videos stay local.
+markdown notes and scene code). Songs, stems, reference pictures, renders and videos stay local.
 
 ## What came from aftermovie-studio, and what changed
 | from aftermovie-studio | here |
@@ -99,10 +101,18 @@ markdown notes and scene code). Songs, stems, renders and videos stay local.
 | `setup.ps1`, `requirements.txt`, the `.bat`, `.gitignore`, the fonts | adapted; setup asks before big downloads; licence files added for every font, plus open-licensed fonts with more range |
 | the craft rules in `CLAUDE.md` | in the skill and `CLAUDE.md`, minus everything about photos |
 Left out: photos, faces, cast, Polarsteps, shot logs, grading, the photo compositor and EDL, `find_joins.py`, song
-suggestions, style samples, the stylebook.
+suggestions, style samples, the stylebook. (Pictures of the people came back in another role: `refs/` shows the
+director how they look, so it can draw them; the pictures never appear in the video.)
 
 ## Choices made (where the request left room)
 - **Python Playwright** drives the browser: no Node needed; Chrome or Edge (always on Windows 11) can be used directly.
+- **Your notes are inspiration, not a spec**: the brief tells the director that whatever you wrote is a starting
+  point to go further from (the less you wrote, the more is up to it), that a bold idea beats a safe one, and that of
+  your notes only "things to avoid" is a hard rule (the delivery spec and the craft rules still hold). Reference
+  pictures fix who is who, never the style.
+- **Reference pictures are tidied on upload**: turned upright (the phone's EXIF rotation applied), at most 1600 px on
+  the long side (Claude sees images at ~1568 px anyway), metadata such as GPS dropped; JPEG, or PNG when transparent.
+  HEIC isn't read (save it as JPEG); 24 pictures at most. The director writes `work/cast.md` from them once.
 - **Frames are evaluated at the end of their time slot**, so a downbeat that lands anywhere in a frame's slot shows in
   that frame (it was one frame late half of the time otherwise; found with the sync check on the test song).
 - **JPEG q98 capture** for opaque web passes: Chrome's PNG encoder took ~0.5 s per busy 1080p frame, JPEG ~0.08 s; the

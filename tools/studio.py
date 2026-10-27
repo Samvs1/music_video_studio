@@ -48,6 +48,7 @@ DEFAULT_PROJECT = {
     "avoid": "",
     "format": {"preset": "1080p", "width": 1920, "height": 1080, "fps": 30},
     "lyrics": "",           # optional: the user's own lyrics (LRC with times, or plain text)
+    "refs": [],             # optional: reference pictures in refs/ (who's in the song): [{id, file, name, note, added}]
     "lyrics_fix": {},
     "status": {"stage": "new"},
 }

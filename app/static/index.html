@@ -48,6 +48,13 @@ nav.steps .dot.done{background:var(--ok);color:#111}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px}
 .drop{border:2px dashed #3d3d44;border-radius:14px;padding:34px;text-align:center;cursor:pointer;transition:.15s}
 .drop.over{border-color:var(--acc);background:#1d1c14}
+.refs{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px}
+.ref{position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.ref img{width:100%;aspect-ratio:1;object-fit:contain;display:block;background:#000}
+.ref input,.ref textarea{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
+.ref input{font-weight:700}
+.ref textarea{min-height:58px;font-size:13px}
+.ref button{position:absolute;top:6px;right:6px;padding:2px 8px;background:rgba(0,0,0,.65);color:#fff;border:0}
 .thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:16px}
 .thumbs .th{position:relative;aspect-ratio:1;background:#000 center/contain no-repeat;border-radius:8px}
 .thumbs .th button{position:absolute;top:4px;right:4px;padding:1px 7px;font-size:12px;background:rgba(0,0,0,.65);color:#fff;border-radius:6px;display:none}
@@ -261,7 +268,7 @@ const refresh = () => load(S.name);
 function vBrief() {
   const p = S.project, s = p.song || {}, f = p.format || {}, pre = f.preset || "1080p";
   const fmts = Object.entries(S.formats).map(([k, v]) => `<option value="${k}" ${pre === k ? "selected" : ""}>${esc(v.label)}</option>`).join("");
-  $("#pane").innerHTML = `<h2>Song &amp; brief</h2><p class="mut">The song and what you'd like. Everything except the song is optional: Claude decides the rest.</p>
+  $("#pane").innerHTML = `<h2>Song &amp; brief</h2><p class="mut">The song and what you'd like. Everything except the song is optional, and your notes are a starting point, not a spec: Claude takes them as inspiration and has the freedom to go further (of your notes, only "things to avoid" is a hard rule).</p>
   <div class="drop" id="drop"><b>Drop the song here</b> (MP3, WAV, M4A, FLAC) or click to choose.<br><span class="mut">A lyrics file (.lrc / .txt) can go here too.</span>
     ${S.song.file ? `<div style="margin-top:8px">now: <b>${esc(S.song.file)}</b></div>` : ""}</div><input type="file" id="fi" hidden accept="audio/*,.lrc,.txt">
   <div id="up" class="hint"></div>
@@ -274,29 +281,55 @@ function vBrief() {
   <label>Mood or direction</label><textarea id="b-mood" placeholder="e.g. tender and strange; a lot of dance; black and white; nothing cute">${esc(p.mood)}</textarea>
   <div class="two"><div><label>Ideas</label><textarea id="b-ideas" placeholder="images, references, moments you already see">${esc(p.ideas)}</textarea></div>
     <div><label>Things to avoid</label><textarea id="b-avoid" placeholder="colours, symbols, words, looks you don't want">${esc(p.avoid)}</textarea></div></div>
+  <label>People &amp; references (optional)</label>
+  <div class="hint" style="margin-top:0">Photos of the people in the song (or anything else whose look matters), so Claude knows what everyone looks like. Say who each one is. Claude draws them in the video's own style: the photos themselves never appear in the video, and they stay on this computer.</div>
+  <div class="drop" id="rdrop" style="padding:16px;margin-top:8px"><b>Drop photos here</b> (JPG, PNG, WebP) or click to choose</div><input type="file" id="rfi" hidden multiple accept="image/jpeg,image/png,image/webp">
+  <div id="rup" class="hint"></div><div class="refs" id="refs"></div>
   <div class="two"><div><label>Delivery format</label><select id="b-fmt" onchange="fmtCustom()">${fmts}<option value="custom" ${pre === "custom" ? "selected" : ""}>custom size / fps</option></select></div>
     <div id="b-cust" style="display:${pre === "custom" ? "grid" : "none"};grid-template-columns:1fr 1fr 1fr;gap:8px;align-self:end">
       <input id="b-w" type="number" value="${f.width || 1920}" title="width"><input id="b-h" type="number" value="${f.height || 1080}" title="height"><input id="b-fps" type="number" value="${f.fps || 30}" title="fps"></div></div>
   <label>Lyrics (optional)</label><textarea id="b-lyrics" style="min-height:120px" placeholder="Only if they're not online (LRCLIB): plain text, or LRC with [mm:ss.xx] line times; word times <mm:ss.xx> are used exactly.">${esc(p.lyrics)}</textarea>
   <div class="row" style="margin-top:16px"><button onclick="saveBrief()">Save</button><button class="ghost" onclick="saveBrief('analyse')">Save &amp; analyse &rarr;</button></div>`;
-  const drop = $("#drop"), fi = $("#fi");
-  drop.onclick = () => fi.click();
-  fi.onchange = () => upload([...fi.files]);
-  drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
-  drop.ondragleave = () => drop.classList.remove("over");
-  drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); upload([...e.dataTransfer.files]); };
+  for (const [d, i, out] of [["#drop", "#fi", "#up"], ["#rdrop", "#rfi", "#rup"]]) {
+    const drop = $(d), fi = $(i);
+    drop.onclick = () => fi.click();
+    fi.onchange = () => upload([...fi.files], out);
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+    drop.ondragleave = () => drop.classList.remove("over");
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); upload([...e.dataTransfer.files], out); };
+  }
+  renderRefs();
 }
 function fmtCustom() { $("#b-cust").style.display = $("#b-fmt").value === "custom" ? "grid" : "none"; }
-async function upload(files) {
+async function upload(files, out = "#up") {
+  let whole = false;                  // a song or lyrics file re-draws the page; pictures only their own list
+  await refFlush();
   for (const f of files) {
-    $("#up").innerHTML = `<span class="spin"></span> uploading ${esc(f.name)}&hellip;`;
+    $(out).innerHTML = `<span class="spin"></span> uploading ${esc(f.name)}&hellip;`;
     try {
       const r = await fetch(`/api/p/${S.name}/upload?filename=${encodeURIComponent(f.name)}`, {method: "PUT", body: f});
       const j = await r.json(); if (j.error) throw new Error(j.error);
-      toast(j.kind === "song" ? "Song uploaded: analyse it next" : "Lyrics file saved");
-    } catch (e) { toast(e.message); }
+      toast(j.kind === "song" ? "Song uploaded: analyse it next" : j.kind === "ref" ? "Picture added: say who it is" : "Lyrics file saved");
+      whole = whole || j.kind !== "ref";
+    } catch (e) { toast(f.name + ": " + e.message); }
   }
-  $("#up").textContent = ""; refresh();
+  $(out).textContent = "";
+  if (whole) return refresh();
+  S = await api("/api/p/" + S.name); renderRefs();
+}
+function renderRefs() {
+  const el = $("#refs"); if (!el) return;
+  el.innerHTML = (S.project.refs || []).map(r => `<div class="ref" data-id="${r.id}"><img src="/p/${S.name}/${esc(r.file)}?v=${r.id}" alt="${esc(r.name)}" loading="lazy">
+      <button class="small" title="Remove this picture" onclick="refEdit(${r.id},{delete:true})">&#10005;</button>
+      <input data-k="name" value="${esc(r.name)}" placeholder="who is this?"><textarea data-k="note" placeholder="optional: e.g. the singer; always in a yellow raincoat">${esc(r.note)}</textarea></div>`).join("");
+  el.querySelectorAll("[data-k]").forEach(i => i.onchange = () => refEdit(+i.closest(".ref").dataset.id, {[i.dataset.k]: i.value}));
+}
+async function refFlush() {          // a name still being typed is saved before the list is drawn again
+  const a = document.activeElement, card = a && a.closest && a.closest(".ref");
+  if (card && a.dataset.k) await refEdit(+card.dataset.id, {[a.dataset.k]: a.value});
+}
+async function refEdit(id, ch) {
+  try { S.project.refs = await post(`/api/p/${S.name}/ref`, {id, ...ch}); if (ch.delete) renderRefs(); } catch (e) { toast(e.message); }
 }
 async function saveBrief(next) {
   const fm = $("#b-fmt").value;
@@ -447,6 +480,7 @@ function vDirect() {
       <div><label>Effort</label><select id="d-effort">${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${((d.effort || "high") === e) ? "selected" : ""}>${e}</option>`).join("")}</select></div></div>
     <label>Model</label><input id="d-model" value="${esc(d.model || "opus")}">
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
+    ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
     ${open.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto"> Review round: address my ${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n} and make v${latest.n + 1}</label>` : ""}
     <div class="row" style="margin-top:12px"><button id="go-direct" onclick="startDirect()" ${S.song.map ? "" : "disabled"}>Start the director</button><button class="ghost small" id="stop-direct" onclick="stopJob()" style="display:none">Stop it (wraps up cleanly)</button></div>
     ${S.song.map ? "" : `<p class="hint" style="color:var(--bad)">Analyse the song first.</p>`}</div>

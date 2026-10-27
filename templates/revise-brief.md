@@ -4,7 +4,7 @@ My notes on v{{version}} (song time · bar:beat · section · what is sung there
 {{notes}}
 {{direction}}
 
-- Address every note. Read your own report.md and work/log.md first: they say what you made and why; keep what works.
+- Address every note. Read your own report.md and work/log.md first: they say what you made and why; keep what works.{{refs}}
 - Fix the film, not the frame: when a note changes timing (something stays longer, moves to another bar), re-think what comes after it against the music as a whole instead of squeezing the fix in locally. Small fixes stay small.
 - The song is song/{{file}}, all of it ({{duration}} seconds), audio unchanged. Deliver final/music-video.mp4 again, {{width}}×{{height}}, {{fps}} fps, H.264 yuv420p with AAC audio, the same length as the song file. v{{version}} is kept as final/music-video_v{{version}}.mp4: you can't overwrite a cut I liked.
 - You have about {{budget}}; check the clock. Leave enough time for the final render and the checks.
