@@ -1,0 +1,34 @@
+# secrets - never commit
+.env
+*.env
+*api*.txt
+
+# personal notes for Claude
+CLAUDE.local.md
+.claude/settings.local.json
+
+# local tooling / caches
+.venv/
+__pycache__/
+*.pyc
+*.part
+node_modules/
+dist/
+
+# projects: only the small text files go in git. Audio, stems, caches, renders and videos stay local.
+projects/*/*
+!projects/*/project.json
+!projects/*/report.md
+!projects/*/review/
+!projects/*/song/
+projects/*/song/*
+!projects/*/song/*.md
+!projects/*/song/song-map.json
+!projects/*/work/
+projects/*/work/*
+!projects/*/work/*.md
+!projects/*/work/scenes/
+projects/*/work/scenes/**/*.png
+projects/*/work/scenes/**/*.mp4
+# internal projects (smoke tests) are never committed
+projects/_*/
