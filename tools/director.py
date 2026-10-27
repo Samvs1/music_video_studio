@@ -273,17 +273,29 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
     return text
 
 
+def rule_path(p):
+    """An absolute path in Claude Code's permission-rule form: //home/me/x, and on Windows //c/Users/me/x (paths are
+    matched in POSIX form there). A relative rule (../../tools/**) does not match: tested with Claude Code 2.1.311."""
+    q = os.path.abspath(p).replace("\\", "/")
+    if re.match(r"^[A-Za-z]:", q):
+        q = "/" + q[0].lower() + q[2:]
+    return "/" + q
+
+
 def claude_args(pdir, model, effort):
     cl = claude_bin()
     if not cl:
         raise SystemExit("Claude Code isn't installed: https://claude.com/claude-code (or set MV_CLAUDE)")
     deny = [f"Bash({c}:*)" for c in DENY_BASH]
+    for d in ("tools", "assets", ".claude", "templates", "app"):             # the studio itself is read-only to the director
+        rp = rule_path(os.path.join(STUDIO, d))
+        deny += [f"Edit({rp}/**)", f"Write({rp}/**)"]
     settings = {"permissions": {"deny": deny + ["WebFetch", "WebSearch"]}}
     cmd = [*cl, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
            "--permission-mode", "dontAsk", "--allowedTools", *ALLOWED, "--disallowedTools", *DISALLOWED,
            "--settings", json.dumps(settings), "--add-dir", os.path.join(STUDIO, "tools"), os.path.join(STUDIO, "assets"),
            os.path.join(STUDIO, ".claude", "skills"), os.path.join(STUDIO, "templates"),
-           "--append-system-prompt", SYSTEM_APPEND]
+           "--strict-mcp-config", "--append-system-prompt", SYSTEM_APPEND]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -308,6 +320,11 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
     fin = os.path.join(pdir, "final", "music-video.mp4")
     if os.path.exists(fin):                    # the cut that exists now is never lost: archive it first
         deliver(pdir, run=None, log=log)
+    try:                                       # tools/installed.md: what this machine has, for the director
+        subprocess.run([sys.executable, os.path.join(HERE, "doctor.py")], capture_output=True, timeout=180,
+                       env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    except Exception:
+        pass
     started = time.time()
     deadline = started + budget_s
     text = build_brief(pdir, budget_s, seed_notes, revise, started, deadline)
@@ -514,3 +531,47 @@ def append_settings(pdir, status, v):
 def request_stop(pdir):
     os.makedirs(os.path.join(pdir, "work", "director"), exist_ok=True)
     open(os.path.join(pdir, "work", "director", "STOP"), "w").write(time.strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def permission_test(pdir, model="haiku", log=print):
+    """Check the director's sandbox with the real Claude Code (a few cents with Haiku): a project write is allowed,
+    a write into the studio's tools and a network command are refused. Returns True when all three hold."""
+    cmd = claude_args(pdir, model, "low")
+    i = cmd.index("--append-system-prompt")
+    del cmd[i:i + 2]                                   # without the "don't edit the tools" hint: the rules must hold alone
+    probe = os.path.join(STUDIO, "tools", "_permtest.txt")
+    mine = os.path.join(pdir, "work", "_permtest.txt")
+    for f in (probe, mine):
+        if os.path.exists(f):
+            os.remove(f)
+    msg = (f"This is an authorized test of this session's permission settings; just try each step even if you expect a "
+           f"refusal. 1) Use the Write tool to create {rel(probe, pdir)} containing x. 2) Use the Write tool to create "
+           f"work/_permtest.txt containing ok. 3) Use Bash to run: curl --version. Then reply with one line per step: "
+           f"ALLOWED or DENIED.")
+    p = subprocess.Popen(cmd, cwd=pdir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         encoding="utf-8", errors="replace")
+    p.stdin.write(user_msg(msg))
+    p.stdin.flush()
+    denied_curl = False
+    for line in p.stdout:
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        s = summarize(ev)
+        if s:
+            log("   " + s[:200])
+        if ev.get("type") == "user" and "curl" in json.dumps(ev) and "denied" in json.dumps(ev).lower():
+            denied_curl = True
+        if ev.get("type") == "result":
+            p.stdin.close()
+    p.wait(timeout=300)
+    ok_tools = not os.path.exists(probe)
+    ok_mine = os.path.exists(mine)
+    for f in (probe, mine):
+        if os.path.exists(f):
+            os.remove(f)
+    log(f"[{'PASS' if ok_mine else 'FAIL'}] the director can write in the project folder")
+    log(f"[{'PASS' if ok_tools else 'FAIL'}] the director can't write into the studio's tools")
+    log(f"[{'PASS' if denied_curl else 'FAIL'}] network commands (curl) are refused")
+    return ok_tools and ok_mine and denied_curl

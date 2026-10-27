@@ -13,6 +13,7 @@
   python tools/studio.py versions <project>                          the delivered versions (final/music-video_vN.mp4)
   python tools/studio.py deliver <project>                           archive final/music-video.mp4 as the next version + checks
   python tools/studio.py stop <project>                              ask a running autonomous director to stop cleanly
+  python tools/studio.py permtest <project>                          check the director's sandbox with the real Claude Code (cents)
   python tools/studio.py run <project> <tool.py> [args]              run any tool inside a project (eyes.py, songq.py, compose.py, ...)
   python tools/studio.py serve [--port 8765] [--no-browser]          the local web app
   python tools/studio.py doctor                                      check the install and say how to fix what's missing
@@ -296,6 +297,11 @@ def cmd_stop(a):
     print("asked the running director to stop (it wraps up within a minute or two)")
 
 
+def cmd_permtest(a):
+    import director
+    sys.exit(0 if director.permission_test(project_dir(a.project), model=a.model) else 1)
+
+
 def cmd_versions(a):
     import director
     for v in director.versions(project_dir(a.project)):
@@ -353,6 +359,7 @@ def main():
     p = sp.add_parser("check"); p.add_argument("project"); p.add_argument("video", nargs="?"); p.add_argument("extra", nargs=argparse.REMAINDER)
     p = sp.add_parser("versions"); p.add_argument("project")
     p = sp.add_parser("deliver"); p.add_argument("project")
+    p = sp.add_parser("permtest"); p.add_argument("project"); p.add_argument("--model", default="haiku")
     p = sp.add_parser("stop"); p.add_argument("project")
     p = sp.add_parser("run"); p.add_argument("project"); p.add_argument("tool"); p.add_argument("args", nargs=argparse.REMAINDER)
     p = sp.add_parser("serve"); p.add_argument("--port", type=int, default=8765); p.add_argument("--no-browser", action="store_true")

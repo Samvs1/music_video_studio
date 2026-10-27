@@ -127,7 +127,22 @@ def main():
          "free some space", optional=du.free > 5e9)
     bad = [r for r in RESULTS if not r["ok"] and not r["optional"]]
     print("all good" if not bad else f"{len(bad)} thing(s) to fix: the !! lines above")
+    write_installed()
     return 1 if bad else 0
+
+
+def write_installed():
+    """tools/installed.md: what this machine has, for the director (tools/README.md points here). Git-ignored."""
+    import time
+    L = [f"# Installed on this machine ({platform.node()}, {platform.system()} {platform.release()})", "",
+         f"Written by `studio.py doctor` on {time.strftime('%Y-%m-%d %H:%M')}. Render speeds: `tools/speeds.json`.", ""]
+    for r in RESULTS:
+        L.append(f"- {'yes' if r['ok'] else 'NO '} · {r['name']}" + (f": {r['detail']}" if r["detail"] else ""))
+    L += ["", "Not installed means: don't plan on it (the web engine, FFmpeg and the song tools are what every machine has)."]
+    try:
+        open(os.path.join(HERE, "installed.md"), "w", encoding="utf-8").write("\n".join(L) + "\n")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

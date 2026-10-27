@@ -1,0 +1,122 @@
+{
+ "title": "Server test",
+ "song": {
+  "file": "Studio Test - Hold the Light.mp3",
+  "artist": "Studio Test",
+  "title": "Hold the Light",
+  "language": "en"
+ },
+ "about": "a light held through a night that changes speed",
+ "mood": "tender, strange",
+ "ideas": "",
+ "avoid": "spectrum bars",
+ "format": {
+  "preset": "custom",
+  "width": 480,
+  "height": 270,
+  "fps": 30
+ },
+ "lyrics": "[00:08.25] <00:08.25> neon <00:08.75> rain <00:09.00> is <00:09.25> falling <00:09.75> down\n[00:12.25] <00:12.25> every <00:12.75> window <00:13.25> glows\n[00:16.25] <00:16.25> count <00:16.75> the <00:17.00> lights <00:17.25> and <00:17.75> breathe\n[00:20.25] <00:20.25> nobody <00:21.00> knows\n[00:24.25] <00:24.25> hold <00:24.75> the <00:25.25> light\n[00:28.25] <00:28.25> hold <00:28.75> the <00:29.25> light <00:29.75> tonight\n[00:32.25] <00:32.25> hold <00:32.75> the <00:33.25> light\n[00:36.25] <00:36.25> never <00:36.75> let <00:37.25> it <00:37.50> go\n[00:42.25] <00:42.25> run <00:42.68> run <00:43.11> run\n[00:49.11] <00:49.11> into <00:49.54> the <00:49.96> morning\n",
+ "lyrics_fix": {},
+ "status": {
+  "stage": "v2 delivered",
+  "story": {
+   "by": "claude",
+   "at": "2026-10-27 18:25",
+   "cost_usd": 0.2066234
+  },
+  "latest": "v2"
+ },
+ "created": "2026-10-27",
+ "analysis": {
+  "duration": 65.421,
+  "bpm": 120.2,
+  "key": "C major",
+  "sections": 5,
+  "lyrics_lines": 10,
+  "lyrics_source": "user (LRC with word times)",
+  "stems": "fallback (librosa HPSS + bands + stereo centre: estimated, not a real separation)",
+  "beats": "fallback (librosa dynamic-tempo tracker + downbeat phase vote)",
+  "warnings": 2,
+  "at": "2026-10-27 18:18"
+ },
+ "versions": [
+  {
+   "n": 1,
+   "file": "final/music-video_v1.mp4",
+   "at": "2026-10-27 18:20",
+   "size": 5421275,
+   "mtime": 1793125236.4534605,
+   "checks": {
+    "spec": "PASS",
+    "flash": "PASS",
+    "text": "PASS",
+    "sync": "PASS"
+   },
+   "sync": 0.984,
+   "run": 1
+  },
+  {
+   "n": 2,
+   "file": "final/music-video_v2.mp4",
+   "at": "2026-10-27 18:21",
+   "size": 5421275,
+   "mtime": 1793125284.3247874,
+   "checks": {
+    "spec": "PASS",
+    "flash": "PASS",
+    "text": "PASS",
+    "sync": "PASS"
+   },
+   "sync": 0.984,
+   "run": 2
+  }
+ ],
+ "runs": [
+  {
+   "run": 1,
+   "kind": "first",
+   "model": "fake",
+   "model_used": "fake-director",
+   "effort": "low",
+   "budget": "4 min",
+   "wall_s": 139,
+   "cost_usd": 0.0,
+   "turns": 4,
+   "version": 1,
+   "stop_reason": "the director ended the session",
+   "claude_version": "0.0.0 (fake Claude Code for the studio's tests)",
+   "at": "2026-10-27 18:18"
+  },
+  {
+   "run": 2,
+   "kind": "revise",
+   "model": "fake",
+   "model_used": "fake-director",
+   "effort": "low",
+   "budget": "4 min",
+   "wall_s": 29,
+   "cost_usd": 0.0,
+   "turns": 4,
+   "version": 2,
+   "stop_reason": "the director ended the session",
+   "claude_version": "0.0.0 (fake Claude Code for the studio's tests)",
+   "at": "2026-10-27 18:20"
+  },
+  {
+   "run": 3,
+   "kind": "first",
+   "model": "fake",
+   "model_used": "fake-director",
+   "effort": "low",
+   "budget": "30 min",
+   "wall_s": 89,
+   "cost_usd": 0.0,
+   "turns": 0,
+   "version": null,
+   "stop_reason": "stopped by the user",
+   "claude_version": "0.0.0 (fake Claude Code for the studio's tests)",
+   "at": "2026-10-27 18:21"
+  }
+ ]
+}
