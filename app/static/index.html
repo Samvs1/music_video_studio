@@ -210,6 +210,8 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 .lx-add{padding:8px 4px}
 .lx-r.ab .lx-n::after{content:" ?";color:var(--acc)}
 .lx-r.ar .lx-n::after{content:" +";color:var(--acc)}
+.lx-r.new{background:#14261b}
+.lx-r.new .lx-n::after{content:" new";color:var(--ok);font-size:10px}
 .lx-heard{margin-top:8px;font-size:13px}
 .lx-heard div{display:flex;gap:8px;align-items:center;padding:2px 0}
 .sv-md h2{font-size:24px;margin:4px 0}.sv-md h3{font:600 15px system-ui;margin:14px 0 4px;color:var(--acc)}
@@ -450,6 +452,7 @@ async function vListen() {
     <span><b>${m.loudness.integrated_lufs}</b> LUFS &middot; range ${m.loudness.range_lu} LU</span>${vo.range ? `<span>voice <b>${vo.range[0]}–${vo.range[1]}</b></span>` : ""}
     <span>${m.sections.length} sections &middot; <b>${m.moments.filter(x => x.stars >= 3).length}</b> big moments</span></div>
   ${warn.length ? `<details class="hint" style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--acc)">${warn.length} warning${warn.length > 1 ? "s" : ""}: how far to trust this</summary><ul class="qa">${warn.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : ""}
+  ${(lm.heard_only || []).length ? `<p class="hint" style="color:var(--acc);margin:0 0 8px">Whisper heard ${lm.heard_only.length} line${lm.heard_only.length > 1 ? "s" : ""} that ${lm.heard_only.length > 1 ? "aren't" : "isn't"} in your lyrics (${lm.heard_only.slice(0, 2).map(h => `${fmt(h.t)} &ldquo;${esc(h.text)}&rdquo;`).join(", ")}${lm.heard_only.length > 2 ? ", &hellip;" : ""}): <a href="javascript:lxOpen()">see ${lm.heard_only.length > 1 ? "them" : "it"} and add</a>.</p>` : ""}
   ${rough ? `<p class="hint" style="color:var(--acc);margin:0 0 8px">The lyric times are rough (${esc(lm.source || "not force-aligned")}): listen with <b>Voice</b> only and fix them with <a href="javascript:lxOpen()">Fix the lyric timing</a>.</p>` : ""}
   <div class="sv-now"><div><div class="big" id="sv-sec">&nbsp;</div><div class="pos" id="sv-pos">&nbsp;</div></div><div class="ly" id="sv-ly"></div><div class="nx" id="sv-nx"></div></div>
   <div class="row sv-ctl"><button class="small" id="sv-play" onclick="svToggle()" style="min-width:84px">&#9654; Play</button><span class="t" id="sv-t">0:00.0</span><span class="sep"></span>
@@ -620,7 +623,8 @@ function lxFromSong() {           // where the editor starts: your own LRC as wr
 }
 function lxOpen() {
   if (!SV.m) return;
-  if (!SV.ed) SV.ed = {lines: lxFromSong().map(x => ({...x, set: false, eset: false})), cur: 0, hist: [], dirty: false, now: null};
+  if (!SV.ed) SV.ed = {lines: lxFromSong().map(x => ({...x, set: false, eset: false})), cur: 0, hist: [], dirty: false, now: null,
+                       heardOnly: ((SV.m.lyrics_meta || {}).heard_only || []).map(h => ({...h}))};
   if (!SV.ed.open) { SV.ed.orig = SV.m.lyrics; SV.ed.open = true; }
   $("#pane").classList.add("lxon");
   lxRender(); lxView();
@@ -661,10 +665,11 @@ function lxRender() {
       <button class="ghost small" onclick="lxUndo()">Undo</button><button class="ghost small" id="lx-align" onclick="lxAlign()" ${ed.aligning ? "disabled" : ""} title="Whisper listens to the vocals and places every line you haven't set yourself">Align with Whisper</button><button class="ghost small" onclick="lxPasteBox()">Paste lyrics&hellip;</button>
       <button class="ghost small" onclick="lxClose()">Cancel</button><button class="small" id="lx-save" onclick="lxSave()">Save &amp; analyse again</button></div>
     <div id="lx-al" class="hint">${ed.aligning ? '<span class="spin"></span> Whisper is listening to the vocals&hellip; (the first time it downloads its model, ~1.6 GB)' : ""}</div>
-    ${(ed.heardOnly || []).length ? `<div class="lx-heard"><b>Whisper also heard</b> <span class="mut">singing that isn't in your lyrics (its spelling: fix the words after adding):</span>
-      ${ed.heardOnly.map((h, q) => `<div><span class="mut" style="font:12px SpaceMono,monospace">${fmt(h.t)}</span> &ldquo;${esc(h.text)}&rdquo; <button class="ghost small" onclick="lxAddHeard(${q})">add as a line</button></div>`).join("")}</div>` : ""}
+    ${(ed.heardOnly || []).length ? `<div class="lx-heard"><b>Whisper heard ${ed.heardOnly.length > 1 ? "these lines" : "this line"}</b> <span class="mut">that ${ed.heardOnly.length > 1 ? "aren't" : "isn't"} in your lyrics (in its spelling: fix the words after adding)</span>
+      ${ed.heardOnly.length > 1 ? `<button class="ghost small" id="lx-addall" onclick="lxAddHeard(-1)">add all ${ed.heardOnly.length}</button>` : ""}
+      ${ed.heardOnly.map((h, q) => `<div><span class="mut" style="font:12px SpaceMono,monospace">${fmt(h.t)}</span> &ldquo;${esc(h.text)}&rdquo; <button class="small" onclick="lxAddHeard(${q})">add</button></div>`).join("")}</div>` : ""}
     <div id="lx-paste"></div>
-    <div class="lx-list" id="lx-list">${ed.lines.map((x, i) => `<div class="lx-r ${i === ed.cur ? "cur" : ""} ${x.set ? "set" : ""} ${!x.set && x.auto === "between" ? "ab" : ""} ${!x.set && x.auto === "repeat" ? "ar" : ""}" data-i="${i}" title="${!x.set && x.auto === "between" ? "Whisper didn't hear this line: it is placed between its neighbours, check it" : !x.set && x.auto === "repeat" ? "Whisper heard this line again here: added as a repeat" : ""}">
+    <div class="lx-list" id="lx-list">${ed.lines.map((x, i) => `<div class="lx-r ${i === ed.cur ? "cur" : ""} ${x.set ? "set" : ""} ${!x.set && x.auto === "between" ? "ab" : ""} ${!x.set && x.auto === "repeat" ? "ar" : ""} ${x.added ? "new" : ""}" data-i="${i}" title="${!x.set && x.auto === "between" ? "Whisper didn't hear this line: it is placed between its neighbours, check it" : !x.set && x.auto === "repeat" ? "Whisper heard this line again here: added as a repeat" : ""}">
       <span class="lx-n" onclick="lxCur(${i}, true)" title="tap this line next">${i === ed.cur ? "&#9656; " : ""}${i + 1}</span>
       <button class="ghost tm" onclick="lxPlay(${i})" title="play from just before this line">${x.t == null ? "&ndash;:&ndash;&ndash;" : "&#9654; " + fmt(x.t)}</button>
       <span class="mut lx-pos" title="bar:beat">${x.t == null ? "" : svPosStr(x.t)}</span>
@@ -827,10 +832,14 @@ function lxApplyAligned(r, idx) {
   toast(`${s.lines_heard} of ${s.lines} lines placed where Whisper heard them` + (s.repeats_added ? `, ${s.repeats_added} repeats added (+)` : "") +
         (s.lines - s.lines_heard ? `; check the ones marked ?` : ""));
 }
-function lxAddHeard(q) {
-  const ed = SV.ed, h = ed.heardOnly[q]; lxPush();
-  ed.lines.push({t: h.t, end: h.end, text: h.text, words: null, set: false, eset: false, auto: "heard"});
-  ed.lines.sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9)); ed.heardOnly.splice(q, 1); lxChanged();
+function lxAddHeard(q) {           // a line Whisper heard (q = -1: all of them) becomes a lyric line like any other
+  lxBlur(); const ed = SV.ed; if (!(ed.heardOnly || []).length) return;
+  lxPush();                                         // Undo brings back the lines and the list as they were
+  const hs = q < 0 ? ed.heardOnly.splice(0) : ed.heardOnly.splice(q, 1);
+  for (const h of hs) ed.lines.push({t: h.t, end: h.end, text: h.text, words: null, set: false, eset: false, auto: "heard", added: true});
+  ed.lines.sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9)); lxChanged();
+  const list = $("#lx-list"), row = list && list.querySelector(".lx-r.new"); if (row) list.scrollTop = row.offsetTop - list.clientHeight / 3;
+  toast(`${hs.length > 1 ? hs.length + " lines" : "The line"} added: fix the words if needed, then Save & analyse again`);
 }
 function lxPasteBox() {
   lxBlur();

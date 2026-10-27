@@ -38,8 +38,9 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 3. **The song**: the song the way Claude reads it, playing along: sections, loudness and the ★★★ moments, melody and
    bass notes, chords, beats, the four stems (hear any of them alone: M V D B O), a beat click (K), every sung word.
    Lyrics out of step? **Fix the timing** → **Align with Whisper** places every line where Whisper hears its words
-   (lines it didn't hear are marked ?, a chorus you wrote once comes back as a repeat, singing that isn't in your
-   lyrics is listed to add). Then fix what's left by hand: play the song (Voice only, 0.75×)
+   (lines it didn't hear are marked ?, a chorus you wrote once comes back as a repeat, and lines it heard that aren't
+   in your lyrics are listed with **add** / **add all**: an added line is a lyric line like any other). The song page
+   says so too after analysing. Then fix what's left by hand: play the song (Voice only, 0.75×)
    and press Enter as each line starts, or hold Enter while the line is sung to set where it ends too; drag a line's
    edges in the lyrics lane to stretch it; nudge starts and ends by a beat or a tenth of a second, fix words, add
    repeated lines. Saving writes the lines as LRC to the brief (an end is a time tag after the last word:

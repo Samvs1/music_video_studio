@@ -9,7 +9,8 @@ once) come back as repeats; stretches heard that match no line are listed, so th
 
 --in: [{"text": ...}, ...] (the web app's lyric timing editor sends its lines); default: the project's lyrics. Writes
 {"lines": [{i, text, t, end, words: [[word, t]], heard, src}], "heard_only": [{t, end, text}], "stats": {...}}: i = the
-input line (null for an added repeat), heard = share of its words matched, src = whisper | between | repeat.
+input line (null for an added repeat), heard = share of its words matched, src = whisper | between | repeat;
+heard_only = what Whisper heard that is in no line, cut into line-sized pieces in its own spelling (the user can add them).
 anchor() is standard library only: analyze_audio.py uses it for plain-text lyrics when the song has a transcription.
 Whisper's word times are good to ~0.2 s; align_words.py (forced alignment) then refines every word inside its line.
 """
@@ -92,7 +93,8 @@ def _match(U, W, line_of):
 
 def anchor(texts, heard, min_heard=0.25):
     """The lyric lines (texts, in sung order) placed on Whisper's words (heard: [{w, t, end}]). See the module doc."""
-    W = [(norm(h["w"]), float(h["t"]), float(h.get("end") or float(h["t"]) + 0.3)) for h in heard if norm(h["w"])]
+    W = [(norm(h["w"]), float(h["t"]), float(h.get("end") or float(h["t"]) + 0.3), str(h["w"]).strip())
+         for h in heard if norm(h["w"])]                  # (word as matched, start, end, as Whisper wrote it)
     lines = [{"i": k, "text": re.sub(r"\s+", " ", t).strip(), "words": []} for k, t in enumerate(texts)]
     lines = [x for x in lines if x["text"]]
     U, owner = [], []
@@ -102,7 +104,7 @@ def anchor(texts, heard, min_heard=0.25):
             if norm(w):
                 U.append(norm(w))
                 owner.append((li, wi))
-    pairs = _match(U, [w for w, _, _ in W], [li for li, _ in owner]) if U and W else {}
+    pairs = _match(U, [w[0] for w in W], [li for li, _ in owner]) if U and W else {}
     used = set(pairs.values())
     for ui, wj in pairs.items():
         li, wi = owner[ui]
@@ -176,10 +178,11 @@ def anchor(texts, heard, min_heard=0.25):
                     r = SequenceMatcher(None, sq, [W[j][0] for j in win]).ratio()
                     if r >= 0.6 and (best is None or r > best[0]):
                         best = (r, text, a_, n_)
-        if not best:
-            if len(run) >= 3:
-                heard_only.append({"t": round(W[run[0]][1], 2), "end": round(W[run[-1]][2], 2),
-                                   "text": " ".join(W[j][0] for j in run)})
+        if not best:                                 # heard, but in no line: line-sized pieces the user can add
+            for piece in _pieces(run, W):
+                if len(piece) >= 3:
+                    heard_only.append({"t": round(W[piece[0]][1], 2), "end": round(W[piece[-1]][2], 2),
+                                       "text": " ".join(W[j][3] for j in piece).strip(" ,;:")})
             continue
         r, text, a_, n_ = best
         win = run[a_:a_ + n_]
@@ -202,6 +205,19 @@ def anchor(texts, heard, min_heard=0.25):
              "words_heard": round(len(pairs) / max(1, len(U)), 2), "share": round(heard_share, 2),
              "repeats_added": len(repeats), "heard_only": len(heard_only), "usable": heard_share >= min_heard}
     return {"lines": out, "heard_only": heard_only, "stats": stats}
+
+
+def _pieces(run, W, gap=0.5, most=12):
+    """A run of heard words cut where the voice pauses (or every `most` words): one sung line each."""
+    out, cur = [], []
+    for j in run:
+        if cur and (W[j][1] - W[cur[-1]][2] > gap or len(cur) >= most):
+            out.append(cur)
+            cur = []
+        cur.append(j)
+    if cur:
+        out.append(cur)
+    return out
 
 
 def _runs(idx, W):

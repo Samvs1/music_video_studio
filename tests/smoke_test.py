@@ -178,6 +178,9 @@ def main():
     say("PASS" if [x["text"] for x in res["lines"]] == texts and err < 0.15 and res["stats"]["repeats_added"] == 1 else "FAIL",
         "lyric lines placed on heard words (mishearings, a missed word, an ad-lib, a repeat written once)",
         f"worst start {err:.2f} s off; {res['stats']}")
+    res = anchor(texts[:8] + texts[9:], heard)                        # a sung line left out of the lyrics
+    say("PASS" if [h["text"] for h in res["heard_only"]] == ["run run run"] and len(res["lines"]) == len(texts) - 1 else "FAIL",
+        "a sung line missing from the lyrics is listed (to add)", str(res["heard_only"]))
 
     print("== 4. mini director: web engine + Blender -> compose", flush=True)
     sys.path.insert(0, TESTS)

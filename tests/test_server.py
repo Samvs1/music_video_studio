@@ -238,7 +238,8 @@ def whisper_check(B, name):
     """Lyrics placed where Whisper heard them. Whisper can't be downloaded in a test, so its transcription is a
     stand-in written for this song file: the truth's words with two misheard and one missed. The timing editor's
     "Align with Whisper" job places lines written with the second "hold the light" left out (it comes back as a
-    repeat); then the same plain-text lyrics are analysed, placed on the transcription."""
+    repeat) and "run run run" left out (Whisper heard it: listed to add); then the same plain-text lyrics are
+    analysed, placed on the transcription."""
     pdir = os.path.join(STUDIO, "projects", name)
     truth = json.load(open(os.path.join(TESTS, "out", "test_song_truth.json"), encoding="utf-8"))
     song = next(f for f in os.listdir(os.path.join(pdir, "song")) if f.endswith(".mp3"))
@@ -251,22 +252,28 @@ def whisper_check(B, name):
     os.makedirs(os.path.join(pdir, "cache", "lyrics"), exist_ok=True)
     json.dump(tr, open(os.path.join(pdir, "cache", "lyrics", "transcribed.json"), "w", encoding="utf-8"))
     texts = [x["text"] for x in truth["lines"]]
-    sent = texts[:6] + texts[7:]
+    sent = [t for k, t in enumerate(texts) if k not in (6, 8)]
+    expect = [x for k, x in enumerate(truth["lines"]) if k != 8]
     r = requests.post(f"{B}/api/p/{name}/lyrics-align", json={"lines": [{"text": t} for t in sent]}).json()
     say(r.get("ok"), "POST lyrics-align (Whisper places the editor's lines: a job)", str(r)[:100])
     j, _ = wait_job(B, name, want="align")
     al = requests.get(f"{B}/p/{name}/cache/lyrics/aligned.json").json() if j.get("returncode") == 0 else {"lines": [], "stats": {}}
-    err = max([abs(a["t"] - b["t"]) for a, b in zip(al["lines"], truth["lines"])] or [99])
-    say(j.get("returncode") == 0 and [x["text"] for x in al["lines"]] == texts and err < 0.15 and al["stats"].get("repeats_added") == 1,
-        "placed where Whisper heard them: every line in place, the line written once comes back as a repeat",
-        f"{len(al['lines'])} lines, worst start {err:.2f} s off, {al['stats'].get('repeats_added')} repeat(s); {(j.get('log') or [''])[-1][:80]}")
+    err = max([abs(a["t"] - b["t"]) for a, b in zip(al["lines"], expect)] or [99])
+    heard = [h["text"] for h in al.get("heard_only") or []]
+    say(j.get("returncode") == 0 and [x["text"] for x in al["lines"]] == [x["text"] for x in expect] and err < 0.15
+        and al["stats"].get("repeats_added") == 1 and heard == ["run run run"],
+        "placed where Whisper heard them: every line in place, the line written once comes back as a repeat, the line left out is listed",
+        f"{len(al['lines'])} lines, worst start {err:.2f} s off, {al['stats'].get('repeats_added')} repeat(s), heard only {heard}")
     pj = requests.post(f"{B}/api/p/{name}/brief", json={"lyrics": "\n".join(sent)}).json()
     requests.post(f"{B}/api/p/{name}/ingest")
     j, _ = wait_job(B, name, want="ingest")
     m = requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()
-    err = max([abs(a["t"] - b["t"]) for a, b in zip(m["lyrics"], truth["lines"])] or [99])
-    say(j.get("returncode") == 0 and "timed with Whisper" in (m.get("lyrics_meta") or {}).get("source", "") and len(m["lyrics"]) == len(texts) and err < 0.35,
-        "plain-text lyrics analysed: placed on the transcription", f"{(m.get('lyrics_meta') or {}).get('source')}, {len(m['lyrics'])} lines, worst start {err:.2f} s off")
+    meta = m.get("lyrics_meta") or {}
+    err = max([abs(a["t"] - b["t"]) for a, b in zip(m["lyrics"], expect)] or [99])
+    say(j.get("returncode") == 0 and "timed with Whisper" in meta.get("source", "") and len(m["lyrics"]) == len(expect) and err < 0.35
+        and [h["text"] for h in meta.get("heard_only") or []] == ["run run run"],
+        "plain-text lyrics analysed: placed on the transcription, the line left out listed to add",
+        f"{meta.get('source')}, {len(m['lyrics'])} lines, worst start {err:.2f} s off, heard only {[h['text'] for h in meta.get('heard_only') or []]}")
 
 
 def refs_check(B, name):
@@ -341,6 +348,7 @@ def browser_pages(B, name, out):
                 page.keyboard.press("n")
                 page.wait_for_timeout(300)
             if h.endswith("/listen"):                             # the lyric timing editor: open, hold, drag, undo, close
+                say("Whisper heard 1 line" in page.inner_text("#pane"), "UI: the song page says what Whisper heard that isn't in the lyrics")
                 n_lyr = len(requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()["lyrics"])
                 page.click("#lx-open")
                 page.wait_for_selector("#lx-list .lx-r", timeout=5000)
@@ -370,9 +378,13 @@ def browser_pages(B, name, out):
                 page.click("#lx-align")                                   # the stand-in transcription is there
                 page.wait_for_function("SV.ed && !SV.ed.aligning", timeout=120000)
                 truth = json.load(open(os.path.join(TESTS, "out", "test_song_truth.json"), encoding="utf-8"))
+                n_al = page.evaluate("SV.ed.lines.length")
+                page.click(".lx-heard div button")                         # Whisper heard "run run run": add it
+                page.wait_for_timeout(300)
                 got = page.evaluate("SV.ed.lines.map(x => [x.text, x.t])")
                 aligned = len(got) == len(truth["lines"]) and all(a[0] == b["text"] and abs(a[1] - b["t"]) < 0.4 for a, b in zip(got, truth["lines"]))
-                say(aligned, "UI: Align with Whisper fills in the lines", f"{len(got)} lines; first {got[:2]}")
+                say(aligned and n_al == len(truth["lines"]) - 1 and page.locator("#lx-list .lx-r.new").count() == 1,
+                    "UI: Align with Whisper fills in the lines; a line it heard is added with one click", f"{n_al} -> {len(got)} lines; {got[7:9]}")
                 page.once("dialog", lambda d: d.accept())
                 page.click("#lx button:has-text('Cancel')")
                 page.wait_for_timeout(300)

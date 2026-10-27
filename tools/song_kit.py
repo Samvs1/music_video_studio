@@ -490,7 +490,7 @@ def analyse(tags=True, cpu=False):
                     ("where Whisper heard them (good to ~0.2 s)" if whisper else "estimates"))
     for h in ((A.get("lyrics_meta") or {}).get("heard_only") or [])[:8]:
         warn.append(f"Whisper heard singing at {int(h['t'] // 60)}:{h['t'] % 60:04.1f} that is not in your lyrics: "
-                    f"\"{h['text']}\" (add it on The song page: Fix the timing)")
+                    f"\"{h['text']}\" (The song page: Fix the timing, then add)")
     lyr = np.zeros(nf, bool)
     for x in lines:
         lyr[max(0, int((x["t"] - 0.3) * FPS)):int((x["end"] + 0.6) * FPS)] = True
