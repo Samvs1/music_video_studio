@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Minimal example (DOM + CSS): text marked data-mv-text is found by the text checks automatically.
+     CSS animations / transitions run on the frame clock. A template for the mechanics, not a look to copy.
+     No page background here, so it renders as a transparent type pass with --transparent (black otherwise). -->
+<html><head><style>
+  #word { position: absolute; left: 0; right: 0; top: 40%; text-align: center; color: #f2efe6;
+          font: 400 calc(160px * var(--mv-s)) "Instrument Serif"; letter-spacing: -0.02em; }
+  #bar { position: absolute; left: 6%; bottom: 8%; color: #9a968c; font: 400 calc(28px * var(--mv-s)) "IBM Plex Mono"; }
+</style></head>
+<body><div id="stage"><div id="word" data-mv-text="lyric-word"></div><div id="bar" data-mv-text="label"></div></div>
+<script>
+MV.scene({
+  render(f) {
+    const w = MV.wordAt(f.t);                                   // the word being sung now (null between words)
+    const el = document.getElementById("word");
+    el.textContent = w || "";
+    el.style.transform = `scale(${1 + 0.06 * MV.pulse("snare", f.t, 0.12)})`;
+    document.getElementById("bar").textContent = f.bar >= 0 ? `${f.bar}:${Math.floor(f.beat)}` : "";
+  },
+});
+</script></body></html>
