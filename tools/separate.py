@@ -11,6 +11,7 @@ Offline fallback (new in Music Video Studio): when the Demucs weights can't be l
 dl.fbaipublicfiles.com) or --fallback is given, the stems are *estimated* with librosa: harmonic/percussive
 separation, a low band for the bass and the centre of the stereo image for the voice. They are rough (bleed
 everywhere) but keep the pipeline running; model.txt says "fallback" and the song kit lowers its confidence.
+While the stems are estimates, every run (analysing again) tries Demucs again; real stems are kept (--force remakes).
 """
 import argparse, os, sys
 import numpy as np
@@ -93,9 +94,14 @@ def main():
     path = song_file()
     if not path:
         sys.exit("no song in song/ yet")
-    if os.path.exists(os.path.join(STEMS, "vocals.wav")) and not a.force:
+    have = os.path.exists(os.path.join(STEMS, "vocals.wav"))
+    mt = os.path.join(STEMS, "model.txt")
+    estimated = have and os.path.exists(mt) and open(mt).read().startswith("fallback")
+    if have and not a.force and (a.fallback or not estimated):
         print("stems exist, skipping (--force to remake)")
         return
+    if estimated and not a.force:                    # the model wasn't there last time: a real separation if it is now
+        print("   the stems are estimates (no Demucs last time): trying Demucs again", flush=True)
     os.makedirs(STEMS, exist_ok=True)
     stems = None
     if not a.fallback:

@@ -508,10 +508,13 @@ def analyse(tags=True, cpu=False):
         voiced = E["vocals"]["act"] > 0.45
         vnotes, bnotes = [], []
     D.release()
-    sung = voiced & lyr if lines else voiced
+    # inside a lyric line the vocal stem's own level counts as the voice too: rapped and spoken words are often
+    # unpitched, so CREPE misses them (outside the lines the level alone could be other instruments bleeding in)
+    vox = voiced | ((E["vocals"]["act"] > 0.5) & lyr) if lines else voiced
+    sung = vox & lyr if lines else voiced
     for nt in vnotes:
         nt["in_lyric"] = bool(lyr[min(nf - 1, int((nt["t"] + nt["end"]) / 2 * FPS))]) if lines else True
-    voice_lane = ndi.uniform_filter1d(voiced.astype(float) * np.maximum(E["vocals"]["act"], 0.35), 5)
+    voice_lane = ndi.uniform_filter1d(vox.astype(float) * np.maximum(E["vocals"]["act"], 0.35), 5)
     clock(f"pitch ({pitch_model or 'none'} on {dev})")
 
     # ---- harmony: chords per beat, key

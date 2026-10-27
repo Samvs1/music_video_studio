@@ -37,6 +37,9 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 2. **Analyse** (a few minutes): stems, beats and bars, lyrics, melody, chords, sections, moments → the song folder.
 3. **The song**: the song the way Claude reads it, playing along: sections, loudness and the ★★★ moments, melody and
    bass notes, chords, beats, the four stems (hear any of them alone: M V D B O), a beat click (K), every sung word.
+   Lyrics out of step (plain-text lyrics are only placed roughly)? **Fix the timing**: play the song (Voice only, 0.75×)
+   and press Enter as each line starts; nudge lines by a beat or a tenth of a second, fix words, add repeated lines.
+   Saving writes the lines as LRC to the brief and analyses the song again, which aligns every word inside its line.
 4. **Story**: Claude drafts what the song is about and how its arc could carry a video, from the lyrics, the song map
    and your notes; edit it, it's yours. (Skip it and the director writes it first.)
 5. **Direct**: set a time budget (e.g. 90 min), effort and model, optionally a note for this run, and start. The
@@ -121,7 +124,13 @@ director how they look, so it can draw them; the pictures never appear in the vi
   and canvas/WebGL text passed to `MV.text()`; roles (`lyric`, `lyric-word`, `title`, `label`, `deco`, ...) decide
   which rules apply. Deliberate black or frozen stretches are declared (`MV.intent`).
 - **Offline fallbacks** keep ingest working without the model downloads, and say so (report.json, the song map, the
-  web app): estimated stems (HPSS + bands + stereo centre) and a librosa beat tracker with a moving tempo.
+  web app): estimated stems (HPSS + bands + stereo centre) and a librosa beat tracker with a moving tempo. Analysing
+  again tries the real stem model again while the stems are estimates.
+- **The voice follows the lyric lines**: inside a line, the vocal stem's level counts as the voice even where it has no
+  pitch (rap, spoken words); outside the lines only pitched singing does, since the level alone could be other
+  instruments bleeding into the vocal stem. So lyric lines in the wrong place also hide the voice: fix the timing first.
+- **Lyrics timed in the web app are used as they are** (project.json `lyrics_synced`): no offset search, unlike a pasted
+  or downloaded LRC; changing the lyrics on the brief page drops the mark.
 - **Extra signals** only where they are measurements (spectral bands, transients, stereo width, brightness), each
   with its confidence in report.json. No mood / genre tags (aftermovie-studio found them too often wrong).
 - **The runner nudges** a director that delivers early to use the time left (`--no-nudge` turns it off), and reminds

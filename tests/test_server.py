@@ -5,10 +5,12 @@
 Starts `studio.py serve` on a free port with the stand-in for Claude Code (tests/fake_claude.py: no usage spent), then:
 new project -> upload the synthetic song -> brief (notes, format, lyrics) -> reference pictures (upright, no metadata,
 named, noted, removed) -> ingest with progress -> the song data (song-map, envelopes, frames, hits, a stem with a range
-request) -> story: draft (stand-in Claude) and save -> a director run with live progress (its brief lists the
-pictures) -> the video (range request) -> notes (add, done, delete) -> a review round -> stopping a running director
-cleanly -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
-tests/out/ui/; on the brief page a picture is added and named. Exit code 0 = all passed.
+request) -> story: draft (stand-in Claude) and save -> the lyric timing editor's save (LRC timed on this file, used
+as it is; the song analysed again) -> a director run with live progress (its brief lists the pictures) -> the video
+(range request) -> notes (add, done, delete) -> a review round -> stopping a running director cleanly -> doctor. Then
+each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in tests/out/ui/; on the brief
+page a picture is added and named, on the song page the lyric timing editor opens, taps, undoes and closes.
+Exit code 0 = all passed.
 """
 import argparse, io, json, os, shutil, socket, subprocess, sys, time
 
@@ -118,6 +120,7 @@ def main():
         text = st["story"]["text"] + "\n## My addition\nThe light is my grandmother's lamp.\n"
         r = requests.post(f"{B}/api/p/{name}/story", json={"text": text}).json()
         say("grandmother" in r.get("text", ""), "POST story (the user's edit saved)")
+        lyric_timing_check(B, name)
         # a director run
         say(requests.post(f"{B}/api/p/{name}/direct", json={"budget": 4, "effort": "low", "model": "fake"}).json().get("ok"), "POST direct")
         seen_running = False
@@ -186,6 +189,42 @@ def main():
     for w in bad:
         print("   FAILED:", w)
     sys.exit(1 if bad else 0)
+
+
+def lyric_timing_check(B, name):
+    """The lyric timing editor's save: LRC in project.json, marked as timed on this song file, so the analysis uses the
+    times as they are (here shifted 3 s on purpose: an offset search would have moved them back); the old lyrics kept;
+    then the true times again (with their word times). Changed lyrics on the brief page drop the mark."""
+    st = requests.get(f"{B}/api/p/{name}").json()
+    m = requests.get(B + st["song"]["map"]).json()
+    true = [{"t": x["t"], "text": x["text"], "words": [[w["w"], w["t"]] for w in x["words"]]} for x in m["lyrics"]]
+    shifted = [{"t": round(x["t"] + 3.0, 2), "text": x["text"]} for x in true]
+    r = requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted}).json()
+    say(r.get("ok") and r.get("lines") == len(shifted), "POST lyrics-timing (saved; the song is analysed again)", str(r)[:120])
+    say("error" in requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted}).json(), "lyrics-timing waits for a running job")
+    j, _ = wait_job(B, name, want="ingest")
+    st = requests.get(f"{B}/api/p/{name}").json()
+    m2 = requests.get(B + st["song"]["map"]).json()
+    meta, pj = m2.get("lyrics_meta") or {}, st["project"]
+    dt = [round(b["t"] - a["t"], 2) for a, b in zip(shifted, m2["lyrics"])]
+    say(j.get("returncode") == 0 and pj.get("lyrics_synced") and pj["lyrics"].startswith("[00:") and meta.get("offset") == 0
+        and "timed in the studio" in meta.get("source", "") and len(m2["lyrics"]) == len(shifted) and abs(sorted(dt)[len(dt) // 2]) <= 0.35,
+        "analysed again with the timed lines as they are (no offset search)", f"{meta.get('source')}, offset {meta.get('offset')}, "
+        f"line starts moved {min(dt)}..{max(dt)} s (snapped to the voice)")
+    kept = os.listdir(os.path.join(STUDIO, "projects", name, "cache", "lyrics"))
+    say(any(f.startswith("lyrics_") for f in kept), "the lyrics it replaced are kept in cache/lyrics/")
+    say("error" in requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted[:2]}).json(), "lyrics-timing needs 3 lines")
+    pj = requests.post(f"{B}/api/p/{name}/brief", json={"lyrics": pj["lyrics"]}).json()
+    keep = bool(pj.get("lyrics_synced"))
+    pj = requests.post(f"{B}/api/p/{name}/brief", json={"lyrics": pj["lyrics"] + "[00:59.00] one more\n"}).json()
+    say(keep and not pj.get("lyrics_synced"), "the brief page keeps the mark for the same lyrics, drops it for changed ones")
+    requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": true})
+    wait_job(B, name, want="ingest")
+    m3 = requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()
+    same = all(abs(a["t"] - b["t"]) < 0.02 and len(a["words"]) == len(b["words"]) and
+               all(abs(w[1] - v["t"]) < 0.012 for w, v in zip(a["words"], b["words"])) for a, b in zip(true, m3["lyrics"]))
+    say(same and len(m3["lyrics"]) == len(true) and "word times" in (m3.get("lyrics_meta") or {}).get("source", ""),
+        "word-timed lines keep their word times through the editor", (m3.get("lyrics_meta") or {}).get("source", ""))
 
 
 def refs_check(B, name):
@@ -259,6 +298,24 @@ def browser_pages(B, name, out):
             if h.endswith("/watch"):
                 page.keyboard.press("n")
                 page.wait_for_timeout(300)
+            if h.endswith("/listen"):                             # the lyric timing editor: open, tap, undo, close
+                n_lyr = len(requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()["lyrics"])
+                page.click("#lx-open")
+                page.wait_for_selector("#lx-list .lx-r", timeout=5000)
+                rows = page.locator("#lx-list .lx-r").count()
+                page.locator("#lx-list").click(position={"x": 5, "y": 5})     # off the button: Enter taps, not presses it
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(200)
+                tapped = page.locator("#lx-list .lx-r.set").count()
+                page.screenshot(path=os.path.join(shots, "listen-lyric-timing.png"), full_page=True)
+                page.keyboard.press("Backspace")
+                page.wait_for_timeout(200)
+                undone = page.locator("#lx-list .lx-r.set").count()
+                page.once("dialog", lambda d: d.accept())
+                page.click("#lx button:has-text('Cancel')")
+                page.wait_for_timeout(300)
+                say(rows == n_lyr and tapped == 1 and undone == 0 and page.locator("#lx-list").count() == 0,
+                    "UI: the lyric timing editor (open, tap with Enter, undo, cancel)", f"{rows}/{n_lyr} lines, tapped {tapped}, after undo {undone}")
             if h.endswith("/song"):                               # add a picture through the page and name it
                 from PIL import Image
                 pic = os.path.join(out, "ui_ref.png")

@@ -411,6 +411,9 @@ def analyze():
             lines = [(t, s) for t, s in parse_lrc(c["syncedLyrics"]) if s]
             if len(lines) < (3 if c.get("user") else 6):
                 continue
+            if c.get("user") and project().get("lyrics_synced"):      # timed on this very file (the web app's editor)
+                best = (0.0, 0.0, c, lines)
+                break
             lt = np.array([t for t, _ in lines])
 
             def score(o):
@@ -442,7 +445,8 @@ def analyze():
             print("   lyrics: no synced lyrics among the candidates (transcribe_lyrics.py can transcribe them)")
     if best is not None:
         z, off, c, lines = best
-        meta = {"source": "user (LRC)" if c.get("user") else "lrclib", "id": c["id"], "album": c.get("albumName"),
+        meta = {"source": ("user (LRC, timed in the studio)" if project().get("lyrics_synced") else "user (LRC)")
+                if c.get("user") else "lrclib", "id": c["id"], "album": c.get("albumName"),
                 "offset": round(off, 3), "match_z": round(float(z), 2)}
         print(f"   lyrics: {meta['source']} {c['id']} offset {off:+.2f}s z={z:.1f}")
         on_t = np.array([v["t"] for v in vocal_onsets])

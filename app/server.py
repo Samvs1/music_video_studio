@@ -13,6 +13,7 @@ API (JSON):
   POST /api/projects {name, title}       PUT  /api/p/<p>/upload?filename=x.mp3 (body = the file; .lrc/.txt = lyrics;
                                                                                  .jpg/.png/.webp = a reference picture)
   POST /api/p/<p>/ref {id, name | note | delete}                         (a reference picture: who it is, a note)
+  POST /api/p/<p>/lyrics-timing {lines: [{t, text, words?}]}             (the lyric timing editor: LRC, then re-analyse)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
   POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, effort, model, seed_notes, revise}
   POST /api/p/<p>/stop                   POST /api/p/<p>/note {version, t, text}
@@ -233,8 +234,10 @@ def save_brief(name, body):
 
 def update_brief(d, body):
     pj = jload(os.path.join(d, "project.json"), {})
+    if "lyrics" in body and str(body["lyrics"])[:60000] != (pj.get("lyrics") or ""):
+        pj.pop("lyrics_synced", None)               # other lyrics: no longer the ones timed on this song in the editor
     for k in BRIEF_KEYS & set(body):
-        pj[k] = str(body[k])[:20000 if k == "lyrics" else 6000]
+        pj[k] = str(body[k])[:60000 if k == "lyrics" else 6000]
     if isinstance(body.get("song"), dict):
         pj["song"] = dict(pj.get("song") or {}, **{k: str(v)[:200] for k, v in body["song"].items() if k in ("artist", "title", "language")})
     if isinstance(body.get("format"), dict):
@@ -353,6 +356,48 @@ def upload(name, filename, rfile, n):
             studio.save_project(d, pj)
         return {"ok": True, "kind": "song", "name": fn}
     return {"ok": True, "kind": "lyrics", "name": os.path.basename(dst)}
+
+
+def lrc_time(t):
+    m, s = divmod(max(0.0, float(t)), 60)
+    return f"{int(m):02d}:{s:05.2f}"
+
+
+def save_lyric_timing(name, body):
+    """The lyric timing editor (The song page): every line with its start, and its words' times where the user's LRC
+    had them, becomes LRC in project.json "lyrics", marked as timed on this very song file ("lyrics_synced": the
+    analysis then uses the times as they are, no offset search). The lyrics it replaces are kept in cache/lyrics/.
+    Then the song is analysed again (the stems are reused)."""
+    d = pdir(name)
+    out = []
+    for x in body.get("lines") or []:
+        text = re.sub(r"\s+", " ", str(x.get("text") or "")).strip()[:400]
+        t = float(x.get("t"))
+        if not text:
+            continue
+        if not 0 <= t < 6 * 3600:
+            raise ValueError(f"a line starts at {t} s: that's not in the song")
+        ws = x.get("words") or []
+        if ws and " ".join(str(w[0]) for w in ws) == text:            # word-timed (enhanced LRC): keep the word times
+            text = " ".join(f"<{lrc_time(float(wt))}> {w}" for w, wt in ws)
+        out.append((t, f"[{lrc_time(t)}] {text}"))
+    if len(out) < 3:
+        raise ValueError("at least 3 lyric lines are needed")
+    if job_state(name).get("running"):
+        raise RuntimeError("something is running on this project: wait for it to finish, then save again")
+    with PJ_LOCK:
+        pj = jload(os.path.join(d, "project.json"), {})
+        old = pj.get("lyrics")
+        if str(old or "").strip():
+            os.makedirs(os.path.join(d, "cache", "lyrics"), exist_ok=True)
+            open(os.path.join(d, "cache", "lyrics", f"lyrics_{time.strftime('%Y%m%d-%H%M%S')}.txt"), "w",
+                 encoding="utf-8").write(old if isinstance(old, str) else json.dumps(old, ensure_ascii=False))
+        pj["lyrics"] = "\n".join(line for _, line in sorted(out, key=lambda z: z[0])) + "\n"
+        pj["lyrics_synced"] = True
+        studio.save_project(d, pj)
+    if body.get("analyse", True):
+        start_job(name, "ingest", ["ingest", name])
+    return {"ok": True, "lines": len(out)}
 
 
 # ------------------------------------------------------------------ reference pictures (refs/)
@@ -602,6 +647,8 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json(edit_note(name, body))
                 if act == "ref":
                     return self.send_json(edit_ref(name, body))
+                if act == "lyrics-timing":
+                    return self.send_json(save_lyric_timing(name, body))
                 if act == "deliver":
                     r = subprocess.run([PY, os.path.join(TOOLS, "studio.py"), "deliver", name], capture_output=True, text=True,
                                        encoding="utf-8", errors="replace", cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"))

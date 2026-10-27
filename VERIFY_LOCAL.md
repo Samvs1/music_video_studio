@@ -85,7 +85,9 @@ Double-click `Music Video Studio.bat` → the browser opens http://127.0.0.1:876
 fill in artist + title → **Save & analyse**. You should see the steps tick off and, at the end, `Done` with the tempo,
 key, sections, `lyrics: N lines (lrclib)`, `stems: htdemucs_ft (cuda) ...`, `beats: beat_this final0`. Then
 **The song**: press Space and check *by ear*: the beat click (K) sits on the beat, bar 0 is the first downbeat, the
-lyric line lights up as it's sung, V / D / B / O solo the stems. Check the "warnings" line.
+lyric line lights up as it's sung, V / D / B / O solo the stems. Check the "warnings" line. Lines out of step (plain-text
+lyrics are only placed roughly): **Fix the timing** in the Lyrics box, press V and 0.75×, Play, and press Enter as each
+line starts; **Save & analyse again** and check by ear once more.
 (Command-line form: `.venv\Scripts\python.exe tools\studio.py new my-song --song "C:\path\song.mp3"` then
 `.venv\Scripts\python.exe tools\studio.py ingest my-song`.)
 

@@ -85,8 +85,9 @@ compose.py mux work/renders/layered.mp4                                         
 | sung word onsets | `align_words.py` (MMS forced alignment on the vocal stem) then `fix_lyrics.py` | words in `cache/audio.json` |
 | the song folder | `song_kit.py [--cpu] [--no-tags] [--curves-only --fps N]` | `song/*` |
 Lyrics: the user's own (project.json `lyrics` or `song/lyrics.lrc|.txt`; plain text, LRC, or LRC with `<mm:ss.xx>` word
-times) come first, then LRCLIB, then Whisper. Repairs that survive re-ingest: project.json `lyrics_fix` (`held_lines`,
-`words`, `text`; see `fix_lyrics.py`).
+times) come first, then LRCLIB, then Whisper. The web app's lyric timing editor (The song page) writes LRC there with
+`lyrics_synced: true` (timed on this very file: used as is, no offset search). Repairs that survive re-ingest:
+project.json `lyrics_fix` (`held_lines`, `words`, `text`; see `fix_lyrics.py`).
 
 ## The studio around it
 `studio.py doctor` (install check; writes `installed.md`), `benchmark` (speeds.json), `models.py status|fetch`,
