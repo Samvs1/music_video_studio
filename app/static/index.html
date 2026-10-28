@@ -614,16 +614,18 @@ function lxParse(text) {          // lyrics text -> [{t, text, words}]: LRC time
 function lxFromSong() {           // where the editor starts: your own LRC as written, else the analysed lines, else the brief's text
   const m = SV.m, meta = m.lyrics_meta || {}, ly = S.project.lyrics, txt = ly && typeof ly === "object" ? ly.text : ly;
   if (/^user \(LRC/.test(meta.source || "") && txt) {
-    const off = meta.offset || 0;
-    return lxParse(txt).map(x => ({...x, t: x.t == null ? null : x.t + off, end: x.end == null ? null : x.end + off,
-                                   words: x.words && x.words.map(([w, t]) => [w, t + off])}));
+    const off = meta.offset || 0, fixed = new Set((S.project.lyrics_set || []).map(t => Math.round(t * 100)));
+    const xs = lxParse(txt), mine = x => fixed.has(Math.round(x.t * 100)) || !!x.words, same = xs.length === m.lyrics.length;
+    return xs.map((x, k) => x.t == null ? x : !S.project.lyrics_synced || mine(x) || !same    // your own times: as you set them
+      ? {...x, t: x.t + off, end: x.end == null ? null : x.end + off, words: x.words && x.words.map(([w, t]) => [w, t + off]), set: S.project.lyrics_synced && mine(x)}
+      : {...x, t: m.lyrics[k].t, end: null, words: null});                                   // the rest: where the analysis put it
   }
   if (m.lyrics.length) return m.lyrics.map(x => ({t: x.t, end: x.end_src === "user" ? x.end : null, text: x.text, words: null}));
   return lxParse(txt);
 }
 function lxOpen() {
   if (!SV.m) return;
-  if (!SV.ed) SV.ed = {lines: lxFromSong().map(x => ({...x, set: false, eset: false})), cur: 0, hist: [], dirty: false, now: null,
+  if (!SV.ed) SV.ed = {lines: lxFromSong().map(x => ({set: false, eset: false, ...x})), cur: 0, hist: [], dirty: false, now: null,
                        heardOnly: ((SV.m.lyrics_meta || {}).heard_only || []).map(h => ({...h}))};
   if (!SV.ed.open) { SV.ed.orig = SV.m.lyrics; SV.ed.open = true; }
   $("#pane").classList.add("lxon");
@@ -835,8 +837,10 @@ function lxApplyAligned(r, idx) {
 function lxAddHeard(q) {           // a line Whisper heard (q = -1: all of them) becomes a lyric line like any other
   lxBlur(); const ed = SV.ed; if (!(ed.heardOnly || []).length) return;
   lxPush();                                         // Undo brings back the lines and the list as they were
-  const hs = q < 0 ? ed.heardOnly.splice(0) : ed.heardOnly.splice(q, 1);
-  for (const h of hs) ed.lines.push({t: h.t, end: h.end, text: h.text, words: null, set: false, eset: false, auto: "heard", added: true});
+  const hs = q < 0 ? ed.heardOnly.splice(0) : ed.heardOnly.splice(q, 1), key = s => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  for (const h of hs)
+    if (!ed.lines.some(x => x.t != null && Math.abs(x.t - h.t) < 1.5 && key(x.text) === key(h.text)))     // already there
+      ed.lines.push({t: h.t, end: h.end, text: h.text, words: null, set: false, eset: false, auto: "heard", added: true});
   ed.lines.sort((a, b) => (a.t ?? 1e9) - (b.t ?? 1e9)); lxChanged();
   const list = $("#lx-list"), row = list && list.querySelector(".lx-r.new"); if (row) list.scrollTop = row.offsetTop - list.clientHeight / 3;
   toast(`${hs.length > 1 ? hs.length + " lines" : "The line"} added: fix the words if needed, then Save & analyse again`);
@@ -866,7 +870,7 @@ async function lxSave() {
     for (let q = 0; q < n; q++) L[i + q].t = a != null && b != null ? a + (b - a) * (q + 1) / (n + 1) : a != null ? a + 2.5 * (q + 1) : Math.max(0, b - 2.5 * (n - q));
   }
   $("#lx-save").disabled = true;
-  try { await post(`/api/p/${S.name}/lyrics-timing`, {lines: L.map(x => ({t: Math.round(x.t * 100) / 100, text: x.text.trim(), words: x.words,
+  try { await post(`/api/p/${S.name}/lyrics-timing`, {lines: L.map(x => ({t: Math.round(x.t * 100) / 100, text: x.text.trim(), words: x.words, set: !!(x.set || x.eset),
                                                                              end: x.end != null && x.end > x.t + 0.05 ? Math.round(x.end * 100) / 100 : null}))}); }
   catch (e) { $("#lx-save").disabled = false; return toast(e.message); }
   lxRestore(); SV.ed = null;

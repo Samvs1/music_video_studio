@@ -137,7 +137,8 @@ def song_path(pdir):
 
 
 def user_lyrics_kind(pdir, pj):
-    """'lrc' (line times given), 'plain' (text only) or None: the user's own lyrics, as analyze_audio.py reads them."""
+    """'lrc' (line times given), 'plain' (text only), 'partly' (timed in the web app's editor, but not every line set
+    by hand: Whisper places the others) or None: the user's own lyrics, as analyze_audio.py reads them."""
     import re
     txt = pj.get("lyrics")
     txt = (txt.get("text") if isinstance(txt, dict) else txt) or ""
@@ -146,7 +147,10 @@ def user_lyrics_kind(pdir, pj):
             txt = open(os.path.join(pdir, "song", fn), encoding="utf-8").read()
     if not txt.strip():
         return None
-    return "lrc" if len(re.findall(r"\[\d+:\d+(?:\.\d+)?\]", txt)) >= 3 else "plain"
+    stamps = re.findall(r"\[\d+:\d+(?:\.\d+)?\]", txt)
+    if len(stamps) < 3:
+        return "plain"
+    return "partly" if pj.get("lyrics_synced") and len(pj.get("lyrics_set") or []) < len(stamps) else "lrc"
 
 
 # ------------------------------------------------------------------ commands
@@ -216,8 +220,9 @@ def cmd_ingest(a):
         lyr = has_user = kind is not None
         if has_user:
             log.append("using your own lyrics (project.json / song/lyrics.*)")
-            if kind == "plain" and not a.no_transcribe:  # text without times: Whisper hears where each line is sung
-                log.append("your lyrics have no times: Whisper listens to the vocals to place them")
+            if kind in ("plain", "partly") and not a.no_transcribe:   # lines without a time of the user's: Whisper places them
+                log.append("your lyrics have no times: Whisper listens to the vocals to place them" if kind == "plain" else
+                           "some lyric lines were never set by hand: Whisper listens to the vocals to place them")
                 lang = sm.get("language")
                 if run(pdir, ["transcribe_lyrics.py"] + (["--language", lang] if lang else []) + (["--force"] if a.force else []),
                        log, check=False):

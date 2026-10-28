@@ -141,8 +141,12 @@ director how they look, so it can draw them; the pictures never appear in the vi
   only spread over the singing by syllable count, and the word aligner could correct them by about a second at most.
   Whisper's word times are good to ~0.2 s; the forced aligner then refines each word inside its line. Without Whisper
   (no download) it falls back to that estimate and says so.
-- **Lyrics timed in the web app are used as they are** (project.json `lyrics_synced`): no offset search, unlike a pasted
-  or downloaded LRC; changing the lyrics on the brief page drops the mark.
+- **Lyric lines you set by hand in the web app are used as they are** (project.json `lyrics_synced` + `lyrics_set`):
+  no offset search, unlike a pasted or downloaded LRC. Lines the editor saved but you never set (their time was a
+  guess) are placed with Whisper again on every analysis. Changing the lyrics on the brief page drops both marks.
+- **Whisper getting stuck** (on music it can repeat a phrase many times, stamped at one moment) is filtered out: a word
+  heard again at the same moment is dropped, and nothing Whisper adds (a repeat, a line to add) may sit on top of a
+  line that is already placed.
 - **Extra signals** only where they are measurements (spectral bands, transients, stereo width, brightness), each
   with its confidence in report.json. No mood / genre tags (aftermovie-studio found them too often wrong).
 - **The runner nudges** a director that delivers early to use the time left (`--no-nudge` turns it off), and reminds

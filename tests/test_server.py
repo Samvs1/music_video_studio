@@ -201,7 +201,9 @@ def lyric_timing_check(B, name):
     st = requests.get(f"{B}/api/p/{name}").json()
     m = requests.get(B + st["song"]["map"]).json()
     true = [{"t": x["t"], "text": x["text"], "words": [[w["w"], w["t"]] for w in x["words"]]} for x in m["lyrics"]]
-    shifted = [{"t": round(x["t"] + 3.0, 2), "text": x["text"]} for x in true]
+    for x in true:
+        x["set"] = True                                                    # set by hand: kept exactly
+    shifted = [{"t": round(x["t"] + 3.0, 2), "text": x["text"], "set": True} for x in true]
     shifted[0]["end"] = round(shifted[0]["t"] + 1.7, 2)                    # the user said when the first line stops
     r = requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": shifted}).json()
     say(r.get("ok") and r.get("lines") == len(shifted), "POST lyrics-timing (saved; the song is analysed again)", str(r)[:120])
@@ -274,6 +276,21 @@ def whisper_check(B, name):
         and [h["text"] for h in meta.get("heard_only") or []] == ["run run run"],
         "plain-text lyrics analysed: placed on the transcription, the line left out listed to add",
         f"{meta.get('source')}, {len(m['lyrics'])} lines, worst start {err:.2f} s off, heard only {[h['text'] for h in meta.get('heard_only') or []]}")
+    # saved in the editor with only one line set by hand: the others (2 s off, never touched) go back where Whisper heard them
+    lines = [{"t": round(x["t"] + 2.0, 2), "text": x["text"], "set": k == 2} for k, x in enumerate(m["lyrics"])]
+    requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": lines})
+    j, _ = wait_job(B, name, want="ingest")
+    st = requests.get(f"{B}/api/p/{name}").json()
+    m2 = requests.get(B + st["song"]["map"]).json()
+    meta = m2.get("lyrics_meta") or {}
+    off = [round(a["t"] - b["t"], 2) for a, b in zip(m2["lyrics"], expect)]
+    say(j.get("returncode") == 0 and st["project"].get("lyrics_set") == [lines[2]["t"]] and abs(off[2] - 2.0) < 0.35
+        and all(abs(o) < 0.35 for k, o in enumerate(off) if k != 2) and "placed with Whisper" in meta.get("source", ""),
+        "lines saved in the editor but never set by hand are placed with Whisper; the line set by hand stays",
+        f"{meta.get('source')}; offsets from the truth {off}")
+    requests.post(f"{B}/api/p/{name}/brief", json={"lyrics": "\n".join(sent)})       # back to plain text for what follows
+    requests.post(f"{B}/api/p/{name}/ingest")
+    wait_job(B, name, want="ingest")
 
 
 def refs_check(B, name):

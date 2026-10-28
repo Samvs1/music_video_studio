@@ -488,6 +488,8 @@ def analyse(tags=True, cpu=False):
     if lines and not any("fa" in w for x in lines for w in x["words"]):
         warn.append("the lyric was never force-aligned (no align_words.py run): word times are " +
                     ("where Whisper heard them (good to ~0.2 s)" if whisper else "estimates"))
+    if (A.get("lyrics_meta") or {}).get("whisper_note"):
+        warn.append(A["lyrics_meta"]["whisper_note"])
     for h in ((A.get("lyrics_meta") or {}).get("heard_only") or [])[:8]:
         warn.append(f"Whisper heard singing at {int(h['t'] // 60)}:{h['t'] % 60:04.1f} that is not in your lyrics: "
                     f"\"{h['text']}\" (The song page: Fix the timing, then add)")

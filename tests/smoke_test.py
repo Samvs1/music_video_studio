@@ -181,6 +181,10 @@ def main():
     res = anchor(texts[:8] + texts[9:], heard)                        # a sung line left out of the lyrics
     say("PASS" if [h["text"] for h in res["heard_only"]] == ["run run run"] and len(res["lines"]) == len(texts) - 1 else "FAIL",
         "a sung line missing from the lyrics is listed (to add)", str(res["heard_only"]))
+    stuck = [{"w": w, "t": 12.25, "end": 12.27} for _ in range(10) for w in ("every", "window", "glows")]   # Whisper looping
+    res = anchor(texts[:8] + texts[9:], sorted(heard + stuck, key=lambda w: w["t"]))
+    say("PASS" if [h["text"] for h in res["heard_only"]] == ["run run run"] and res["stats"]["repeats_added"] == 0 else "FAIL",
+        "Whisper stuck in a loop adds no copies of a line", f"{res['stats']['repeats_added']} repeats, heard only {res['heard_only']}")
 
     print("== 4. mini director: web engine + Blender -> compose", flush=True)
     sys.path.insert(0, TESTS)

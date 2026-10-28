@@ -238,6 +238,7 @@ def update_brief(d, body):
     pj = jload(os.path.join(d, "project.json"), {})
     if "lyrics" in body and str(body["lyrics"])[:60000] != (pj.get("lyrics") or ""):
         pj.pop("lyrics_synced", None)               # other lyrics: no longer the ones timed on this song in the editor
+        pj.pop("lyrics_set", None)
     for k in BRIEF_KEYS & set(body):
         pj[k] = str(body[k])[:60000 if k == "lyrics" else 6000]
     if isinstance(body.get("song"), dict):
@@ -368,9 +369,10 @@ def lrc_time(t):
 def save_lyric_timing(name, body):
     """The lyric timing editor (The song page): every line with its start, its end where the user set one (a time tag
     after the last word: "[00:12.00] hold the light <00:14.10>") and its words' times where the user's LRC had them,
-    becomes LRC in project.json "lyrics", marked as timed on this very song file ("lyrics_synced": the analysis then
-    uses the times as they are, no offset search). The lyrics it replaces are kept in cache/lyrics/. Then the song is
-    analysed again (the stems are reused)."""
+    becomes LRC in project.json "lyrics", marked as timed on this very song file ("lyrics_synced": no offset search).
+    The lines the user set by hand are listed in "lyrics_set" (their start times): the analysis keeps those exactly
+    and places every other line where Whisper heard it (an untouched line's time was only ever a guess). The lyrics
+    it replaces are kept in cache/lyrics/. Then the song is analysed again (the stems are reused)."""
     d = pdir(name)
     out = []
     for x in body.get("lines") or []:
@@ -386,7 +388,7 @@ def save_lyric_timing(name, body):
         end = x.get("end")
         if end is not None and t + 0.05 < float(end) < 6 * 3600:      # when the line stops
             text += f" <{lrc_time(float(end))}>"
-        out.append((t, f"[{lrc_time(t)}] {text}"))
+        out.append((t, f"[{lrc_time(t)}] {text}", bool(x.get("set"))))
     if len(out) < 3:
         raise ValueError("at least 3 lyric lines are needed")
     if job_state(name).get("running"):
@@ -398,8 +400,10 @@ def save_lyric_timing(name, body):
             os.makedirs(os.path.join(d, "cache", "lyrics"), exist_ok=True)
             open(os.path.join(d, "cache", "lyrics", f"lyrics_{time.strftime('%Y%m%d-%H%M%S')}.txt"), "w",
                  encoding="utf-8").write(old if isinstance(old, str) else json.dumps(old, ensure_ascii=False))
-        pj["lyrics"] = "\n".join(line for _, line in sorted(out, key=lambda z: z[0])) + "\n"
+        pj["lyrics"] = "\n".join(line for _, line, _ in sorted(out, key=lambda z: z[0])) + "\n"
         pj["lyrics_synced"] = True
+        pj["lyrics_set"] = [round(int(m) * 60 + float(s_), 2) for t, _, mine in out if mine
+                            for m, s_ in [lrc_time(t).split(":")]]        # as the LRC reads back
         studio.save_project(d, pj)
     if body.get("analyse", True):
         start_job(name, "ingest", ["ingest", name])

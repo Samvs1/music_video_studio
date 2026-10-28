@@ -39,7 +39,21 @@ def transcription_for(path, song):
     if song and (s.get("file") != os.path.basename(song) or s.get("size") != os.path.getsize(song)):
         return None
     words = [w for L in tr.get("lines") or [] for w in L.get("words") or [] if norm(w.get("w"))]
-    return words or None
+    return drop_stuck(words) or None
+
+
+def drop_stuck(words):
+    """Whisper on music can get stuck: the same words again and again at one timestamp, or going back in time. Real
+    singing moves on, so a word heard at the same moment as the same word just before it, or before the word before
+    it, is dropped."""
+    out = []
+    for w in words:
+        t = float(w["t"])
+        if out and (t < float(out[-1]["t"]) - 0.05 or
+                    any(norm(w["w"]) == norm(o["w"]) and abs(t - float(o["t"])) < 0.05 for o in out[-12:])):
+            continue
+        out.append(w)
+    return out
 
 
 def _match(U, W, line_of):
@@ -94,7 +108,7 @@ def _match(U, W, line_of):
 def anchor(texts, heard, min_heard=0.25):
     """The lyric lines (texts, in sung order) placed on Whisper's words (heard: [{w, t, end}]). See the module doc."""
     W = [(norm(h["w"]), float(h["t"]), float(h.get("end") or float(h["t"]) + 0.3), str(h["w"]).strip())
-         for h in heard if norm(h["w"])]                  # (word as matched, start, end, as Whisper wrote it)
+         for h in drop_stuck(heard) if norm(h["w"])]      # (word as matched, start, end, as Whisper wrote it)
     lines = [{"i": k, "text": re.sub(r"\s+", " ", t).strip(), "words": []} for k, t in enumerate(texts)]
     lines = [x for x in lines if x["text"]]
     U, owner = [], []
@@ -161,6 +175,12 @@ def anchor(texts, heard, min_heard=0.25):
         x["t"], x["end"] = round(x["t"], 3), round(max(x["end"], x["t"] + 0.2), 3)
     # sung again but written once: unmatched stretches that read like one of the lines
     repeats, heard_only = [], []
+    taken = [(x["t"], x["end"]) for x in lines]       # where lines are already: nothing more goes on top of them
+
+    def free(a, b, n):
+        """[a, b] with n words: long enough to be sung (Whisper stuck in a loop stamps them all at once) and not on
+        top of a line already placed, a repeat or a heard piece."""
+        return b - a >= 0.1 * n and not any(min(b, e) - max(a, s) > 0.4 * (b - a) for s, e in taken)
     seqs = {x["text"]: [norm(w) for w, _ in x["words"] if norm(w)] for x in lines}
     todo = _runs([j for j in range(len(W)) if j not in used], W)
     while todo:
@@ -180,19 +200,24 @@ def anchor(texts, heard, min_heard=0.25):
                         best = (r, text, a_, n_)
         if not best:                                 # heard, but in no line: line-sized pieces the user can add
             for piece in _pieces(run, W):
-                if len(piece) >= 3:
-                    heard_only.append({"t": round(W[piece[0]][1], 2), "end": round(W[piece[-1]][2], 2),
+                a, b = W[piece[0]][1], W[piece[-1]][2]
+                if len(piece) >= 3 and free(a, b, len(piece)):
+                    heard_only.append({"t": round(a, 2), "end": round(b, 2),
                                        "text": " ".join(W[j][3] for j in piece).strip(" ,;:")})
+                    taken.append((a, b))
             continue
         r, text, a_, n_ = best
         win = run[a_:a_ + n_]
+        todo += [x for x in (run[:a_], run[a_ + n_:]) if x]
         ws = [[w, None] for w in text.split()]
         t0, t1 = W[win[0]][1], W[win[-1]][2]
+        if not free(t0, t1, len(win)):               # the same line again on top of itself: Whisper repeating, not the song
+            continue
+        taken.append((t0, t1))
         for q, w in enumerate(ws):
             w[1] = round(t0 + (t1 - t0) * q / max(1, len(ws)), 3)
         repeats.append({"i": None, "text": text, "t": round(t0, 3), "end": round(t1, 3), "words": ws,
                         "heard": round(r, 2), "src": "repeat"})
-        todo += [x for x in (run[:a_], run[a_ + n_:]) if x]
     heard_only.sort(key=lambda h: h["t"])
     out = sorted(lines + repeats, key=lambda x: x["t"])
     for a_, b_ in zip(out, out[1:]):                 # in order, no overlaps

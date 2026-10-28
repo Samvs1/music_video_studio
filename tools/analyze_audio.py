@@ -244,6 +244,39 @@ def user_lyrics():
     return ("lrc" if len(parse_lrc(txt)) >= 3 else "plain"), txt
 
 
+def loose_on_whisper(lyrics, lines, meta, song):
+    """The web app's editor saved every line with a time, but only the ones in project.json "lyrics_set" were set by
+    hand: the others (a guess the user never touched) go where Whisper heard their words, if it did, between the
+    hand-set lines around them. Changes `lyrics` and `meta` in place."""
+    from align_lyrics import anchor, transcription_for
+    fixed = {round(float(x), 2) for x in project().get("lyrics_set") or []}
+    keep = [round(t, 2) in fixed or any(w.get("src") == "user" for w in L["words"]) for (t, _), L in zip(lines, lyrics)]
+    if all(keep):
+        return
+    heard = transcription_for(os.path.join(CACHE, "lyrics", "transcribed.json"), song)
+    if not heard:
+        meta["whisper_note"] = (f"{len(keep) - sum(keep)} lyric lines were never set by hand and there is no Whisper "
+                                f"transcription of this song (Whisper couldn't run: see the log): they keep their rough times")
+        return
+    res = anchor([s for _, s in lines], heard)
+    by_i = {x["i"]: x for x in res["lines"] if x.get("i") is not None}
+    moved = 0
+    for k, L in enumerate(lyrics):
+        x = by_i.get(k)
+        if keep[k] or not x or x["src"] != "whisper" or x["heard"] < 0.5:
+            continue
+        lo = max([lyrics[q]["t"] for q in range(k) if keep[q]] or [-1.0])
+        hi = min([lyrics[q]["t"] for q in range(k + 1, len(lyrics)) if keep[q]] or [1e9])
+        if lo < x["t"] < hi:                             # never across a line the user set
+            ws = [{"w": w, "t": t_, "src": "whisper"} for w, t_ in x["words"]]
+            ws[-1]["t_end"] = x["end"]
+            lyrics[k] = {"t": x["t"], "end": x["end"], "text": L["text"], "words": ws}
+            moved += 1
+    meta["source"] += f", {moved} lines not set by hand placed with Whisper"
+    meta["heard_only"] = res["heard_only"][:20]
+    print(f"   lyrics: {sum(keep)} lines kept as set by hand, {moved} of the {len(keep) - sum(keep)} others placed where Whisper heard them")
+
+
 def time_plain_lines(lines, voc_act, dur):
     """Rough times for untimed lyric lines: spread them over the stretches where the vocal stem sings, in proportion
     to their syllables. align_words.py (forced alignment) then places every word properly."""
@@ -506,14 +539,22 @@ def analyze():
                     acc += sy
             lyrics.append({"t": round(t0, 3), "end": round(float(t1), 3), "text": s, **mine,
                            "words": [{"w": w, "t": tt} for w, tt in zip(words, wt)]})
+        if c.get("user") and project().get("lyrics_synced"):
+            loose_on_whisper(lyrics, lines, meta, path)
     placed = None
     if best is None and ukind == "plain":           # the user's text without times: placed on Whisper's words if there are any
         from align_lyrics import anchor, transcription_for
         plain = [x.strip() for x in utext.splitlines() if x.strip() and not x.strip().startswith(("[", "#"))]
         heard = transcription_for(os.path.join(CACHE, "lyrics", "transcribed.json"), path)
         placed = anchor(plain, heard) if heard else None
-        if placed and not placed["stats"]["usable"]:
+        if not heard:
+            meta_note = ("your lyrics have no times and there is no Whisper transcription of this song (Whisper couldn't "
+                         "run: see the log): the lines are only placed by estimate")
+        elif not placed["stats"]["usable"]:
             print(f"   lyrics: Whisper's words match only {placed['stats']['share'] * 100:.0f}% of the lyric: timed by estimate instead")
+            meta_note = (f"Whisper's words match only {placed['stats']['share'] * 100:.0f}% of your lyrics, so the lines are only "
+                         f"placed by estimate: is the language on the brief page right? (Whisper heard: "
+                         f"\"{' '.join(h['w'] for h in heard[:12])}\")")
             placed = None
     if placed:
         for x in placed["lines"]:
@@ -539,7 +580,7 @@ def analyze():
                 acc += sy
             lyrics.append({"t": round(t0, 3), "end": round(float(t1), 3), "text": text,
                            "words": [{"w": w, "t": tt} for w, tt in zip(words, wt)]})
-        meta = {"source": "user (plain text, timed by estimate)", "match_z": None}
+        meta = {"source": "user (plain text, timed by estimate)", "match_z": None, "whisper_note": meta_note}
         print(f"   lyrics: {len(lyrics)} lines of the user's text, timed roughly (forced alignment places the words)")
     tp = os.path.join(CACHE, "lyrics", "transcribed.json")
     tr = json.load(open(tp, encoding="utf-8")) if os.path.exists(tp) else None
