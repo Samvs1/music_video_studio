@@ -430,7 +430,18 @@ def cmd_motion(V, song, a, D=None):
 
 def cmd_look(V, song, a):
     """Everything in one folder: sheet over the whole video, beat sheet of the loudest section, the ★★★ moments,
-    motion plot, sync report, and index.md that lists them with the key numbers."""
+    motion plot, sync report, and index.md that lists them with the key numbers. While it works, a .looking file in
+    that folder says so (the critic waits for it instead of making the same pictures twice)."""
+    busy = os.path.join(out_dir(V.path), ".looking")
+    open(busy, "w").write(str(os.getpid()))
+    try:
+        look(V, song, a)
+    finally:
+        if os.path.exists(busy):
+            os.remove(busy)
+
+
+def look(V, song, a):
     D = measure(V)
     paths = {}
     a2 = argparse.Namespace(**{**vars(a), "times": None, "section": None, "moments": None, "range": None, "n": None})

@@ -7,11 +7,12 @@ new project -> upload the synthetic song -> brief (notes, format, lyrics) -> ref
 named, noted, removed) -> ingest with progress -> the song data (song-map, envelopes, frames, hits, a stem with a range
 request) -> story: draft (stand-in Claude) and save -> the lyric timing editor's save (LRC timed on this file, used
 as it is; the song analysed again) -> lyrics placed where Whisper heard them (a stand-in transcription: the editor's
-align job, then plain-text lyrics analysed with it) -> a director run with live progress (its brief lists the pictures) -> the video
-(range request) -> notes (add, done, delete) -> a review round -> stopping a running director cleanly -> doctor. Then
+align job, then plain-text lyrics analysed with it) -> a director run with live progress (its brief lists the pictures; the
+critic's notes on v1) -> the video (range request) -> "Ask the critic" (a critique job on v1, a bad video refused) -> notes
+(add, done, delete) -> a review round -> stopping a running director cleanly -> doctor. Then
 each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in tests/out/ui/; on the brief
 page a picture is added and named, on the song page the lyric timing editor opens, taps, undoes and closes, and
-aligns with Whisper.
+aligns with Whisper; the Direct page has the critic select, the Watch page the critic's box with its scores.
 Exit code 0 = all passed.
 """
 import argparse, io, json, os, shutil, socket, subprocess, sys, time
@@ -145,6 +146,7 @@ def main():
         say(bool(r) and r.status_code == 206 and r.headers.get("Content-Type", "").startswith("video/"), "GET the video (range request)")
         say(bool(v1 and v1.get("checks")) and all(x == "PASS" for x in v1["checks"].values()), "v1 passed the checks", str(v1 and v1.get("checks")))
         say("report" in st["files"], "report.md is there")
+        critic_check(B, name, st, d)
         # notes
         notes = requests.post(f"{B}/api/p/{name}/note", json={"version": "v1", "t": 40.5, "text": "hold the stop longer"}).json()
         notes = requests.post(f"{B}/api/p/{name}/note", json={"version": "v1", "t": 12.0, "text": "a temporary note"}).json()
@@ -192,6 +194,26 @@ def main():
     for w in bad:
         print("   FAILED:", w)
     sys.exit(1 if bad else 0)
+
+
+def critic_check(B, name, st, d):
+    """The critic: the run used it (the default model, the stand-in answers) and v1 has its notes; "Ask the critic" on
+    v1 is a job that writes final/critic_v1.md again; a video outside the project is refused."""
+    v1 = next((v for v in st["versions"] if v.get("n") == 1), {})
+    c1 = v1.get("critic") or {}
+    say(d.get("critic_model") == "sonnet" and bool(c1.get("scores")) and requests.get(B + c1.get("url", "/x")).ok,
+        "the run's critic (default sonnet): v1 has the critic's notes", f"{c1.get('file')} {c1.get('scores')}; this run: {len(d.get('critiques') or [])} critique(s)")
+    r = requests.post(f"{B}/api/p/{name}/critique", json={"version": 1, "model": "fake"}).json()
+    j, _ = wait_job(B, name, want="critique")
+    st = requests.get(f"{B}/api/p/{name}").json()
+    c2 = next((v.get("critic") for v in st["versions"] if v.get("n") == 1), None) or {}
+    # the new notes are the stand-in's ("fake"; the run's were "sonnet"): `at` has 1-second steps, and with the fake
+    # critic both can fall in the same second
+    say(r.get("ok") and j.get("returncode") == 0 and c2.get("model") == "fake" != c1.get("model") and st.get("critiques"),
+        "POST critique (Ask the critic on v1: a job; final/critic_v1.md again)", f"{c2.get('file')} at {c2.get('at')}; {len(st.get('critiques') or [])} in the project")
+    r = requests.post(f"{B}/api/p/{name}/critique", json={"video": "../../tools/studio.py"}).json()
+    r2 = requests.post(f"{B}/api/p/{name}/critique", json={"version": 99}).json()
+    say("error" in r and "error" in r2, "POST critique refuses a video outside the project and an unknown version", f"{r.get('error')}; {r2.get('error')}")
 
 
 def lyric_timing_check(B, name):
@@ -409,6 +431,13 @@ def browser_pages(B, name, out):
                       and abs((dragged or 0) - 12.5 - 40 / geo["pxs"]) < 0.15 and undone == 0 and page.locator("#lx-list").count() == 0)
                 say(ok, "UI: the lyric timing editor (hold Enter = start + end, drag a line's end, undo, cancel)",
                     f"{rows}/{n_lyr} lines; held {held}; end dragged to {dragged and round(dragged, 2)}; after undo {undone} set")
+            if h.endswith("/watch"):
+                page.wait_for_function("() => /ambition/.test(($('#wcrit-md') || {}).innerText || '')", timeout=10000)
+                say("ambition" in page.inner_text("#wcritic") and page.locator("#go-critique").count() == 1,
+                    "UI: the Watch page's critic box (scores, the notes, Ask the critic)", page.inner_text("#wcritic")[:90].replace("\n", " "))
+            if h.endswith("/direct"):
+                say(page.locator("#d-critic option").count() == 4 and page.input_value("#d-critic") in ("sonnet", "fake"),
+                    "UI: the Direct page's critic select", page.input_value("#d-critic"))
             if h.endswith("/song"):                               # add a picture through the page and name it
                 from PIL import Image
                 pic = os.path.join(out, "ui_ref.png")

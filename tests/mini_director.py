@@ -20,6 +20,7 @@ def step(pdir, *args, log=print):
     cmd = [sys.executable, os.path.join(STUDIO, "tools", "studio.py"), "run", name] + list(args)
     t0 = time.time()
     r = subprocess.run(cmd, cwd=STUDIO, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       stdin=subprocess.DEVNULL,       # never the stand-in director's stdin (ffmpeg would eat the studio's messages)
                        env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     tail = [x for x in (r.stdout + r.stderr).splitlines() if x.strip()][-3:]
     log(f"   [{time.time() - t0:5.1f}s] {args[0]} {' '.join(a for a in args[1:3])}: {tail[-1] if tail else ''}")

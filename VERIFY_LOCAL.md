@@ -103,10 +103,33 @@ If it fails: the log on the page says which step. No lyrics → the song isn't o
   `studio → director (5 minutes)` / `(time's up)` and at the end `delivered v1`.
 - **Watch & review**: v1 plays with the song's lanes under it; the report shows what it made and the `Run settings`.
   The checks line should read spec / flash / text / sync PASS.
+- If the director finishes early (`■ turn finished` with time left), the next line, `studio → director (use the time
+  left...)`, should follow within seconds (or within 4 minutes when it says `… waiting for the critic's notes on the
+  final`). If it comes only about 90 s after the director went quiet, every time, tell Claude: the runner's guess
+  about how Claude Code answers messages sent mid-turn is wrong on your version.
 
 If it fails: the run's files are in `projects\<p>\work\director\run-N\` (`brief.md`, `command.json`, `events.jsonl`,
 `stderr.log`). `stopped` early with an error in `stderr.log` → send it to Claude. No v1 → the report says what was
 done; `.venv\Scripts\python.exe tools\studio.py check <p>` on whatever is in `final\`.
+
+## 8b. The critic (cents to a dollar)
+```
+.venv\Scripts\python.exe tools\studio.py critique <p> v1 --model haiku
+```
+Expect `the critic is looking at v1 (2-4 min)...`, then (as it goes) `the critic (haiku, effort medium) is looking at
+final/music-video.mp4: 7 pictures (2-4 min)...` (an eyes look first if there was none), a short report (Verdict,
+Scores, Ambition, Problems with times and a **Push:**, What works, Can't tell from the pictures), the pictures it
+looked at, `critic: ambition N · song fit N · craft N · readability N · $0.0x · work/critic/music-video_NN.md` and
+the last line `v1: critic: ... · final/critic_v1.md`. It should describe what's actually in your video (it read the pictures) and never claim
+it heard anything. On **Watch & review** the Critic box shows the scores and the notes; **Ask the critic** (Sonnet)
+does the same as a job. During a director run (step 8) the live log shows `🔍 critic on work/previews/preview_1.mp4: ...`
+or `... final/music-video.mp4` and `studio → director (critic: ...)`, the run view lists the critiques, and the
+report's Run settings end with `- Critic: sonnet ...: N critiques, $...`.
+
+If it fails: `couldn't run: Claude didn't answer` (or Claude Code's own message, e.g. a usage limit or "Please run
+/login") → run `claude -p "say hi" --model haiku` in PowerShell; a warning
+that Claude Code doesn't know `--max-budget-usd` → update Claude Code (it ran without the $2 cap). Scores `?` → the
+critic's json block didn't parse: the report is kept; send Claude the file in `work\critic\`.
 
 ## 9. A review round
 On **Watch & review**, play, press **N** at a moment and write a note (e.g. "the chorus should hit harder") → **Direct**

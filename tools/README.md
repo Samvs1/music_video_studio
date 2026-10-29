@@ -55,6 +55,25 @@ segments into the final, so the checks know where every text was.
 
 A preview works (`--preview` renders, any size); a section render works when its `.mv.json` says where it sits.
 
+## critic.py: fresh eyes on a cheaper model (`studio.py critique <p> <video>`)
+`critique <p> work/previews/preview_3.mp4 [--model sonnet] [--effort medium] [--focus "the chorus 2 type"] [--concept PATH] [--out DIR] [--max-usd 2] [--no-look]`
+(or `critique <p> v2`: a delivered version, also kept as `final/critic_v2.md`). It runs `eyes.py look` (unless the
+eyes are newer than the video) and strips at up to three of the strongest ★★★ moments, then one headless Claude call
+(read-only tools) opens those pictures and judges them against `work/concept.md` (or `--concept`), the song's
+essentials (`work/song-notes.md`, else `work/critic/song-brief.md`), the user's notes, the anti-defaults and the craft
+rules: ambition first, then craft. Not `report.md` or `work/log.md`: fresh eyes. 2-4 minutes. Output:
+`work/critic/<video>_NN.md` (≤ 60 lines: verdict, scores, the worst problems with times and a direction to push, what
+works, what the pictures can't tell) + `.json` (`verdict`, `scores` {ambition, song_fit, craft, readability} 1-10,
+`problems` [{severity, t0, t1, where, what, push}], `keep`, `safe`, `anti_defaults`, `fixed_since_last`, plus the
+video's size + mtime, model, cost) and a line in `work/critic/log.jsonl`; the last printed line is
+`critic: ambition 7 · song fit 6 · craft 8 · readability 9 · $0.12 · work/critic/preview_3_02.md` (the line before it
+lists the pictures it looked at). Only pictures made after the video count (an eyes folder is per file name). When it
+can't run (no pictures of this cut, no answer, or Claude Code's own error text such as a usage limit or a login
+instead of a critique) it writes no critique, logs the error and its cost, prints `critic: couldn't run: <why>
+($0.0310 spent)` and exits 1. Read the report first; open only the pictures it points at: the critic does the looking,
+so the director's tokens go into the video. In autonomous runs the runner does this for every new
+`work/previews/*.mp4` and the final by itself (a ready final first).
+
 ## checks.py (`studio.py check <p>` runs `all` on final/music-video.mp4)
 | check | what |
 |---|---|
@@ -94,7 +113,10 @@ project.json `lyrics_fix` (`held_lines`, `words`, `text`; see `fix_lyrics.py`).
 
 ## The studio around it
 `studio.py doctor` (install check; writes `installed.md`), `benchmark` (speeds.json), `models.py status|fetch`,
-`director.py` (`studio.py story | direct | clock | stop | deliver | versions | permtest`), `studio.py serve` (web app).
-Shared code: `mv/common.py` (paths, project, fonts, ffmpeg, encoders), `mv/device.py` (GPU or CPU, one model at a time),
+`director.py` (`studio.py story | direct | clock | stop | deliver | versions | permtest`), `critic.py` (`studio.py critique`),
+`studio.py serve` (web app).
+Shared code: `mv/common.py` (paths, project, fonts, ffmpeg, encoders), `mv/claude.py` (the claude command and one
+headless print-mode call: the story step, the critic; `kill_tree` stops a process with what it started,
+`pid_alive` is Windows-safe), `mv/device.py` (GPU or CPU, one model at a time),
 `mv/listen.py` (the song kit's ears), `mv/songdoc.py` (its writers), `mv/curves.py` (frame curves, hits), `mv/web.py`
 (the web engine's driver).

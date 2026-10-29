@@ -24,18 +24,69 @@ def claude_bin():
     return [sys.executable, c] if c.endswith(".py") else [c]
 
 
+def descendants(pid):
+    """The processes a process started, and theirs (POSIX: pgrep -P; [] when pgrep isn't there)."""
+    out, todo = [], [pid]
+    while todo:
+        try:
+            r = subprocess.run(["pgrep", "-P", str(todo.pop())], capture_output=True, text=True, timeout=10)
+            kids = [int(x) for x in r.stdout.split()]
+        except Exception:
+            kids = []
+        out += kids
+        todo += kids
+    return out
+
+
 def kill_tree(proc):
-    """Stop a process and what it started (an npm claude.cmd is cmd.exe -> node on Windows)."""
+    """Stop a process and what it started (an npm claude.cmd is cmd.exe -> node on Windows; critic.py -> claude, the
+    eyes, ffmpeg): a child left running would keep spending."""
     if proc.poll() is not None:
         return
     if os.name == "nt":
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
     else:
+        kids = descendants(proc.pid)                   # before the parent goes: orphans can't be found by it after
         proc.kill()
+        for k in kids:
+            try:
+                os.kill(k, 9)
+            except OSError:
+                pass
     try:
         proc.wait(timeout=20)
     except subprocess.TimeoutExpired:
         pass
+
+
+def pid_alive(pid):
+    """Is this process still running? (On Windows os.kill(pid, 0) would end it: OpenProcess there.)"""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = ctypes.c_void_p      # a handle is pointer-sized
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5        # access denied: it exists, it isn't ours
+        code = ctypes.c_ulong()
+        ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
+        k32.CloseHandle(h)
+        return bool(ok) and code.value == 259          # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def print_cmd(model=None, effort=None, tools=("Read",), max_usd=None, args=()):
@@ -75,6 +126,9 @@ def claude_print(prompt, cwd, model=None, effort=None, tools=("Read",), timeout=
         except subprocess.TimeoutExpired:
             kill_tree(proc)
             raise RuntimeError(f"Claude didn't answer within {timeout // 60} min")
+        except BaseException:                    # Ctrl+C: the call doesn't outlive the one who made it
+            kill_tree(proc)
+            raise
         if attempt == 0 and max_usd and proc.returncode and "max-budget-usd" in (err + out) and \
                 any(w in (err + out).lower() for w in ("unknown option", "unknown argument", "unrecognized")):
             warnings.append("this Claude Code doesn't know --max-budget-usd: ran without a spending cap")

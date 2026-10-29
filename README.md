@@ -7,8 +7,9 @@ budget you set, and delivers `final/music-video.mp4` with a report. Motion graph
 (2D, 3D or both), no filmed footage, photos, AI-generated images or video, or downloaded artwork. The whole song,
 audio unchanged.
 
-You watch it next to the song's lanes, press **N** to leave a note at a moment, and the director makes the next
-version. Earlier versions are kept.
+While it works, **the critic** (a cheaper model with fresh eyes) looks at every preview and the final and sends the
+director its notes: ambition first, then craft. You watch the video next to the song's lanes, with the critic's notes
+beside it, press **N** to leave a note at a moment, and the director makes the next version. Earlier versions are kept.
 
 ## Install
 
@@ -47,10 +48,12 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    `[00:12.00] hold the light <00:14.10>`) and analyses the song again, which aligns every word inside its line.
 4. **Story**: Claude drafts what the song is about and how its arc could carry a video, from the lyrics, the song map
    and your notes; edit it, it's yours. (Skip it and the director writes it first.)
-5. **Direct**: set a time budget (e.g. 90 min), effort and model, optionally a note for this run, and start. The
-   director works alone; the page shows its live log, the clock and the cost. **Stop** wraps it up cleanly. Or direct
-   it *with* Claude: open Claude Code in this folder and type `/musicvideo <project>`.
-6. **Watch & review**: each version with the song's lanes under the video. Press **N** for a note at that moment.
+5. **Direct**: set a time budget (e.g. 90 min), effort, model and the critic (Sonnet by default; Haiku is cheaper,
+   Opus sharper, or off), optionally a note for this run, and start. The director works alone; the page shows its
+   live log, the clock, the cost and each critique the critic sent it. **Stop** wraps it up cleanly. Or direct it
+   *with* Claude: open Claude Code in this folder and type `/musicvideo <project>`.
+6. **Watch & review**: each version with the song's lanes under the video, and the critic's notes on it (scores, the
+   worst problems with their times, what works; **Ask the critic** for a fresh look). Press **N** for a note at that moment.
    Then **Direct → review round** (or `/musicvideo <project>`): the notes go to the director with the bar, section and
    lyric at each moment; the next version appears as `v2`, `v3`, ... (`final/music-video_vN.mp4`).
 
@@ -62,10 +65,11 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `song <p>` · `curves <p> [--fps N]` | remake the song folder · remake the per-frame files for another fps |
 | `story <p> [--model M]` | Claude drafts `song/song-story.md` (headless, read-only) |
 | `align-lyrics <p> [--in lines.json]` | the lyric lines placed where Whisper hears them (`cache/lyrics/aligned.json`; the timing editor's button) |
-| `direct <p> --budget 90m [--effort high] [--model opus] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run]` | the autonomous director |
+| `direct <p> --budget 90m [--effort high] [--model opus] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-max 6]` | the autonomous director (with the critic) |
+| `critique <p> <video \| vN> [--model sonnet] [--effort medium] [--focus "..."] [--max-usd 2]` | the critic: a cheaper model with fresh eyes looks at a video, reports back in text (`work/critic/`; a version also `final/critic_vN.md`) |
 | `clock <p>` · `stop <p>` | time left in a running budget · ask a running director to stop cleanly |
 | `check <p> [video]` | every check on the final (spec, flashes, text, sync) |
-| `deliver <p>` · `versions <p>` | archive `final/music-video.mp4` as the next version (+ checks) · list versions |
+| `deliver <p> [--critic]` · `versions <p>` | archive `final/music-video.mp4` as the next version (+ checks; `--critic`: + the critic's notes) · list versions |
 | `permtest <p>` | check the director's sandbox with the real Claude Code (a few cents with Haiku) |
 | `run <p> <tool.py> [args]` | run any tool inside a project (`eyes.py`, `songq.py`, `compose.py`, `web-engine/render.py`, `blender/run.py`, `checks.py`, ...) |
 | `serve [--port 8765]` · `doctor` · `benchmark [--quick]` · `smoke` | web app · install check · render speeds · the end-to-end smoke test |
@@ -93,6 +97,21 @@ The tools are documented in **`tools/README.md`** (with `tools/web-engine/README
   `work/director/`, messages it as time runs down, nudges it to keep improving if it finishes early, ends the session
   at the deadline plus a grace period, then archives the cut, runs the checks and appends the run settings (model,
   effort, budget, wall time, cost) to `report.md`.
+- **The critic** (`tools/critic.py`, `templates/critic-prompt.md`): looking at frames is image-heavy, so it shouldn't
+  be the expensive director doing all of it. The critic is one headless print-mode call on a cheaper model (Sonnet by
+  default) with read-only tools: it runs the eyes on a video (plus strips at its strongest ★★★ moments), opens the
+  pictures itself, and judges them against the director's `work/concept.md`, the song's essentials, the user's notes,
+  the anti-defaults and the craft rules (inlined from the skill), and its previous critique. It never sees
+  `report.md` or the director's log: fresh eyes judge the picture, not the account of it. Ambition first (is this a
+  video only this song could have? where does it play safe? what would make the boldest version of *this* concept
+  land?), then craft; at most 8 problems, each with a time range, what's wrong in the picture, why it matters and a
+  direction to push; what works; what the pictures can't tell. It never recommends the safer idea. During an
+  autonomous run the runner critiques every new `work/previews/*.mp4` and the final in the background (one at a time;
+  a ready final first, then the newest preview; 6 per run at most) and sends each critique to the director as a
+  message, with the pictures it looked at; the director doesn't do a full look of its own after a preview (the brief
+  and the skill say so), only the few pictures it needs. The early-finish nudge carries its notes on the final
+  (ambition first); the archived version keeps its critique as `final/critic_vN.md`. A call that couldn't answer (a
+  usage limit, a login, the $2 cap) is no critique: nothing is written but a log line, and its cost still counts.
 
 ## What's in git
 The studio (app, tools, skill, templates, fonts with licences, tests), `tools/speeds.json`, and each project's small
@@ -151,6 +170,19 @@ director how they look, so it can draw them; the pictures never appear in the vi
   with its confidence in report.json. No mood / genre tags (aftermovie-studio found them too often wrong).
 - **The runner nudges** a director that delivers early to use the time left (`--no-nudge` turns it off), and reminds
   one that hasn't delivered.
+- **The critic pushes ambition up, never down**: its prompt says to never recommend a safer or more conventional
+  idea, and when something bold isn't landing, to say how to make it land (timing, staging, room, set-up and payoff)
+  rather than how to retreat; to push the director's own concept, not swap in its own; and to say what the pictures
+  can't tell instead of guessing. Its notes go to the director, who decides ("take what's right, push harder where it
+  says you played safe, ignore what's wrong, and log what you took").
+- **The critic is Sonnet by default** (`project.json director.critic_model` / the Direct page; Haiku for pennies,
+  Opus when it matters; `off`), effort `medium`, with a $2 cap per critique (`--max-budget-usd`; an older Claude Code
+  without it runs uncapped and says so). One real Haiku critique of the 65 s test video took 50 s and $0.02.
+- **The runner waits for the critic's notes on the final** (up to 4 minutes, when time is left) before it nudges a
+  director that finished early, so the nudge carries its notes instead of a generic "look again"; it waits for a
+  director's queued replies before deciding anything. That assumes Claude Code answers each message sent mid-turn
+  with a turn of its own (the test stand-in does; not yet seen on a real run): if it merges them, each decision waits
+  at most 90 s for events that don't come (VERIFY_LOCAL step 8 says what to look for).
 - **The director's sandbox** is tested, not assumed: `studio.py permtest` (a relative deny rule doesn't match in
   Claude Code 2.1; the absolute `//path` form does).
 
@@ -168,6 +200,10 @@ director how they look, so it can draw them; the pictures never appear in the vi
   autonomous runner passes its own scoped permissions and asks nothing.
 - One song per project; the whole song, always.
 - QA can't hear: phrase-level musical feel needs a human ear (the director's report lists the timestamps).
+- The critic sees stills: motion between frames, how a move feels and anything about sound are out of its reach (it
+  says so). It can be wrong; the director decides. A critique stopped midway (Stop on the Watch page, a preview
+  critique giving way to a new final, the end of a run) isn't counted in the run's critic cost: the call can't say
+  what it spent.
 
 ## Ideas for next
 - A **storyboard view** in the web app: the director's style frames and section plan as cards before the full render.

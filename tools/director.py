@@ -271,8 +271,11 @@ def critic_brief(critic, project, python, tools):
     return (f"\n- The studio's critic: a cheaper model ({critic[0]}) with fresh eyes looks at what you render while you "
             f"work: every full preview you mux into work/previews/preview_N.mp4 and final/music-video.mp4 (up to "
             f"{critic[1]} critiques this run). It sees only the frames, work/concept.md and the song, not your reasoning, "
-            f"and its notes arrive as a message from the studio (ambition first, then craft). It runs by itself: keep "
-            f"working. You're the director: take what's right, push harder where it says you played safe, ignore what's "
+            f"and its notes arrive as a message from the studio a few minutes later (ambition first, then craft). It does "
+            f"the looking so your own tokens go into the video: after you mux a full preview, don't run eyes.py look on it "
+            f"or open its sheets yourself; carry on with the next thing until its notes arrive, then open only the "
+            f"pictures it names that you need to judge yourself (one eyes.py strip or beats for one specific question is "
+            f"fine). You're the director: take what's right, push harder where it says you played safe, ignore what's "
             f"wrong. For a second look at one part: `{python} {tools}/studio.py critique {project} <video> --focus \"...\"` "
             f"(2-4 min).")
 
@@ -358,12 +361,16 @@ CRITIC_INTRO = ("The studio's critic ({model}, fresh eyes: it saw only the frame
 class CriticWatcher:
     """The studio's critic during an autonomous run. Every ~5 s it looks at work/previews/*.mp4 and
     final/music-video.mp4 changed since the run started; a file whose size held still over two looks is ready (a
-    .part / .tmp file never is). One critique at a time, in a background thread (critic.py with the venv python);
-    when several files are ready, only the newest (the older ones are passed over). At most `most` critiques per run,
-    the last one kept for a final. Finished critiques wait in take() for the runner."""
+    .part / .tmp file never is). One critique at a time, in a background thread (critic.py with the venv python).
+    A ready final goes first (it's the cut that gets delivered, and the early-finish nudge waits for its notes): a
+    preview critique still running when a new final is ready is stopped for it (its slot is given back). Of several
+    ready previews only the newest; none older than a ready final. At most `most` critiques per run, the last one kept
+    for a final; no preview critique when its notes couldn't reach the director in time (`min_left`), and nothing new
+    once the run is stopping. Finished critiques wait in take() for the runner."""
 
-    def __init__(self, pdir, started, model, effort, most=6):
+    def __init__(self, pdir, started, model, effort, most=6, min_left=6 * 60):
         self.pdir, self.started, self.model, self.effort, self.most = pdir, started, model, effort, most
+        self.min_left = min_left
         self.fin = os.path.join(pdir, "final", "music-video.mp4")
         self.seen, self.handled, self.finished = {}, set(), []
         self.job, self.n, self.last = None, 0, 0.0
@@ -377,7 +384,10 @@ class CriticWatcher:
             return None
         return (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime)
 
-    def poll(self, now):
+    def is_final(self, k):
+        return k[0] == os.path.normcase(os.path.abspath(self.fin))
+
+    def poll(self, now, left=None, stopping=False):
         if now - self.last < 5:
             return
         self.last = now
@@ -389,14 +399,40 @@ class CriticWatcher:
             was, self.seen[f] = self.seen.get(f), k
             if was == k and k not in self.handled:
                 ready.append(k)
+        if stopping or not ready:
+            return
+        ready.sort(key=lambda k: k[2])
+        fins = [k for k in ready if self.is_final(k)]
+        prevs = [k for k in ready if not self.is_final(k)]
         with self.lock:
-            if self.job or not ready:
+            job = self.job
+            if job and fins and not self.is_final(job["key"]) and not job.get("superseded"):
+                job["superseded"] = True            # the director delivered: the final's notes matter more now
+                self.n -= 1
+                proc = job.get("proc")
+            elif job:
                 return
-            ready.sort(key=lambda k: k[2])
-            self.handled.update(ready)                          # the newest is critiqued; the older ones are passed over
-            k = ready[-1]
-            if self.n >= self.most or (k[0] != self.key(self.fin)[0] if self.key(self.fin) else True) and self.n >= self.most - 1:
-                return                                          # the last critique is kept for a final
+            else:
+                proc = None
+        if proc:
+            kill_tree(proc)
+        with self.lock:
+            if self.job:
+                return                              # the stopped one ends in its thread; the final starts next look
+            cut, newest = (fins[-1][2] if fins else 0), prevs[-1:]
+            self.handled.update(prevs[:-1])                         # older previews are passed over: the newest counts
+            self.handled.update(k for k in newest if k[2] <= cut)   # and none older than a ready final
+            prevs = [k for k in newest if k[2] > cut]
+            if prevs and (self.n >= self.most - 1 or (left is not None and left < self.min_left)):
+                self.handled.update(prevs)          # the last critique is kept for a final; too late to reach it
+                prevs = []
+            if fins and self.n >= self.most:
+                self.handled.update(fins)
+                fins = []
+            k = fins[-1] if fins else prevs[-1] if prevs else None
+            if not k:
+                return
+            self.handled.add(k)
             self.n += 1
             self.job = {"key": k, "video": rel(k[0], self.pdir), "proc": None}
             threading.Thread(target=self._run, args=(self.job,), daemon=True).start()
@@ -409,6 +445,8 @@ class CriticWatcher:
             job["proc"] = subprocess.Popen(cmd, cwd=STUDIO, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                            encoding="utf-8", errors="replace",
                                            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            if job.get("superseded"):
+                kill_tree(job["proc"])
             out = job["proc"].communicate(timeout=1500)[0]
             c = critic.from_output(self.pdir, out)
         except Exception as ex:
@@ -417,12 +455,14 @@ class CriticWatcher:
                 kill_tree(job["proc"])
         tail = [x for x in out.strip().splitlines() if x.strip()][-1:] or ["no output"]
         with self.lock:
-            self.finished.append(dict(c, key=job["key"], t=round(time.time() - self.started)) if c else
-                                 {"video": job["video"], "error": tail[0][:300]})
-            self.job = None
+            if not job.get("superseded"):           # a stopped preview critique (a new final came) is dropped
+                self.finished.append(dict(c, key=job["key"], t=round(time.time() - self.started)) if c else
+                                     {"video": job["video"], "error": tail[0][:300], "cost_usd": critic.spent(out)})
+            if self.job is job:
+                self.job = None
 
     def take(self):
-        """The critiques finished since the last call (an {"video", "error"} for one that couldn't run)."""
+        """The critiques finished since the last call (an {"video", "error", "cost_usd"} for one that couldn't run)."""
         with self.lock:
             out, self.finished = self.finished, []
         return out
@@ -433,20 +473,20 @@ class CriticWatcher:
         with self.lock:
             if not k or k[2] <= self.started:
                 return False
-            if self.job:
-                return self.job["key"] == k or (k not in self.handled and self.n < self.most)
+            if self.job and self.job["key"] == k:
+                return True
             return k not in self.handled and self.n < self.most
 
-    def stop(self, wait_key=None, timeout=300):
+    def stop(self, wait_key=None, timeout=900, abort=None):
         """At the end of the run: a critique of wait_key (the final) still running may finish (it's reused for the
-        version); any other is stopped."""
+        version), unless abort() says the user stopped; any other is stopped (with what it started)."""
         with self.lock:
             job = self.job
         if not job:
             return
         if wait_key and job["key"] == wait_key:
             t0 = time.time()
-            while time.time() - t0 < timeout and self.job:
+            while time.time() - t0 < timeout and self.job is job and not (abort and abort()):
                 time.sleep(1)
         if self.job is job:
             for _ in range(20):
@@ -456,36 +496,104 @@ class CriticWatcher:
             if job["proc"]:
                 kill_tree(job["proc"])
             t0 = time.time()
-            while time.time() - t0 < 20 and self.job:
+            while time.time() - t0 < 20 and self.job is job:
                 time.sleep(0.5)
+
+
+def critic_pictures(c, most=12):
+    """The pictures the critic looked at, for the director to open the few it needs (they're already made)."""
+    ps = c.get("pictures") or []
+    return (f"The pictures it looked at (made already: open only the ones you need to judge yourself): "
+            + ", ".join(ps[:most]) + (f" (+{len(ps) - most} more)" if len(ps) > most else "") + ".") if ps else ""
 
 
 def critic_message(c, most=6000):
     rep = (c.get("report") or "").strip()
     if len(rep) > most:
         rep = rep[:most].rsplit("\n", 1)[0] + "\n[... the rest is in the file]"
+    pics = critic_pictures(c)
     return CRITIC_INTRO.format(model=c.get("model") or "the critic", video=c["video"]) + \
-        f" (Its report is also in {c.get('file')}.)\n\n" + rep
+        f" (Its report is also in {c.get('file')}.)" + (f"\n{pics}" if pics else "") + "\n\n" + rep
 
 
-def critic_nudge(c, left):
+NUDGE_HEAD = ("You delivered a cut with {left} still on the clock: spend it making the video better, and bolder. Start "
+              "where the critic says you played safe and with what it says the boldest version of your concept would do, "
+              "not with polish; then its worst problems. ")
+NUDGE_TAIL = ("\n\nThen render, check and deliver again. Keep the current final until the new one passes the checks. Then "
+              "rewrite report.md so it describes the cut you delivered (no 'Round' heading: those are for the user's "
+              "review rounds).")
+
+
+def critic_nudge(c, left, seen=False):
+    """The early-finish nudge with the critic's notes on the final: its whole report (the Ambition section first, as
+    the critic wrote it), or, when the director has had the report already (a message, or it ran the critic itself),
+    the gist again: the ambition push, where it plays safe, the worst problems."""
     import critic
+    head = NUDGE_HEAD.format(left=fmt_dur(left))
+    if not seen:
+        return head + "\n\n" + critic_message(c) + NUDGE_TAIL
+    amb = re.sub(r"^## [^\n]*\n", "", critic.section(c.get("report") or "", "Ambition")).strip()
+    safe = "\n".join(f"- {x}" for x in (c.get("safe") or [])[:5])
     probs = critic.problems_text(c, 4)
-    return (f"You delivered a cut with {fmt_dur(left)} still on the clock: spend it making the video better. "
-            + CRITIC_INTRO.format(model=c.get("model") or "the critic", video=c["video"])
-            + f"\n\nIts verdict: {c.get('verdict') or '-'} ({critic.score_line(c.get('scores'))})\n"
-            + (f"Its worst problems:\n{probs}\n" if probs else (c.get("report") or "")[:3000] + "\n")
-            + f"(The whole report: {c.get('file')}.)\n\nThen render, check and deliver again. Keep the current final "
-              f"until the new one passes the checks. Then rewrite report.md so it describes the cut you delivered (no "
-              f"'Round' heading: those are for the user's review rounds).")
+    return (head + f"You had the critic's notes on this cut ({c.get('file')}); the gist again:\n\n"
+            f"Its verdict: {c.get('verdict') or '-'} ({critic.score_line(c.get('scores'))})\n"
+            + (f"\nAmbition: {amb[:1500]}\n" if amb else "") + (f"\nWhere it plays safe:\n{safe}\n" if safe else "")
+            + (f"\nIts worst problems:\n{probs}\n" if probs else "") + NUDGE_TAIL)
 
 
-def critique_version(pdir, v, model=None, effort=None, force=False, reuse_only=False, extra=(), log=print):
+def plain_nudge(left, pdir, critic_on=False, coming=False):
+    """The early-finish nudge without the critic's notes on this cut. With the critic on, the director doesn't do
+    the full look itself: the critic's notes are on their way, or it asks the critic."""
+    if not critic_on:
+        return (f"You delivered a cut with {fmt_dur(left)} still on the clock. Spend it making the video better: look at it "
+                f"again with the eyes tools (sheets of each section, the beat sheets of the biggest sections, the motion "
+                f"plot), pick the weakest parts and improve them, then render, check and deliver again. Keep the current "
+                f"final until the new one passes the checks. Then rewrite report.md so it describes the cut you delivered "
+                f"(no 'Round' heading: those are for the user's review rounds).")
+    tools = rel(os.path.join(STUDIO, "tools"), pdir)
+    look = ("The critic's notes on this cut are on their way (they come as a message): start on what you already know is "
+            "weakest meanwhile." if coming else
+            f"For fresh eyes on it, ask the critic (a cheaper model looks at the pictures and reports back) rather than "
+            f"opening every sheet yourself: `{venv_python(pdir)} {tools}/studio.py critique {os.path.basename(pdir)} "
+            f"final/music-video.mp4 --focus \"...\"` (2-4 min).")
+    return (f"You delivered a cut with {fmt_dur(left)} still on the clock. Spend it making the video better, and bolder: "
+            f"where does it play safe, which ★★★ moment doesn't change the picture's rules, what would the boldest "
+            f"version of your concept do? {look}" + NUDGE_TAIL)
+
+
+def run_streamed(cmd, env, log, timeout=2400, abort=None):
+    """A studio tool with each line of its output passed to log as it comes (the web app's job log shows it live),
+    stopped with what it started at the timeout or when abort() says so. Returns (exit code, None when it was
+    stopped; the output)."""
+    p = subprocess.Popen(cmd, cwd=STUDIO, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         encoding="utf-8", errors="replace")
+    t0, stopped, out = time.time(), [], []
+
+    def guard():
+        while p.poll() is None:
+            if time.time() - t0 > timeout or (abort and abort()):
+                stopped.append(1)
+                kill_tree(p)
+                return
+            time.sleep(1)
+    threading.Thread(target=guard, daemon=True).start()
+    try:
+        for line in p.stdout:
+            out.append(line)
+            log(line.rstrip())
+        p.wait()
+    except BaseException:                    # Ctrl+C: the critic doesn't outlive the one who asked for it
+        kill_tree(p)
+        raise
+    return (None if stopped else p.returncode), "".join(out)
+
+
+def critique_version(pdir, v, model=None, effort=None, force=False, reuse_only=False, extra=(), log=print, abort=None):
     """The critic's notes on a delivered version: final/critic_vN.md + .json and a short "critic" entry on the version
     in project.json. Without force, a critique of that exact cut is reused (the runner's, made while the director
     worked); otherwise critic.py looks at it (at final/music-video.mp4 while that is still the same cut: its eyes are
-    usually there already; else at final/music-video_vN.mp4). Returns (the critique, True if it was made now) or
-    (None, False)."""
+    usually there already; else at final/music-video_vN.mp4), its output shown as it comes; abort() stops it.
+    Returns (the critique, True if it was made now) or (None, False)."""
     import critic
     fin = os.path.join(pdir, "final", "music-video.mp4")
     same = os.path.exists(fin) and os.path.getsize(fin) == v.get("size") and abs(os.path.getmtime(fin) - (v.get("mtime") or 0)) < 1
@@ -502,13 +610,11 @@ def critique_version(pdir, v, model=None, effort=None, force=False, reuse_only=F
                                   effort or e0)
         cmd += list(extra)
         log(f"the critic is looking at v{v['n']} (2-4 min)...")
-        r = subprocess.run(cmd, cwd=STUDIO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=2400)
-        c = critic.from_output(pdir, r.stdout)
+        rc, out = run_streamed(cmd, env, log, timeout=2400, abort=abort)
+        c = critic.from_output(pdir, out) if rc == 0 else None
         if not c:
-            log("the critic couldn't run: " + (r.stdout + r.stderr).strip()[-800:])
+            log("the critic couldn't run" + (" (stopped)" if rc is None else ": see above"))
             return None, False
-        log(r.stdout.strip())
     n = v["n"]
     shutil.copyfile(os.path.join(pdir, c["file"]), os.path.join(pdir, "final", f"critic_v{n}.md"))
     jsave(os.path.join(pdir, "final", f"critic_v{n}.json"), dict({k: x for k, x in c.items() if k != "report"}, version=n))
@@ -520,6 +626,24 @@ def critique_version(pdir, v, model=None, effort=None, force=False, reuse_only=F
     save_project(pj, pdir)
     log(f"v{n}: {critic.result_line(dict(c, file=f'final/critic_v{n}.md'))}")
     return c, fresh
+
+
+def logged_critiques(pdir, since):
+    """The critic's log lines (work/critic/log.jsonl) written since a time: every critic.py run, the director's own
+    ones and the ones that couldn't answer included (those with their cost)."""
+    t0 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(since))
+    out = []
+    try:
+        for ln in open(os.path.join(pdir, "work", "critic", "log.jsonl"), encoding="utf-8").read().splitlines():
+            try:
+                d = json.loads(ln)
+            except Exception:
+                continue
+            if isinstance(d, dict) and str(d.get("at") or "") >= t0:
+                out.append(d)
+    except OSError:
+        pass
+    return out
 
 
 def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=False, nudge=True, dry_run=False,
@@ -646,14 +770,24 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
     unsent = []                                  # the critic's finished notes the director hasn't had yet
     wait_t0 = None                               # since when the runner waits for the critic's notes on the final
 
-    def record(c):
+    def record(c, used="waiting"):
+        """A finished critique into status.json (with how it reached the director: `used`); one that couldn't run
+        only into the live log, its cost (a cap hit, a refused call) into the critic's cost all the same."""
         with lock:
+            status["critic_cost_usd"] = round(status["critic_cost_usd"] + (c.get("cost_usd") or 0), 4)
             if c.get("error"):
+                status["critic_failed"] = status.get("critic_failed", 0) + 1
                 note(f"🔍 the critic couldn't look at {c['video']}: {c['error']}")
                 return
-            status["critiques"].append({k: c.get(k) for k in ("t", "video", "scores", "verdict", "file", "cost_usd", "model")})
-            status["critic_cost_usd"] = round(status["critic_cost_usd"] + (c.get("cost_usd") or 0), 4)
+            status["critiques"].append({k: c.get(k) for k in ("t", "video", "scores", "verdict", "file", "cost_usd", "model")}
+                                       | {"used": used})
             note(f"🔍 critic on {c['video']}: {crit.score_line(c.get('scores'))}")
+
+    def used(c, how):
+        with lock:
+            for x in status["critiques"]:
+                if x.get("file") == c.get("file"):
+                    x["used"] = how
     try:
         while proc.poll() is None:
             time.sleep(1)
@@ -688,7 +822,7 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
                 stop_reason = stop_reason or "budget ran out (deadline + grace)"
                 break
             if critics:
-                critics.poll(now)
+                critics.poll(now, left, stopping=stop_reason is not None)
                 for c in critics.take():
                     record(c)
                     if not c.get("error"):
@@ -715,18 +849,21 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
                              f"and deliver it (then the checks and report.md).", "no final yet")
                     elif nudge and have_final and left > max(6 * 60, 0.12 * budget_s) and nudges < 3:
                         nudges += 1
+                        had = crit.find(pdir, "final/music-video.mp4", fkey[1], fkey[2]) if critics and not final_c else None
+                        had = crit.load(pdir, had["file"]) if had else None
                         if final_c:
                             unsent.remove(final_c)
                             send(critic_nudge(final_c, left), "use the time left, with the critic's notes")
+                            used(final_c, "in the nudge")
+                        elif had:                                         # it had them already: the gist again
+                            send(critic_nudge(had, left, seen=True), "use the time left, with the critic's notes")
                         else:
-                            send(f"You delivered a cut with {fmt_dur(left)} still on the clock. Spend it making the video better: "
-                                 f"look at it again with the eyes tools (sheets of each section, the beat sheets of the biggest "
-                                 f"sections, the motion plot), pick the weakest parts and improve them, then render, check and "
-                                 f"deliver again. Keep the current final until the new one passes the checks. Then rewrite report.md so it "
-                                 f"describes the cut you delivered (no 'Round' heading: those are for the user's review rounds).", "use the time left")
+                            send(plain_nudge(left, pdir, bool(critics), bool(critics) and critics.pending_final()),
+                                 "use the time left")
                     elif final_c and left > 120:
                         unsent.remove(final_c)
                         send(critic_message(final_c), f"critic: {final_c['video']}")
+                        used(final_c, "sent")
                     else:
                         stdin_open = False
                         try:
@@ -737,6 +874,9 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
                 unsent.remove(c)
                 if stdin_open and left > 120 and stop_reason is None and proc.poll() is None:
                     send(critic_message(c), f"critic: {c['video']}")
+                    used(c, "sent")
+                else:
+                    used(c, "too late for the director")
     finally:
         if proc.poll() is None:
             note(f"■ ending the session: {stop_reason}")
@@ -756,16 +896,12 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
                 except subprocess.TimeoutExpired:
                     proc.kill()
         user_stop = bool(stop_reason and "user" in stop_reason)
-        if critics:                              # a critique of the final still running may finish: it's reused below
-            critics.stop(wait_key=None if user_stop or not os.path.exists(fin) else CriticWatcher.key(fin))
-            for c in critics.take():
-                record(c)
         time.sleep(0.5)
         raw.close()
         errlog.close()
         wall = time.time() - started
         status["wall_s"] = round(wall)
-        status["state"] = "stopped" if stop_reason and "user" in stop_reason else "done"
+        status["state"] = "stopped" if user_stop else "done"
         status["stop_reason"] = stop_reason or "the director ended the session"
         status["exit_code"] = proc.returncode
         st.step(1)
@@ -775,27 +911,64 @@ def direct(pdir, budget="90m", effort="high", model=None, seed_notes="", revise=
         else:
             note("no new final/music-video.mp4 from this run")
         status["version"] = v["n"] if v else None
-        if v and use_critic:                     # the archived version gets the critic's notes (reused when it has them)
-            st.step(2)
+        run_keys = ("run", "kind", "model", "model_used", "effort", "budget", "wall_s", "cost_usd", "turns", "version",
+                    "stop_reason", "claude_version", "critic_model", "critic_cost_usd")
+
+        def keep_record():                       # report.md's run settings, status.json, current.json, project.json runs
+            append_settings(pdir, status, v)
+            with lock:
+                save()
+            pj = load_pj(pdir)
+            entry = {k: status.get(k) for k in run_keys} | {"critiques": len(status["critiques"]),
+                                                             "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(started))}
+            runs = pj.setdefault("runs", [])
+            if runs and runs[-1].get("run") == n and runs[-1].get("at") == entry["at"]:
+                runs[-1] = entry
+            else:
+                runs.append(entry)
+            save_project(pj, pdir)
+        keep_record()
+
+        def critic_after(v):
+            """A critique of the final still running may finish (it's reused for the version); the archived version
+            gets the critic's notes; the critic's log adds what the director asked of it itself, and every cost."""
+            stopping = lambda: os.path.exists(os.path.join(ddir, "STOP"))      # noqa: E731
+            if v:
+                st.step(2)
+            critics.stop(wait_key=None if user_stop or not os.path.exists(fin) else CriticWatcher.key(fin), abort=stopping)
+            for c in critics.take():
+                record(c, "after the run")
+            if v:
+                try:
+                    c, fresh = critique_version(pdir, v, critic_model, critic_effort, reuse_only=user_stop or stopping(),
+                                                log=log, abort=stopping)
+                    if c:
+                        status["version_critique"] = f"final/critic_v{v['n']}.md"
+                        status["version_scores"] = c.get("scores")
+                        if fresh:
+                            record(dict(c, t=round(time.time() - started)), "after the run")
+                except Exception as ex:
+                    note(f"🔍 the critic couldn't look at v{v['n']}: {ex}")
+            if stopping() and not user_stop:
+                note("🔍 the critic's last look was stopped by the user")
+            logged = logged_critiques(pdir, started)
+            known = {x.get("file") for x in status["critiques"]}
+            for d in logged:
+                if d.get("file") and d["file"] not in known:
+                    try:
+                        t = round(time.mktime(time.strptime(d["at"], "%Y-%m-%d %H:%M:%S")) - started)
+                    except Exception:
+                        t = None
+                    status["critiques"].append({k: d.get(k) for k in ("video", "scores", "verdict", "file", "cost_usd", "model")}
+                                               | {"t": t, "used": "the director ran it"})
+            status["critic_cost_usd"] = round(max(status["critic_cost_usd"], sum(d.get("cost_usd") or 0 for d in logged)), 4)
+        if critics:                              # then the critic's last look (a Stop here loses only its notes)
             try:
-                c, fresh = critique_version(pdir, v, critic_model, critic_effort, reuse_only=user_stop, log=log)
-                if c:
-                    status["version_critique"] = f"final/critic_v{v['n']}.md"
-                    status["version_scores"] = c.get("scores")
-                    if fresh:
-                        record(dict(c, t=round(time.time() - started)))
-            except Exception as ex:
-                note(f"🔍 the critic couldn't look at v{v['n']}: {ex}")
-        append_settings(pdir, status, v)
-        with lock:
-            save()
-        pj = load_pj(pdir)
-        pj.setdefault("runs", []).append({k: status.get(k) for k in ("run", "kind", "model", "model_used", "effort", "budget",
-                                                                     "wall_s", "cost_usd", "turns", "version", "stop_reason",
-                                                                     "claude_version", "critic_model", "critic_cost_usd")}
-                                         | {"critiques": len(status["critiques"]),
-                                            "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(started))})
-        save_project(pj, pdir)
+                critic_after(v)
+            except BaseException:                # Ctrl+C: the critic's job doesn't outlive the run
+                critics.stop()
+                raise
+            keep_record()
         st.done("done" if v else "error", "" if v else "the run ended without a new final/music-video.mp4")
         log(f"director run {n} ended: {status['stop_reason']}; wall {fmt_dur(wall)}; cost ${status['cost_usd']:.2f}"
             + (f" + critic ${status['critic_cost_usd']:.2f} ({len(status['critiques'])} critiques)" if use_critic else "")
@@ -816,11 +989,13 @@ def append_settings(pdir, status, v):
              f"- Claude Code {status.get('claude_version') or '?'}; turns {status.get('turns')}; cost reported ${status.get('cost_usd', 0):.2f}",
              f"- Delivered: {ver}" + (f"; checks {v.get('checks')}" if v else "")]
     if status.get("critic_model") not in (None, "off"):
+        from critic import score_line
         cs = status.get("critiques") or []
         lines.append(f"- Critic: {status['critic_model']} (effort `{status.get('critic_effort')}`): {len(cs)} critique"
-                     f"{'' if len(cs) == 1 else 's'}, ${status.get('critic_cost_usd', 0):.2f}"
-                     + (f"; on this version {status.get('version_scores') and ' · '.join(f'{k.replace(chr(95), chr(32))} {x}' for k, x in status['version_scores'].items())} "
-                        f"({status['version_critique']})" if status.get("version_critique") else ""))
+                     f"{'' if len(cs) == 1 else 's'}" + (f" (+{status['critic_failed']} that couldn't run)" if status.get("critic_failed") else "")
+                     + f", ${status.get('critic_cost_usd', 0):.2f}"
+                     + (f"; on this version: {score_line(status.get('version_scores'))} ({status['version_critique']})"
+                        if status.get("version_critique") else ""))
     elif "critic_model" in status:
         lines.append("- Critic: off")
     open(rp, "w", encoding="utf-8").write(body + "\n".join(lines) + "\n")

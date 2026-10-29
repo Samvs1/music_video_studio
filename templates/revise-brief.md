@@ -17,4 +17,4 @@ My notes on v{{version}} (song time · bar:beat · section · what is sung there
 Notes from the studio (how this machine works):
 - This folder is the project `{{project}}`. The studio's tools are in {{tools}}/ (don't edit them). Run them as `{{python}} {{tools}}/studio.py run {{project}} <tool> ...`.
 - The clock: you started at {{started}}; the budget ends at **{{deadline}}** (`{{python}} {{tools}}/studio.py clock {{project}}`). The studio messages you as time runs down and stops the session a few minutes after the deadline.
-- The workflow and craft rules: {{skill}} (section "Review round"). When done: `{{python}} {{tools}}/studio.py check {{project}}` must pass.
+- The workflow and craft rules: {{skill}} (section "Review round"). When done: `{{python}} {{tools}}/studio.py check {{project}}` must pass.{{critic}}

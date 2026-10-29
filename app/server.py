@@ -5,7 +5,8 @@ Carried over from aftermovie-studio's server (jobs, range requests, project file
 
 Pages: Song & brief (upload, notes, reference pictures, delivery format, lyrics) · Analyse (ingest with progress) ·
 The song (the song viewer) · Story (draft with Claude, edit) · Direct (the autonomous director with live progress, or
-the interactive command) · Watch (each version above the song lanes, notes with N, the report and the checks).
+the interactive command; the critic's notes in the run) · Watch (each version above the song lanes, notes with N, the
+report, the checks and the critic's notes, "Ask the critic").
 
 API (JSON):
   GET  /api/projects                     GET  /api/p/<p>                GET  /api/p/<p>/job
@@ -17,7 +18,10 @@ API (JSON):
   POST /api/p/<p>/lyrics-align {lines: [{text}]}                          (Whisper places them: job "align" ->
                                                                            /p/<p>/cache/lyrics/aligned.json)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
-  POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, effort, model, seed_notes, revise}
+  POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, effort, model, seed_notes, revise,
+                                                                                               critic_model}
+  POST /api/p/<p>/critique {version | video, model}                       (the critic looks at a version or a video: job "critique";
+                                                                           a version's notes land in final/critic_vN.md)
   POST /api/p/<p>/stop                   POST /api/p/<p>/note {version, t, text}
   POST /api/p/<p>/note-edit {id, done | delete | text}                  POST /api/p/<p>/deliver
 """
@@ -116,6 +120,32 @@ def story_state(d):
     return {"text": text, "exists": bool(text), "written": bool(text) and "_2–4 sentences" not in text}
 
 
+def critique_item(name, d, c, file=None):
+    """A critique for the web app: scores, verdict, model, cost and the report's URL."""
+    f = file or c.get("file")
+    if not f or not os.path.exists(os.path.join(d, f)):
+        return None
+    return {"file": f, "url": f"/p/{name}/{f}?v={mtime(os.path.join(d, f))}", "scores": c.get("scores"), "verdict": c.get("verdict"),
+            "model": c.get("model"), "cost_usd": c.get("cost_usd"), "at": c.get("at"), "video": c.get("video")}
+
+
+def critiques_state(name, d):
+    """The project's critiques, newest first (work/critic/log.jsonl)."""
+    out = []
+    try:
+        lines = open(os.path.join(d, "work", "critic", "log.jsonl"), encoding="utf-8").read().splitlines()
+    except Exception:
+        lines = []
+    for ln in reversed(lines[-60:]):
+        try:
+            it = critique_item(name, d, json.loads(ln))
+        except Exception:
+            continue
+        if it:
+            out.append(it)
+    return out
+
+
 def versions_state(name, d, pj):
     out = []
     for v in pj.get("versions") or []:
@@ -125,14 +155,18 @@ def versions_state(name, d, pj):
             rp = os.path.join(d, "final", f"report_v{v['n']}.md")
             if os.path.exists(rp):
                 item["report"] = f"/p/{name}/final/report_v{v['n']}.md"
+            item["critic"] = critique_item(name, d, v.get("critic") or {})
             out.append(item)
     fin = os.path.join(d, "final", "music-video.mp4")
     if os.path.exists(fin):
         latest = out[-1] if out else None
         same = latest and latest.get("size") == os.path.getsize(fin) and abs(latest.get("mtime", 0) - os.path.getmtime(fin)) < 1
         if not same:
+            import critic
+            c = critic.find(d, "final/music-video.mp4", os.path.getsize(fin), os.path.getmtime(fin))
             out.append({"n": None, "label": "current", "file": "final/music-video.mp4", "url": f"/p/{name}/final/music-video.mp4?v={mtime(fin)}",
-                        "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(fin)))})
+                        "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(fin))),
+                        "critic": critique_item(name, d, c) if c else None})
     return out
 
 
@@ -145,7 +179,7 @@ def project_state(name):
     return {"name": name, "studio": STUDIO, "project": pj, "song": song_info(name, d), "story": story_state(d),
             "versions": versions_state(name, d, pj), "notes": jload(os.path.join(d, "review", "notes.json"), []),
             "files": files, "job": job_state(name), "director": director_state(name, brief=False), "formats": FORMATS,
-            "status": jload(os.path.join(d, "cache", "status.json"), {})}
+            "status": jload(os.path.join(d, "cache", "status.json"), {}), "critiques": critiques_state(name, d)}
 
 
 def director_state(name, brief=True):
@@ -156,7 +190,9 @@ def director_state(name, brief=True):
     st = jload(os.path.join(d, cur["dir"], "status.json"), {}) or {}
     out = {k: st.get(k, cur.get(k)) for k in ("run", "state", "kind", "model", "model_used", "effort", "budget", "budget_s",
                                                "started", "deadline", "elapsed_s", "wall_s", "cost_usd", "turns", "version",
-                                               "stop_reason", "final_exists", "messages_sent", "claude_version")}
+                                               "stop_reason", "final_exists", "messages_sent", "claude_version",
+                                               "critic_model", "critic_cost_usd", "version_critique")}
+    out["critiques"] = [dict(c, url=f"/p/{name}/{c['file']}") for c in st.get("critiques") or [] if c.get("file")]
     out["events"] = st.get("events", [])[-200:]
     out["now"] = time.time()
     if brief and os.path.exists(os.path.join(d, cur["dir"], "brief.md")):
@@ -212,6 +248,10 @@ def stop_job(name):
                 j["proc"].terminate()
         threading.Thread(target=force, daemon=True).start()
         return {"ok": True, "stopping": "the director wraps up within a minute or two"}
+    if j["job"] == "critique":               # with the critic.py and the claude call it started: they'd keep spending
+        from mv.claude import kill_tree
+        kill_tree(j["proc"])
+        return {"ok": True}
     j["proc"].terminate()
     return {"ok": True}
 
@@ -257,10 +297,31 @@ def update_brief(d, body):
         pj["format"] = new
         if old.get("fps") and old.get("fps") != new["fps"] and os.path.exists(os.path.join(d, "song", "frames.json")):
             pj.setdefault("status", {})["frames_stale"] = True          # frames.json is per fps: remake it
-    if isinstance(body.get("director"), dict):
-        pj["director"] = {k: str(v)[:40] for k, v in body["director"].items() if k in ("model", "effort", "budget")}
+    if isinstance(body.get("director"), dict):                      # the Direct page's last choices (merged)
+        pj["director"] = dict(pj.get("director") or {}, **{k: str(v)[:40] for k, v in body["director"].items()
+                                                           if k in ("model", "effort", "budget", "critic_model", "critic_effort")})
     studio.save_project(d, pj)
     return pj
+
+
+def start_critique(name, body):
+    """The Watch page's "Ask the critic": a version (its notes also go to final/critic_vN.md) or a video in the
+    project, as the background job "critique"."""
+    d = pdir(name)
+    if body.get("version") not in (None, ""):
+        target = f"v{int(str(body['version']).lstrip('v'))}"
+        if not any(f"v{v['n']}" == target for v in studio.load_project(d).get("versions") or []):
+            raise ValueError(f"no version {target}")
+    else:
+        target = str(body.get("video") or "").replace("\\", "/").strip("/")
+        full = os.path.abspath(os.path.join(d, target))
+        if not target.endswith(".mp4") or not full.startswith(os.path.abspath(d) + os.sep) or not os.path.isfile(full):
+            raise ValueError("no such video in this project")
+    args = ["critique", name, target]
+    if re.fullmatch(r"[A-Za-z0-9._\[\]-]{1,60}", str(body.get("model") or "")):
+        args += ["--model", str(body["model"])]
+    start_job(name, "critique", args)
+    return {"ok": True}
 
 
 def save_story(name, body):
@@ -664,8 +725,12 @@ class H(BaseHTTPRequestHandler):
                         args += ["--seed-notes", str(body["seed_notes"])[:4000]]
                     if body.get("revise"):
                         args.append("--revise")
+                    if re.fullmatch(r"[A-Za-z0-9._\[\]-]{1,60}", str(body.get("critic_model") or "")):
+                        args += ["--critic-model", str(body["critic_model"])]
                     start_job(name, "direct", args)
                     return self.send_json({"ok": True})
+                if act == "critique":
+                    return self.send_json(start_critique(name, body))
                 if act == "stop":
                     return self.send_json(stop_job(name))
                 if act == "note":

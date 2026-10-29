@@ -93,12 +93,25 @@ have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at 1080p)? R
 
 ## 6. Preview → look → revise (most of the time goes here)
 - Previews: `--preview` (half size, same fps: sync checks still hold), a section at a time while building, then the
-  whole song → `compose.py mux <picture> -o work/previews/preview_N.mp4`.
-- Look: `eyes.py look <video>` → read `work/eyes/<name>/index.md`, open its pictures. Then the pictures you need:
-  `eyes.py beats <video> --section "chorus 2"` (does each downbeat land?), `eyes.py strip <video> --at 61.2`
-  (a signature moment frame by frame), `eyes.py sheet <video> --section ...`, `eyes.py motion` (does the picture's
-  energy follow the song's?), `eyes.py sync` (cuts and hits within one frame of the music, drift per section).
-  `checks.py text` and `checks.py flash` work on previews too.
+  whole song → `compose.py mux <picture> -o work/previews/preview_N.mp4` (that folder and name: the studio's critic
+  looks for them).
+- **The critic does the looking** (cheap model, fresh eyes, 2-4 min): after each full preview, `studio.py critique
+  <p> work/previews/preview_N.mp4` (add `--focus "the chorus 2 type"` to aim it). It runs the eyes, opens the
+  pictures itself (a cheaper model than you looking at them), judges them against `work/concept.md`, the song and the
+  user's notes, ambition first, then the craft rules, and prints ≤ 60 lines: scores, the worst problems with times
+  and a direction to push, what works, what it can't tell, and the pictures it opened. Start it in the background and
+  build on while it looks. It never knows your reasoning, so it can be wrong: take what's right, push harder where it
+  says you played safe, ignore what's wrong, and log what you took. In autonomous runs the runner critiques every new
+  `work/previews/*.mp4` and the final by itself and sends you the notes as a message: don't run it twice.
+- **Your own looking is targeted, not a second full pass**: after a full preview, don't run `eyes.py look` on it or
+  open its sheets yourself (the critic did; its pictures are in `work/eyes/<name>/`). Open only the pictures its
+  report names that you need to judge yourself, and ask the eyes one question at a time: `eyes.py beats <video>
+  --section "chorus 2"` (does each downbeat land?), `eyes.py strip <video> --at 61.2` (a signature moment frame by
+  frame), `eyes.py sheet <video> --section ...`, `eyes.py motion` (does the picture's energy follow the song's?),
+  `eyes.py sync` (text: cuts and hits within one frame of the music, drift per section). `checks.py text` and
+  `checks.py flash` work on previews too. Section renders while building: one strip or beat sheet on what you
+  changed. Without the critic (it's off, or can't run): `eyes.py look <video>` → read `work/eyes/<name>/index.md`,
+  open its pictures.
 - Revise against the craft rules below and the concept. Log every pass in `work/log.md`: what you rendered, what
   you looked at, what you changed and why.
 
@@ -108,14 +121,17 @@ have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at 1080p)? R
 - `studio.py check <p>`: spec (size, fps, H.264 yuv420p + AAC, the song's length to the frame, plays to the end,
   the audio identical to the song file and in sync, no undeclared black/frozen stretches), photosensitivity, text,
   sync. Fix every FAIL. Look at `work/checks/report.md`.
+- The critic on the final: `studio.py critique <p> final/music-video.mp4` (interactive runs; the runner does it in
+  autonomous ones). If it finds a high-severity problem you can fix in the time left, fix it and render again.
 - `report.md` (project folder): what you made and the idea behind it; how you made it (renderers, scenes, passes);
   what you checked (the numbers); what you're unsure about, with **the timestamps a human should check by ear**
   (QA can't hear: phrase-level musical awkwardness, a moment that may land a beat late in feel, the ending).
   The studio appends the run settings (model, effort, budget, wall time) itself. Improving a cut within the same
   run: rewrite the report so it describes the cut you deliver (a short "Changes since the first cut" list is fine);
   "Round N" sections are only for the user's review rounds.
-- Interactive runs: `studio.py deliver <p>` archives the cut as `final/music-video_vN.mp4` and records it (the
-  autonomous runner does this for you).
+- Interactive runs: `studio.py deliver <p> --critic` archives the cut as `final/music-video_vN.mp4`, records it and
+  keeps the critic's notes on it as `final/critic_vN.md` (reused when it already looked at this exact cut; the
+  autonomous runner does all this for you).
 
 ## Review round
 `review/notes.json`: `[{id, version: "v2", t, text, done, fix}]`. For each open note on the newest version:
@@ -124,6 +140,27 @@ have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at 1080p)? R
 downstream sections as a whole instead of squeezing the fix in. Keep what the user liked. Then render, check, mark
 each note `done: true` with a one-line `fix`, add a "Round N" section at the top of report.md, deliver (the new cut
 becomes vN+1; earlier versions stay in final/).
+
+## Working with workflows (ultracode)
+Ambition without the token burn. When you work as a multi-agent workflow (or fan out subagents), spend the parallel
+agents on the creative part and keep everything else cheap:
+- **Fan out where ideas multiply, not where tokens multiply**: three to five genuinely different concepts, variants of
+  a signature moment, alternative style frames. Not: several agents reading the same song folder, looking at the same
+  render, or babysitting the same command.
+- **Every subagent gets `work/song-notes.md` + its task**, never "read the song folder": write the digest (section 1)
+  first. Concept agents also get the user's notes and their own angle (that's where they must differ); once you've
+  committed to a concept, every agent also gets `work/concept.md`. A subagent that needs a fact asks `songq.py`.
+- **Looking at renders → the studio's critic** (`studio.py critique <p> <video> [--focus "..."]`), not reviewer
+  agents on the top model: it opens the pictures itself on a cheaper model and returns text. Several critiques in
+  parallel are fine (different videos); one critique per cut is enough.
+- **Mechanical stages as plain Bash or on a cheaper model**: rendering, composing, the checks and the eyes are
+  commands, not thinking. Run them directly; if a workflow agent must drive a long render, give it
+  `model: 'sonnet'` (or `'haiku'`) and `effort: 'low'` in its options.
+- **Competing concepts → `studio.py pitch <p>`** (the pitch round: several headless directors pitch in parallel from
+  different angles, bounded by a time budget; the critic compares them; the user or the critic picks one).
+- **Keep the top model for** the concept, the scene code, and deciding what to do with the critic's notes.
+- The point of fanning out is a bolder video, not a safer consensus: never let agents average an idea down. When
+  variants compete, pick the most ambitious one that can be made well in the time, and graft the best of the others.
 
 ## Craft rules (from real review rounds; they never bend, the look always can)
 1. **Everything lands on a musical event**: every cut, flash, hit, reveal, camera move start and type entrance on a beat,

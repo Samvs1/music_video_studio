@@ -9,11 +9,16 @@
   python tools/studio.py align-lyrics <project> [--in lines.json]    the lyric lines placed where Whisper hears them
                                                                      (cache/lyrics/aligned.json; the web app's timing editor)
   python tools/studio.py direct <project> --budget 90m [--effort high] [--model opus] [--seed-notes "..."] [--revise]
+                         [--critic-model sonnet|haiku|opus|off] [--critic-effort medium] [--critic-max 6]
                                                                      the autonomous director (Claude Code headless) -> final/music-video.mp4
+  python tools/studio.py critique <project> <video | vN> [--model sonnet] [--focus "..."] [--max-usd 2]
+                                                                     the critic: a cheaper model with fresh eyes looks at a video
+                                                                     and reports back (work/critic/; vN also final/critic_vN.md)
   python tools/studio.py clock <project>                             time left in the running director's budget
   python tools/studio.py check <project> [video]                     every check on the final (spec, flashes, text, sync, audio)
   python tools/studio.py versions <project>                          the delivered versions (final/music-video_vN.mp4)
-  python tools/studio.py deliver <project>                           archive final/music-video.mp4 as the next version + checks
+  python tools/studio.py deliver <project> [--critic]                archive final/music-video.mp4 as the next version + checks
+                                                                     (--critic: and the critic's notes on it)
   python tools/studio.py stop <project>                              ask a running autonomous director to stop cleanly
   python tools/studio.py permtest <project>                          check the director's sandbox with the real Claude Code (cents)
   python tools/studio.py run <project> <tool.py> [args]              run any tool inside a project (eyes.py, songq.py, compose.py, ...)
@@ -314,7 +319,37 @@ def cmd_align_lyrics(a):
 def cmd_direct(a):
     import director
     director.direct(project_dir(a.project), budget=a.budget, effort=a.effort, model=a.model, seed_notes=a.seed_notes,
-                    revise=a.revise, nudge=not a.no_nudge, dry_run=a.dry_run)
+                    revise=a.revise, nudge=not a.no_nudge, dry_run=a.dry_run, critic_model=a.critic_model,
+                    critic_effort=a.critic_effort, critic_max=a.critic_max)
+
+
+def cmd_critique(a):
+    import re
+    import director
+    pdir = project_dir(a.project)
+    cur = director.current(pdir) or {}
+    # a director run owns cache/status.json while it works (it may run this itself): the web app's job shows it then
+    st = None if cur.get("state") in ("running", "finishing") else Status(pdir, "critique", [f"the critic looks at {a.video}"])
+    extra = (["--focus", a.focus] if a.focus else []) + (["--max-usd", str(a.max_usd)] if a.max_usd else []) + \
+        (["--no-look"] if a.no_look else []) + (["--concept", a.concept] if a.concept else [])
+    try:
+        if re.fullmatch(r"v\d+", a.video):                    # a delivered version: also final/critic_vN.md
+            v = next((x for x in director.versions(pdir) if f"v{x['n']}" == a.video), None)
+            if not v:
+                raise RuntimeError(f"no version {a.video} (studio.py versions {a.project})")
+            ok = director.critique_version(pdir, v, a.model, a.effort, force=True, extra=extra)[0] is not None
+        else:
+            for flag, x in (("--model", a.model), ("--effort", a.effort), ("--out", a.out)):
+                if x:
+                    extra += [flag, x]
+            ok = run(pdir, ["critic.py", a.video] + extra, check=False) == 0
+    except Exception as e:
+        if st:
+            st.done("error", str(e))
+        sys.exit(f"critique: {e}")
+    if st:
+        st.done("done" if ok else "error", "" if ok else "the critic couldn't run: see the log")
+    sys.exit(0 if ok else 1)
 
 
 def cmd_clock(a):
@@ -330,7 +365,10 @@ def cmd_check(a):
 
 def cmd_deliver(a):
     import director
-    director.deliver(project_dir(a.project))
+    pdir = project_dir(a.project)
+    v = director.deliver(pdir)
+    if v and a.critic:
+        director.critique_version(pdir, v, a.critic_model)
 
 
 def cmd_stop(a):
@@ -398,10 +436,18 @@ def main():
     p.add_argument("--revise", action="store_true", help="address the review notes and make the next version")
     p.add_argument("--no-nudge", action="store_true", help="don't ask an early finisher to use the time left")
     p.add_argument("--dry-run", action="store_true", help="write the brief and print the command, don't launch Claude")
+    p.add_argument("--critic-model", help="the critic's model (default: project.json director.critic_model, else sonnet); off = no critic")
+    p.add_argument("--critic-effort", help="the critic's effort (default medium)")
+    p.add_argument("--critic-max", type=int, default=6, help="automatic critiques per run (default 6)")
+    p = sp.add_parser("critique"); p.add_argument("project"); p.add_argument("video", help="a video in the project, or vN")
+    p.add_argument("--model"); p.add_argument("--effort"); p.add_argument("--focus", default="")
+    p.add_argument("--concept"); p.add_argument("--out"); p.add_argument("--max-usd", type=float)
+    p.add_argument("--no-look", action="store_true")
     p = sp.add_parser("clock"); p.add_argument("project")
     p = sp.add_parser("check"); p.add_argument("project"); p.add_argument("video", nargs="?"); p.add_argument("extra", nargs=argparse.REMAINDER)
     p = sp.add_parser("versions"); p.add_argument("project")
-    p = sp.add_parser("deliver"); p.add_argument("project")
+    p = sp.add_parser("deliver"); p.add_argument("project"); p.add_argument("--critic", action="store_true")
+    p.add_argument("--critic-model")
     p = sp.add_parser("permtest"); p.add_argument("project"); p.add_argument("--model", default="haiku")
     p = sp.add_parser("stop"); p.add_argument("project")
     p = sp.add_parser("run"); p.add_argument("project"); p.add_argument("tool"); p.add_argument("args", nargs=argparse.REMAINDER)

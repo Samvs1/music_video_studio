@@ -20,6 +20,6 @@ Notes from the studio (how this machine works):
 - This folder is the project `{{project}}`. The studio's own tools are in {{tools}}/ (read them, don't edit them; copy what you want to change into work/). Run any tool as `{{python}} {{tools}}/studio.py run {{project}} <tool> ...` with paths relative to this folder; plain `python` may not have the libraries.
 - The clock: you started at {{started}}; the budget ends at **{{deadline}}**. `{{python}} {{tools}}/studio.py clock {{project}}` prints the time left. The studio will also message you as time runs down, and stops the session a few minutes after the deadline: have the final rendered before then.
 - How to work: {{skill}} is the director's workflow and craft rules (the same as the interactive /musicvideo skill). Read it once, early. Its anti-defaults note ({{anti}}) matters: no first-idea visualiser look.
-- Keep your own notes and a log in work/ (work/log.md: plan, decisions, every render pass with what you looked at). Read the big song files once; afterwards use your notes and `songq.py`.
+- Keep your own notes and a log in work/ (work/log.md: plan, decisions, every render pass with what you looked at). Read the big song files once; afterwards use your notes and `songq.py`.{{critic}}
 - When the video is done: `{{python}} {{tools}}/studio.py check {{project}}` must pass, then write report.md.
 {{revise_note}}

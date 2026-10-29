@@ -221,6 +221,13 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 .sv-md p{margin:6px 0}
 
 .hint code,.mut code{font:12px SpaceMono,monospace}
+.sc{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;background:#2a2a2e;color:var(--mut);white-space:nowrap}
+.sc b{color:var(--fg)}
+.sc.lo b{color:var(--bad)}
+.crit{margin-top:12px}
+.crow{display:flex;gap:8px 10px;align-items:baseline;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line);font-size:13px}
+.crow .v{font:12px SpaceMono,monospace}
+#wcritic .sv-md{margin-top:6px}
 #dir-ev{font-size:12px;line-height:1.55}
 video{max-height:58vh}
 .chip.on .mut{color:#5a4a00}
@@ -380,8 +387,8 @@ function vAnalyse() {
     <div class="row" style="margin-top:12px"><button onclick="go('${S.name}/listen')">See the song &rarr;</button><button class="ghost" onclick="go('${S.name}/story')">Story &rarr;</button></div></div>` : ""}</div>`;
   watchJob("ingest");
 }
-async function startJob(kind, body) {
-  try { await post(`/api/p/${S.name}/${kind === "story" ? "story-draft" : kind}`, body || {}); toast("Started"); watchJob(kind); } catch (e) { toast(e.message); }
+async function startJob(kind, body, onDone) {
+  try { await post(`/api/p/${S.name}/${kind === "story" ? "story-draft" : kind}`, body || {}); toast("Started"); watchJob(kind, onDone); } catch (e) { toast(e.message); }
 }
 async function stopJob() { const r = await post(`/api/p/${S.name}/stop`); toast(r.stopping || "Stopping"); }
 let jobKinds = [];
@@ -509,7 +516,9 @@ function vDirect() {
     <p class="mut">Claude Code works alone for the time you give it: concept, style frames, scenes, previews, looking at them, revising, the final render, the checks and a report. You can watch it work here. Uses your Claude plan.</p>
     <div class="two"><div><label>Time budget (minutes)</label><input id="d-budget" type="number" min="5" value="${parseInt(d.budget) || 90}"></div>
       <div><label>Effort</label><select id="d-effort">${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${((d.effort || "high") === e) ? "selected" : ""}>${e}</option>`).join("")}</select></div></div>
-    <label>Model</label><input id="d-model" value="${esc(d.model || "opus")}">
+    <div class="two"><div><label>Model</label><input id="d-model" value="${esc(d.model || "opus")}"></div>
+      <div><label>Critic</label><select id="d-critic">${["sonnet", "haiku", "opus", "off"].map(m => `<option ${((d.critic_model || "sonnet") === m) ? "selected" : ""}>${m}</option>`).join("")}</select></div></div>
+    <p class="hint">The critic is a cheaper model with fresh eyes: it looks at every preview and the final while the director works and sends it notes, ambition first, then craft. The director decides what to take. It saves the director's tokens on looking at pictures.</p>
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
     ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
     ${open.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto"> Review round: address my ${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n} and make v${latest.n + 1}</label>` : ""}
@@ -524,8 +533,8 @@ function vDirect() {
 }
 async function startDirect() {
   const body = {budget: $("#d-budget").value, effort: $("#d-effort").value, model: $("#d-model").value, seed_notes: $("#d-seed").value,
-                revise: !!($("#d-revise") && $("#d-revise").checked)};
-  await post(`/api/p/${S.name}/brief`, {director: {model: body.model, effort: body.effort, budget: body.budget}});
+                revise: !!($("#d-revise") && $("#d-revise").checked), critic_model: $("#d-critic").value};
+  await post(`/api/p/${S.name}/brief`, {director: {model: body.model, effort: body.effort, budget: body.budget, critic_model: body.critic_model}});
   startJob("direct", body);
   setTimeout(dirLive, 1500);
 }
@@ -536,13 +545,24 @@ async function dirLive() {
   const running = ["running", "finishing"].includes(d.state), left = d.deadline - d.now;
   const pct = Math.min(100, Math.max(0, (d.now - d.started) / d.budget_s * 100));
   el.innerHTML = `<div class="box"><div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : ""}">${esc(d.state)}</span>
-      <span class="mut">${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)} &middot; budget ${esc(d.budget)}</span><span class="sp" style="flex:1"></span>
+      <span class="mut">${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)} &middot; budget ${esc(d.budget)}${d.critic_model && d.critic_model !== "off" ? ` &middot; critic ${esc(d.critic_model)} $${(d.critic_cost_usd || 0).toFixed(2)}` : ""}</span><span class="sp" style="flex:1"></span>
       <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; $${(d.cost_usd || 0).toFixed(2)}${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
     ${running ? `<div class="prog"><div style="width:${pct}%"></div></div>` : `<p class="hint">${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}
     <pre class="log" id="dir-ev" style="max-height:420px">${esc((d.events || []).map(e => String(e.text).split("\n").map((l, i) => `${i ? "".padStart(8) : dur(e.t).padStart(8)}  ${l}`).join("\n")).join("\n"))}</pre>
+    ${(d.critiques || []).length ? `<div class="crit" id="dir-crit"><b>The critic's notes in this run</b>
+      ${d.critiques.map(c => `<div class="crow"><span class="mut">${c.t != null ? dur(c.t) : ""}</span><span class="v">${esc(c.video)}</span>${scoreChips(c.scores)}<span class="mut">${c.cost_usd != null ? "$" + c.cost_usd.toFixed(2) : ""}${c.used ? " &middot; " + esc(USED[c.used] || c.used) : ""}</span><a href="${c.url}" target="_blank">read</a></div>`).join("")}</div>` : ""}
     ${d.brief ? `<a href="${d.brief}" target="_blank">the brief</a>` : ""}</div>`;
   const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
   if (!running) clearInterval(dpoll);
+}
+
+const USED = {"sent": "sent to the director", "in the nudge": "in the nudge to use the time left", "waiting": "not sent yet",
+              "after the run": "after the run (for the version)", "too late for the director": "too late to send",
+              "the director ran it": "the director asked for it"};
+function scoreChips(sc) {            // the critic's four scores (out of 10)
+  if (!sc) return `<span class="sc">no scores</span>`;
+  return [["ambition", "ambition"], ["song_fit", "song fit"], ["craft", "craft"], ["readability", "readability"]]
+    .map(([k, l]) => `<span class="sc ${sc[k] != null && sc[k] <= 4 ? "lo" : ""}">${l} <b>${sc[k] ?? "?"}</b></span>`).join(" ");
 }
 
 // ---------------------------------------------------------------- 6. watch & review
@@ -568,12 +588,34 @@ async function vWatch() {
     <button class="ghost small" onclick="noteEdit(${n.id},{done:${!n.done}})">${n.done ? "undo" : "&#10003;"}</button><button class="ghost small" onclick="noteEdit(${n.id},{delete:true})">&#10005;</button></div>`).join("") || '<p class="mut">No notes on this version yet.</p>'}</div>
   ${notes.some(n => !n.done) && v.n ? `<div class="row"><button onclick="go('${S.name}/direct')">Make the next version with these notes &rarr;</button><span class="mut">or in Claude Code: <code>/musicvideo ${esc(S.name)}</code></span></div>` : ""}
   ${v.checks ? `<p class="hint">checks: ${Object.entries(v.checks).map(([k, x]) => `${esc(k)} <b style="color:${x === "PASS" ? "var(--ok)" : x === "WARN" ? "var(--acc)" : "var(--bad)"}">${esc(x)}</b>`).join(" &middot; ")}${S.files.checks ? ` &middot; <a href="${S.files.checks}" target="_blank">details</a>` : ""}</p>` : ""}
+  ${critBox(v)}
   <div class="box sv-md" id="wrep" style="margin-top:14px">${rep ? '<span class="mut">loading the report&hellip;</span>' : '<span class="mut">No report.</span>'}</div>`;
   if (rep) fetch(rep).then(r => r.text()).then(t => { const el = $("#wrep"); if (el) el.innerHTML = mdHtml(t); });
+  if (v.critic) fetch(v.critic.url).then(r => r.text()).then(t => { const el = $("#wcrit-md"); if (el) el.innerHTML = mdHtml(t); });
+  watchJob("critique", critDone);
   const vid = $("#vid");
   vid.addEventListener("timeupdate", () => { const el = $("#nt"); if (el) el.textContent = fmt(vid.currentTime); });
   if (S.song.map) { await svEnsure(); SV.click = false; svWire(); }
   else document.onkeydown = e => { if (e.key.toLowerCase() === "n" && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); addNote(); } };
+}
+function critBox(v) {                // the critic's notes on this cut, and "Ask the critic"
+  const c = v.critic, def = ((S.project.director || {}).critic_model || "sonnet").replace("off", "sonnet");
+  return `<div class="box" id="wcritic" style="margin-top:14px"><div class="row"><b>Critic</b>${c ? `${scoreChips(c.scores)}<span class="mut">${esc(c.model || "")}${c.at ? " &middot; " + esc(c.at) : ""}${c.cost_usd != null ? ` &middot; $${c.cost_usd.toFixed(2)}` : ""}</span>` : `<span class="mut">no notes on this cut yet</span>`}
+    <span class="sp" style="flex:1"></span><select id="w-cmodel" style="width:auto;padding:5px 8px">${["sonnet", "haiku", "opus"].map(m => `<option ${m === def ? "selected" : ""}>${m}</option>`).join("")}</select>
+    <button class="small ghost" id="go-critique" onclick="askCritic()">${c ? "Ask again" : "Ask the critic"}</button><button class="ghost small" id="stop-critique" onclick="stopJob()" style="display:none">Stop</button></div>
+    ${c ? "" : `<p class="hint">A cheaper model with fresh eyes looks at this cut's frames against the concept and the song: ambition first, then craft, with the times to fix (2-4 min; a few cents with Haiku, more with Opus). It can't hear either: your ears are still the judge.</p>`}
+    <ul class="steplist" id="sl-critique"></ul><div id="wn-critique"></div><pre class="log" id="lg-critique" style="display:none"></pre>
+    <div class="sv-md" id="wcrit-md">${c ? '<span class="mut">loading the critic&rsquo;s notes&hellip;</span>' : ""}</div></div>`;
+}
+async function askCritic() {
+  const v = S.versions.find(x => x.label === wsel); if (!v) return;
+  startJob("critique", v.n ? {version: v.n, model: $("#w-cmodel").value} : {video: v.file, model: $("#w-cmodel").value}, critDone);
+}
+async function critDone() {         // the critic's notes are in: redraw only its box (the video plays on, a note being typed stays)
+  try { S = await api("/api/p/" + S.name); } catch (e) { return; }
+  const v = S.versions.find(x => x.label === wsel), el = $("#wcritic"); if (!v || !el) return;
+  el.outerHTML = critBox(v);
+  if (v.critic) fetch(v.critic.url).then(r => r.text()).then(t => { const m = $("#wcrit-md"); if (m) m.innerHTML = mdHtml(t); });
 }
 function vidSeek(t) { const v = $("#vid"); if (v) { v.currentTime = Math.max(0, t - 1); v.play(); } }
 function addNote() {
@@ -965,6 +1007,7 @@ function mdHtml(src) {
     else if (h) { flushP(); out.push(`<h${h[1].length + 1}>${inl(h[2])}</h${h[1].length + 1}>`); }
     else if (l.startsWith(">")) { flushP(); out.push(`<blockquote>${inl(l.replace(/^>\s?/, ""))}</blockquote>`); }
     else if (/^[-*]\s/.test(l)) { flushP(); out.push(`<div>&bull; ${inl(l.slice(2))}</div>`); }
+    else if (/^(\d+\.\s|\*\*[^*]+:\*\*)/.test(l)) { flushP(); para.push(l); }    // "1. ..." / "**Verdict:** ...": a paragraph of its own
     else para.push(l);
   }
   flushP(); flushT();

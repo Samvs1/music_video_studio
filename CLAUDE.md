@@ -9,11 +9,16 @@ what it can't hear; Claude Code directs the video, interactively (`/musicvideo <
 ## Where things are
 - `projects/<p>/`: `project.json` (the user's notes: `about`, `mood`, `ideas`, `avoid`, `format`, `lyrics`, `refs`;
   `versions`, `runs`), `song/` (the song file + the song folder: start at `song/README.md`), `refs/` (the user's
-  reference pictures: who's in the song, so the director can draw them), `work/` (the director's workspace and log),
-  `final/` (`music-video.mp4` + `music-video_vN.mp4`, never overwritten), `report.md`, `review/notes.json`.
+  reference pictures: who's in the song, so the director can draw them), `work/` (the director's workspace and log;
+  `work/previews/preview_N.mp4` are the full previews the critic looks at, `work/critic/` its critiques + `log.jsonl`),
+  `final/` (`music-video.mp4` + `music-video_vN.mp4`, never overwritten; `critic_vN.md/.json`: the critic's notes on
+  each version, rewritten by "Ask the critic"), `report.md`, `review/notes.json`.
 - `tools/README.md`: every tool. `tools/installed.md`: what this machine has. `tools/speeds.json`: render speeds here.
+  `tools/critic.py` (`studio.py critique`): the critic, a cheaper model with fresh eyes that does the image-heavy
+  looking and reports back in text (ambition first, then craft); the director decides what to do with its notes.
 - `.claude/skills/musicvideo/SKILL.md`: the director's workflow and craft rules (+ `anti-defaults.md`).
-- `templates/`: the director brief, the revise brief, the story prompt. `app/`: the web app. `tests/`: smoke + server tests.
+- `templates/`: the director brief, the revise brief, the story prompt, the critic's prompt. `app/`: the web app.
+  `tests/`: smoke + server tests.
 
 ## Running things
 Always through the studio's venv: `.venv\Scripts\python.exe tools\studio.py ...` (Windows; prefix
@@ -30,6 +35,7 @@ venv. Bash heredocs mangle quotes: for non-trivial patches write a small script 
 - Reference pictures (`refs/`) show how people look: draw them in the video's language; the pictures (or anything made
   from their pixels) never appear in the video.
 - You can't hear or watch: never claim you did. Look at frames (`eyes.py`), read the song folder, run the checks.
+  Let the critic do the image-heavy looking at full previews; it pushes ambition up, never toward the safer idea.
 - Craft (details in the skill): every cut and hit on a musical event within a frame; lyric text on the beat or 8th at
   or just before its sung word; text readable long enough, ≥ 3:1 contrast, never clipped; nothing revealed in a
   shot's last beat; one committed visual language; fix the film, not the frame; no rapid bright flashing; say which

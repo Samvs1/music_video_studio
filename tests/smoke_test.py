@@ -12,12 +12,15 @@
  4. a scripted mini director (tests/mini_director.py): web engine (Canvas 2D + a transparent DOM type pass) and Blender
     (Workbench) -> compose (concat, layer, mux)
  5. every check on the final MP4 must pass: spec (incl. the audio identical to the song), flashes, text, sync
- 6. deliver (v1), the eyes tools, songq
- 7. the autonomous director runner end to end with a stand-in for Claude Code (tests/fake_claude.py: no usage spent),
-    then a review round (a note -> --revise -> the next version, the note marked done)
+ 6. deliver (v1), the eyes tools, songq; the critic (stand-in Claude): a critique of the final (files, parsed scores, a
+    prompt with the pictures, the craft rules and the user's avoid but not the director's report), deliver --critic
+    reusing it as final/critic_v1.md, an old Claude Code without --max-budget-usd, the lenient parser
+ 7. the autonomous director runner end to end with a stand-in for Claude Code (tests/fake_claude.py: no usage spent;
+    the critic's notes reach the director as a message and the new version gets final/critic_vN.md), then a review
+    round (a note -> --revise -> the next version, the note marked done)
 The project is projects/_smoke (internal, git-ignored); --keep leaves it for a look. Exit code 0 = everything passed.
 """
-import argparse, json, os, shutil, subprocess, sys, time, urllib.request
+import argparse, json, os, re, shutil, subprocess, sys, time, urllib.request
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 STUDIO = os.path.dirname(TESTS)
@@ -224,10 +227,13 @@ def main():
         r = studio("run", P, "eyes.py", *args, check=False)
         say("PASS" if r.returncode == 0 and ".png" in r.stdout else "FAIL", f"eyes.py {args[0]}", r.stdout.strip().splitlines()[-1][-90:] if r.stdout.strip() else r.stderr[-300:])
 
+    critic_check(m)
+
     if not a.no_director:
         print("== 7. the director runner (stand-in for Claude Code)", flush=True)
         env = {"MV_CLAUDE": os.path.join(TESTS, "fake_claude.py")}
-        r = studio("direct", P, "--budget", "4m", "--effort", "low", "--model", "fake", check=False, env=env, timeout=1800)
+        r = studio("direct", P, "--budget", "6m", "--effort", "low", "--model", "fake", "--critic-model", "fake", check=False,
+                   env=env, timeout=1800)
         runs = (json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8")).get("runs") or [])
         last = runs[-1] if runs else {}
         rep_md = open(os.path.join(PDIR, "report.md"), encoding="utf-8").read() if os.path.exists(os.path.join(PDIR, "report.md")) else ""
@@ -239,6 +245,14 @@ def main():
         sent = [x["why"] for x in rs.get("messages_sent", [])]
         say("PASS" if len(rs.get("events", [])) >= 3 and "the brief" in sent else "FAIL", "live progress (status.json events)",
             f"{len(rs.get('events', []))} events; studio messages: {', '.join(sent)}")
+        vn = last.get("version")
+        pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
+        vc = next((v.get("critic") for v in pj.get("versions") or [] if v.get("n") == vn), None) or {}
+        said = [x for x in sent if x.startswith("critic:") or "critic's notes" in x]
+        say("PASS" if rs.get("critiques") and said and vc.get("scores") and os.path.exists(os.path.join(PDIR, "final", f"critic_v{vn}.md"))
+            and "- Critic: fake" in rep_md else "FAIL", "the critic during the run: its notes reach the director, the version keeps them",
+            f"{len(rs.get('critiques') or [])} critique(s) {[c['video'] for c in rs.get('critiques') or []]}; messages {said}; "
+            f"final/critic_v{vn}.md: {vc.get('scores')}; critic cost ${rs.get('critic_cost_usd')}")
         # a review round
         notes = [{"id": 1, "version": f"v{last.get('version')}", "t": round(stop_t + 0.3, 2), "text": "hold the stop longer",
                   "done": False, "at": time.strftime("%Y-%m-%d %H:%M")}]
@@ -255,6 +269,110 @@ def main():
         files = sorted(f for f in os.listdir(os.path.join(PDIR, "final")) if f.endswith(".mp4"))
         say("PASS" if sum(f.startswith("music-video_v") for f in files) >= 3 else "FAIL", "earlier versions kept", ", ".join(files))
     return finish(a, t_start)
+
+
+def critic_check(m):
+    """The critic with the stand-in for Claude Code: on the final (the eyes from step 6 are fresh: no new look), then
+    deliver --critic (reuses that critique for v1), an old Claude Code without --max-budget-usd, and the parser."""
+    print("== 6b. the critic (stand-in for Claude Code)", flush=True)
+    fake = {"MV_CLAUDE": os.path.join(TESTS, "fake_claude.py")}
+    cdir = os.path.join(PDIR, "work", "critic")
+    r = studio("critique", P, "final/music-video.mp4", "--model", "fake", check=False, env=fake)
+    c = json.load(open(os.path.join(cdir, "music-video_01.json"), encoding="utf-8")) if os.path.exists(os.path.join(cdir, "music-video_01.json")) else {}
+    md = open(os.path.join(cdir, "music-video_01.md"), encoding="utf-8").read() if os.path.exists(os.path.join(cdir, "music-video_01.md")) else ""
+    line = [x for x in r.stdout.splitlines() if x.startswith("critic: ")]
+    first3 = next((x["t"] for x in m["moments"] if x["stars"] >= 3), None)
+    seen = re.search(r"(\d+) of (\d+) pictures exist", md)
+    say("PASS" if r.returncode == 0 and c.get("scores") == {"ambition": 6, "song_fit": 7, "craft": 8, "readability": 9}
+        and line and line[-1].endswith("work/critic/music-video_01.md") and "```json" not in md and c.get("cost_usd") == 0.0123
+        and first3 is not None and abs(c["problems"][0]["t0"] - first3) < 0.05 and seen and seen.group(1) == seen.group(2)
+        and int(seen.group(2)) >= 5 else "FAIL", "studio.py critique (files, parsed scores, the worst problem at the first ★★★ moment)",
+        (line[-1] if line else (r.stdout + r.stderr)[-800:]) + (f"; {seen.group(0)}" if seen else ""))
+    prompt = open(os.path.join(cdir, "last-prompt.md"), encoding="utf-8").read() if os.path.exists(os.path.join(cdir, "last-prompt.md")) else ""
+    say("PASS" if "<!-- mv:critic -->" in prompt and "Nothing is revealed in a shot's last beat" in prompt and "spectrum bars" in prompt
+        and "a spectrum analyser or waveform bars" in prompt and "scripted mini director" not in prompt and "strip_at" in prompt
+        else "FAIL", "the critic's prompt: the craft rules, the anti-defaults, the avoid, the strips; not the director's report",
+        f"{len(prompt)} chars")
+    r = studio("deliver", P, "--critic", check=False, env=fake)
+    pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
+    v1 = (pj.get("versions") or [{}])[0]
+    say("PASS" if r.returncode == 0 and (v1.get("critic") or {}).get("from") == "work/critic/music-video_01.md"
+        and os.path.exists(os.path.join(PDIR, "final", "critic_v1.md")) and not os.path.exists(os.path.join(cdir, "music-video_02.json"))
+        else "FAIL", "deliver --critic: the version keeps the critique of that exact cut (final/critic_v1.md, no new call)",
+        str(v1.get("critic"))[:160])
+    r = studio("critique", P, "final/music-video.mp4", "--model", "fake", "--no-look", "--out", "work/critic/_old-cli", check=False,
+               env=dict(fake, FAKE_CLAUDE_NO_BUDGET="1"))
+    log = open(os.path.join(cdir, "log.jsonl"), encoding="utf-8").read().splitlines()
+    say("PASS" if r.returncode == 0 and "doesn't know --max-budget-usd" in r.stdout and os.path.exists(os.path.join(cdir, "_old-cli", "critic.json"))
+        and len(log) == 1 else "FAIL", "an old Claude Code without --max-budget-usd: asked again without it; --out writes there (no log line)",
+        r.stdout.strip().splitlines()[-1][-120:] if r.stdout.strip() else r.stderr[-300:])
+    r = studio("critique", P, "final/music-video.mp4", "--model", "fake", "--no-look", check=False,
+               env=dict(fake, FAKE_CLAUDE_CRITIC_ERROR="1"))
+    log = open(os.path.join(cdir, "log.jsonl"), encoding="utf-8").read().splitlines()
+    err = json.loads(log[-1]) if log else {}
+    say("PASS" if r.returncode == 1 and "couldn't run" in r.stdout and "Invalid API key" in r.stdout and "$0.0040 spent" in r.stdout
+        and not os.path.exists(os.path.join(cdir, "music-video_02.json")) and err.get("error") and err.get("cost_usd") == 0.004
+        and not err.get("file") else "FAIL", "Claude Code's own error text (a login, a usage limit) is no critique: exit 1, nothing "
+        "written but a log line with its cost", r.stdout.strip().splitlines()[-1][-160:] if r.stdout.strip() else r.stderr[-300:])
+    sys.path.insert(0, os.path.join(STUDIO, "tools"))
+    import critic
+    _, d1, w1 = critic.parse("# Critique\nno json at all")
+    _, d2, w2 = critic.parse('text\n```json\n{"scores": {"ambition": 3}}\n```\nmore\n```json\n{"scores": {"ambition": 12, "craft": "7"}, '
+                             '"problems": [{"severity": "huge", "t0": "4.5"}, {"severity": "HIGH"}]}\n```')
+    _, d3, w3 = critic.parse('```json\n{"scores": {broken}\n```')
+    _, d4, w4 = critic.parse('```json\n{"scores": {"ambition": 3}}\n```\nthe real one:\n```json\n{broken}\n```')
+    _, d5, w5 = critic.parse('report\n```JSON\n{"scores": {"craft": 5}}\n```')
+    say("PASS" if d1["scores"] is None and w1 and d2["scores"] == {"ambition": 10, "song_fit": None, "craft": 7, "readability": None}
+        and not w2 and d2["problems"][0]["severity"] == "medium" and d2["problems"][1]["severity"] == "high"
+        and d2["problems"][0]["t0"] == 4.5 and d3["scores"] is None and "parse" in w3 and d4["scores"] is None and "parse" in w4
+        and (d5["scores"] or {}).get("craft") == 5 and not w5 else "FAIL",
+        "the critic's answer parsed leniently (no json, two blocks, a broken last block, ```JSON, HIGH)", f"{d2['scores']}; {w1}; {w4}; {d5['scores']}")
+    watcher_check()
+
+
+def watcher_check():
+    """The runner's critic watcher choosing what to critique (its job stubbed: no critic.py runs): a ready final goes
+    first and keeps the reserved last slot, a newer preview comes after it, no preview critique too late in the run or
+    while it stops, and a preview critique still running gives way to a new final."""
+    import director
+
+    class W(director.CriticWatcher):
+        def _run(self, job):
+            self.done.append(job["video"])
+            self.job = None
+    d = os.path.join(PDIR, "cache", "_watcher")
+    for sub in ("final", os.path.join("work", "previews")):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+    fin, prev = os.path.join(d, "final", "music-video.mp4"), os.path.join(d, "work", "previews", "preview_1.mp4")
+    started = time.time() - 1000
+    for f, dt in ((fin, 10), (prev, 20)):
+        open(f, "wb").write(b"x" * 100)
+        os.utime(f, (started + dt, started + dt))
+
+    def watch(n=0, rounds=4, **kw):
+        w = W(d, started, "fake", "medium", most=6)
+        w.done, w.n = [], n
+        for i in range(rounds):
+            w.poll(1000.0 + 5 * i, **kw)
+            time.sleep(0.05)                        # the stub's thread ends the job
+        return w
+    a = watch(n=5)                                  # one slot left: it's the final's, though the preview is newer
+    b = watch()                                     # the final first, then the newer preview
+    c = watch(left=200)                             # 3 min left: no preview critique (its notes couldn't reach the director)
+    e = watch(stopping=True)
+    f = W(d, started, "fake", "medium", most=6)     # a preview critique running when the final is ready: it gives way
+    f.done, f.n = [], 1
+    f.job = {"key": f.key(prev), "video": "work/previews/preview_1.mp4", "proc": None}
+    f.poll(1000.0)
+    f.poll(1005.0)
+    gave_way = f.job and f.job.get("superseded") and f.n == 0
+    f.job = None
+    f.poll(1010.0)
+    time.sleep(0.05)
+    say("PASS" if a.done == ["final/music-video.mp4"] and a.n == 6 and b.done == ["final/music-video.mp4", "work/previews/preview_1.mp4"]
+        and c.done == ["final/music-video.mp4"] and e.done == [] and gave_way and f.done == ["final/music-video.mp4"] else "FAIL",
+        "the critic watcher: the final first (and the reserved slot), the newer preview after it, none too late or while stopping, "
+        "a running preview critique gives way to a new final", f"{a.done} {b.done} {c.done} {e.done} {f.done} gave way: {bool(gave_way)}")
 
 
 def finish(a, t_start):

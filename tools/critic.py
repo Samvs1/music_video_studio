@@ -21,7 +21,9 @@ final, a pitch's proof clip.
    video, its size and mtime, model, effort, cost_usd, duration_s, at) and a line in work/critic/log.jsonl. With
    --out DIR: DIR/critic.md + DIR/critic.json instead (no log line; the pitch round uses this).
 It prints the report, then one line:  critic: ambition 7 · song fit 6 · craft 8 · readability 9 · $0.12 · work/critic/x_02.md
-Exit 0 whatever it found; 1 only when it couldn't run.
+Exit 0 whatever it found; 1 only when it couldn't run (no pictures of this cut, no answer, or Claude Code's own error
+text instead of a critique: a usage limit, a login): then nothing is written but a log line with the error and what it
+cost, and the last line is  critic: couldn't run: <why> ($0.0310 spent).
 """
 import argparse, glob, json, os, re, subprocess, sys, time
 
@@ -29,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STUDIO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from mv.common import delivery, jload, jsave, probe, project as load_pj, need_project  # noqa: E402
-from mv.claude import claude_print, READ_ONLY  # noqa: E402
+from mv.claude import claude_print, pid_alive, READ_ONLY  # noqa: E402
 
 TEMPLATE = os.path.join(STUDIO, "templates", "critic-prompt.md")
 SKILL_DIR = os.path.join(STUDIO, ".claude", "skills", "musicvideo")
@@ -63,6 +65,19 @@ def score_line(scores):
 def result_line(d):
     cost = f"${d['cost_usd']:.2f}" if isinstance(d.get("cost_usd"), (int, float)) else "$?"
     return f"critic: {score_line(d.get('scores'))} · {cost} · {d.get('file')}"
+
+
+class NoAnswer(RuntimeError):
+    """The critic couldn't run; .cost is what the call spent anyway (a cap hit, a refused call), when Claude said."""
+    def __init__(self, msg, cost=None):
+        super().__init__(msg)
+        self.cost = cost
+
+
+def spent(out):
+    """What a critic.py run that couldn't answer spent, from its "critic: couldn't run: ... ($0.031 spent)" line."""
+    m = re.findall(r"^critic: couldn't run: .*\(\$([\d.]+) spent\)\s*$", out or "", re.M)
+    return float(m[-1]) if m else None
 
 
 def critiques(pdir):
@@ -102,15 +117,17 @@ def parse(text):
     """The critic's answer -> (markdown, data, warning). The last ```json block is the data; missing or broken: the
     markdown is kept, the scores are None, and the warning says so."""
     text = (text or "").strip()
-    blocks = list(re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text))
+    blocks = list(re.finditer(r"```(?:json\w*)?\s*(\{[\s\S]*?\})\s*```", text, re.I))   # ```json, ```JSON, ```jsonc
     data, warn = None, ""
-    for m in reversed(blocks):
+    if blocks:                                   # only the last one: an earlier block may be an example or a draft
+        m = blocks[-1]
         try:
             data = json.loads(m.group(1))
             text = (text[:m.start()] + text[m.end():]).strip()
-            break
         except Exception:
-            continue
+            data = None
+        if not isinstance(data, dict):
+            data = None
     if data is None:
         warn = "the critic's answer had no readable json block: the report is kept, the scores are missing"
         if blocks:
@@ -127,7 +144,8 @@ def parse(text):
     for p in data.get("problems") or []:
         if isinstance(p, dict):
             q = {k: p.get(k) for k in ("severity", "t0", "t1", "where", "what", "push")}
-            q["severity"] = q["severity"] if q["severity"] in ("high", "medium", "low") else "medium"
+            sev = str(q["severity"] or "").strip().lower()
+            q["severity"] = sev if sev in ("high", "medium", "low") else "medium"
             for k in ("t0", "t1"):
                 try:
                     q[k] = round(float(q[k]), 2)
@@ -235,21 +253,48 @@ def eyes_dir(video):
 
 def run_tool(pdir, args, timeout=1800):
     env = dict(os.environ, MV_PROJECT=pdir, PYTHONIOENCODING="utf-8", MV_IN_VENV="1")
-    return subprocess.run([sys.executable, "-W", "ignore", os.path.join(HERE, args[0])] + list(args[1:]), cwd=STUDIO, env=env,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    cmd = [sys.executable, "-W", "ignore", os.path.join(HERE, args[0])] + list(args[1:])
+    try:
+        return subprocess.run(cmd, cwd=STUDIO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"{args[0]} {args[1] if len(args) > 1 else ''} took longer than {timeout // 60} min")
 
 
-def wait_quiet(d, since, log, quiet=20, most=150):
-    """The director may be looking at the same video right now (eyes.py writes into the same folder): wait until
-    nothing in it has changed for `quiet` seconds (at most `most`), so the two don't make the same pictures twice."""
-    t0 = time.time()
+def busy_marker(path):
+    """eyes.py look's .looking file, if a look is really going on: a marker left behind by a look that was killed (a
+    Bash timeout, taskkill) names a process that is gone, and is removed."""
+    if not os.path.exists(path):
+        return False
+    try:
+        pid = open(path, encoding="utf-8").read().strip()
+    except OSError:
+        return False
+    age = time.time() - os.path.getmtime(path)
+    alive = (pid_alive(pid) and age < 1800) if pid.isdigit() else age < 900    # (a look never takes 30 min)
+    if not alive:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return alive
+
+
+def wait_quiet(d, since, log, quiet=20, most=360):
+    """The director may be looking at the same video right now: wait while eyes.py look says it is working (its
+    .looking file, for at most `most` seconds) or something else wrote into the folder in the last `quiet` seconds,
+    so the two don't make the same pictures twice."""
+    t0, said = time.time(), False
+    busy = os.path.join(d, ".looking")
     while time.time() - t0 < most:
         ms = [os.path.getmtime(f) for f in glob.glob(os.path.join(d, "*")) if os.path.isfile(f)]
         newest = max(ms or [0])
-        if newest <= since or time.time() - newest > quiet:
+        looking = busy_marker(busy)
+        if not looking and (newest <= since or time.time() - newest > quiet):
             return
-        if time.time() - t0 < 1:
+        if not said:
             log("eyes: something is looking at this video already; waiting for it")
+            said = True
         time.sleep(3)
 
 
@@ -261,21 +306,30 @@ def strongest_moments(song, t0, t1, n=3):
     return sorted(sorted(ms, key=lambda m: -rank(m))[:n], key=lambda m: m["t"])
 
 
+def newer(p, t):
+    return os.path.exists(p) and os.path.getmtime(p) > t
+
+
 def look(pdir, video, song, rng, log, fresh_look=True):
-    """Eyes first: the look (unless it's newer than the video), then strips at the strongest ★★★ moments.
-    Returns ([(picture path relative to the project, what it is)], the eyes folder)."""
+    """Eyes first: the look (unless it's newer than the video), then strips at the strongest ★★★ moments. Only
+    pictures made after the video count: an eyes folder is per file name, so older ones show an earlier cut.
+    Returns ([(picture path relative to the project, what it is)], the eyes folder, warnings)."""
     d = eyes_dir(video)
     vm = os.path.getmtime(video)
     idx = os.path.join(d, "index.md")
-    if fresh_look and not (os.path.exists(idx) and os.path.getmtime(idx) > vm):
+    warns = []
+    if fresh_look and not newer(idx, vm):
         wait_quiet(d, vm, log)
-    if fresh_look and not (os.path.exists(idx) and os.path.getmtime(idx) > vm):
+    if fresh_look and not newer(idx, vm):
         log(f"eyes: looking at {rel(video, pdir)} (a minute or two)...")
         r = run_tool(pdir, ["eyes.py", "look", video])
         if r.returncode:
             log("eyes.py look failed: " + (r.stdout + r.stderr)[-600:])
+    if os.path.exists(idx) and not newer(idx, vm):
+        warns.append("the eyes' look at this video (sheets, moments, beats, motion) is from an earlier cut with this "
+                     "name" + (" (eyes.py look failed)" if fresh_look else " (--no-look)") + ": left out")
     pics = []
-    if os.path.exists(idx):
+    if newer(idx, vm):
         for k, p in re.findall(r"^- \*\*(\w+)\*\*: `([^`]+)`", open(idx, encoding="utf-8").read(), re.M):
             if os.path.exists(os.path.join(pdir, p)):
                 pics.append((p, {"sheet": "sheet: frames spread over the video", "moments": "moments: a frame on each ★★★ moment",
@@ -283,17 +337,20 @@ def look(pdir, video, song, rng, log, fresh_look=True):
     for m in strongest_moments(song, rng[0], rng[1]):
         at = f"{m['t']:.3f}"
         p = os.path.join(d, f"strip_at{float(at):g}.png")          # the name eyes.py strip gives it
-        if fresh_look and not (os.path.exists(p) and os.path.getmtime(p) > vm):
+        if fresh_look and not newer(p, vm):
             r = run_tool(pdir, ["eyes.py", "strip", video, "--at", at, "--n", "8"], timeout=600)
             found = [x for x in r.stdout.strip().splitlines() if x.endswith(".png")]
             p = found[-1] if found else p
-        if os.path.exists(p):
+        if newer(p, vm):
             pics.append((rel(p, pdir), f"strip around {mmss(m['t'])} ({m['pos']}): ★★★ {m['text']}"))
     listed = {os.path.normcase(os.path.join(pdir, p)) for p, _ in pics}
     extra = sorted((f for f in glob.glob(os.path.join(d, "*.png")) if os.path.normcase(f) not in listed and os.path.getmtime(f) > vm),
                    key=os.path.getmtime, reverse=True)[:3]           # what else the director looked at on this cut
     pics += [(rel(f, pdir), "another look the director made at this video") for f in extra]
-    return pics, d
+    if not pics:
+        raise NoAnswer(f"the eyes couldn't make pictures of {rel(video, pdir)}"
+                       + ("" if fresh_look else " (with --no-look there were none of this cut)"))
+    return pics, d, warns
 
 
 def trimmed(path, most=45, keep=None):
@@ -322,17 +379,23 @@ def checks_about(pdir, video):
     return "### The studio's checks on this cut (only the verdicts and what didn't pass)\n" + body
 
 
-def previous(pdir, out):
+def previous(pdir, out, video):
     if out:
         return "(none for this one: it is judged on its own)"
-    cs = critiques(pdir)
+    size, vm = os.path.getsize(video), os.path.getmtime(video)
+    # the newest critique of this cut or of one made before it: asked about v1 after v2, the critic compares v1 with
+    # what came before v1, not with v2 (an older cut can't have "fixed" a newer one's problems)
+    cs = [d for d in critiques(pdir) if d.get("size") == size or (d.get("mtime") or 0) < vm - 1]
     if not cs:
-        return "(this is the first critique in this project)"
+        return "(none earlier: this is the first critique of this cut or of one before it; `fixed_since_last` stays empty)"
     d = cs[-1]
-    return (f"`{d['json']}`, of `{d['video']}` at {d.get('at')}: {score_line(d.get('scores'))}. Its verdict: "
-            f"{d.get('verdict') or '-'}\nIts problems:\n{problems_text(d, 8) or '(none listed)'}\n"
-            "Say in `fixed_since_last` what of this is fixed in the video you see now (if it is the same part of the "
-            "song); don't repeat a problem that is gone.")
+    head = (f"`{d['json']}`, of `{d['video']}` at {d.get('at')}: {score_line(d.get('scores'))}. Its verdict: "
+            f"{d.get('verdict') or '-'}\nIts problems:\n{problems_text(d, 8) or '(none listed)'}\n")
+    if d.get("size") == size:                            # the same cut (or a copy of it): nothing can have changed
+        return head + ("It looked at **this very cut**: nothing has changed since, so `fixed_since_last` stays empty. "
+                       "Judge it afresh; where you see it differently, say so.")
+    return head + ("Say in `fixed_since_last` what of this is fixed in the video you see now (where it covers the same "
+                   "part of the song); don't repeat a problem that is gone.")
 
 
 def build_prompt(pdir, video, what, pics, eyes_d, concept=None, focus="", out=None):
@@ -351,13 +414,14 @@ def build_prompt(pdir, video, what, pics, eyes_d, concept=None, focus="", out=No
     vals["notes"] = user_notes(pj)
     vals["avoid"] = str(pj.get("avoid") or "").strip() or "(nothing)"
     vals["anti"], vals["craft"] = anti_defaults(), craft_rules()
-    idx = os.path.join(eyes_d, "index.md")
-    vals["eyes"] = open(idx, encoding="utf-8").read().strip() if os.path.exists(idx) else "(the eyes couldn't look at it)"
+    idx, vm = os.path.join(eyes_d, "index.md"), os.path.getmtime(video)
+    vals["eyes"] = open(idx, encoding="utf-8").read().strip() if newer(idx, vm) else \
+        "(the eyes couldn't measure this cut: judge from the pictures below)"
     sync = os.path.join(eyes_d, "sync.md")
-    vals["sync"] = ("### Sync in detail (from `" + rel(sync, pdir) + "`)\n" + trimmed(sync, 40)) if os.path.exists(sync) else ""
+    vals["sync"] = ("### Sync in detail (from `" + rel(sync, pdir) + "`)\n" + trimmed(sync, 40)) if newer(sync, vm) else ""
     vals["checks"] = checks_about(pdir, video)
     vals["pictures"] = "\n".join(f"- `{p}`: {what}" for p, what in pics) or "(none: the eyes couldn't make pictures)"
-    vals["previous"] = previous(pdir, out)
+    vals["previous"] = previous(pdir, out, video)
     vals["focus"] = (f"**The director asks you to look especially at:** {focus.strip()}\n") if (focus or "").strip() else ""
     text = open(TEMPLATE, encoding="utf-8").read()
     return re.sub(r"\{\{(\w+)\}\}", lambda m: str(vals.get(m.group(1), "")), text)
@@ -367,12 +431,16 @@ def build_prompt(pdir, video, what, pics, eyes_d, concept=None, focus="", out=No
 def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=None, max_usd=DEFAULT_MAX_USD,
              fresh_look=True, log=print):
     """Look, ask, write. Returns the critique (dict, as written to the json) or raises RuntimeError when it couldn't
-    run (no Claude Code, no answer)."""
+    run (no Claude Code, no pictures, no answer: NoAnswer, with what the call cost)."""
     from mv.song import Song
     pdir = os.path.abspath(pdir)
     video = os.path.abspath(video if os.path.isabs(video) else os.path.join(pdir, video))
     if not os.path.isfile(video):
         raise RuntimeError(f"no such video: {rel(video, pdir)}")
+    if concept:
+        concept = os.path.abspath(concept if os.path.isabs(concept) else os.path.join(pdir, concept))
+        if not os.path.isfile(concept):
+            raise RuntimeError(f"no such concept: {rel(concept, pdir)}")
     pj = load_pj(pdir)
     m0, e0 = settings(pj)
     model = model or (m0 if m0 != "off" else DEFAULT_MODEL)
@@ -380,25 +448,37 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
     song = Song(pdir)
     size, mtime = os.path.getsize(video), os.path.getmtime(video)
     kind, rng, what = describe(pdir, video, song)
-    pics, eyes_d = look(pdir, video, song, rng, log, fresh_look)
+    pics, eyes_d, warns = look(pdir, video, song, rng, log, fresh_look)
     prompt = build_prompt(pdir, video, what, pics, eyes_d, concept, focus, out)
     cdir = os.path.join(pdir, "work", "critic")
-    os.makedirs(cdir, exist_ok=True)
-    open(os.path.join(cdir, "last-prompt.md"), "w", encoding="utf-8").write(prompt)
+    od = (out if os.path.isabs(out) else os.path.join(pdir, out)) if out else cdir
+    os.makedirs(od, exist_ok=True)
+    open(os.path.join(od, "prompt.md" if out else "last-prompt.md"), "w", encoding="utf-8").write(prompt)   # what it was asked
     log(f"the critic ({model}, effort {effort}) is looking at {rel(video, pdir)}: {len(pics)} pictures (2-4 min)...")
     r = claude_print(prompt, pdir, model=model, effort=effort or None, tools=READ_ONLY, timeout=900, max_usd=max_usd)
     res = r["json"]
-    if not r["text"].strip():
-        why = res.get("subtype") or (r["stderr"] or r["stdout"]).strip()[-400:] or f"exit {r['returncode']}"
-        if "budget" in str(why):
-            why = f"it reached its ${max_usd:g} cap before answering ({why})"
-        raise RuntimeError(f"the critic didn't answer: {why}")
+    cost = round(r["cost_usd"], 4) if isinstance(r["cost_usd"], (int, float)) else None
     md, data, warn = parse(r["text"])
-    warnings = r["warnings"] + ([warn] if warn else [])
+    failed = r["returncode"] or res.get("is_error")
+    if not r["text"].strip() or (failed and warn):
+        # no answer, or Claude Code's own error text (a usage limit, a login, an overloaded API) instead of a critique:
+        # nothing is written as a critique (so nothing reuses it), only a line in the log with what it cost
+        why = (r["text"].strip()[:300] if r["text"].strip() else "") or res.get("subtype") or \
+            (r["stderr"] or r["stdout"]).strip()[-400:] or f"exit {r['returncode']}"
+        if "budget" in str(res.get("subtype") or why):
+            why = f"it reached its ${max_usd:g} cap before answering ({res.get('subtype') or why})"
+        if not out:
+            with open(os.path.join(cdir, "log.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "video": rel(video, pdir), "size": size,
+                                    "mtime": mtime, "model": model, "effort": effort, "error": why[:300], "cost_usd": cost},
+                                   ensure_ascii=False) + "\n")
+        raise NoAnswer(f"the critic didn't answer: {why}", cost)
+    warnings = r["warnings"] + warns + ([warn] if warn else [])
+    if failed:
+        warnings.append(f"Claude Code reported an error ({res.get('subtype') or 'exit ' + str(r['returncode'])}), "
+                        f"but the critique came through whole")
     stem = os.path.splitext(os.path.basename(video))[0]
     if out:
-        od = out if os.path.isabs(out) else os.path.join(pdir, out)
-        os.makedirs(od, exist_ok=True)
         mdp, jp = os.path.join(od, "critic.md"), os.path.join(od, "critic.json")
     else:
         nn = [int(x.group(1)) for f in os.listdir(cdir) for x in [re.fullmatch(re.escape(stem) + r"_(\d{2,})\.json", f)] if x]
@@ -407,12 +487,9 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
     used = list((res.get("modelUsage") or {}).keys())
     d = {"video": rel(video, pdir), "size": size, "mtime": mtime, "kind": kind, "range": rng, **data,
          "model": model, "model_used": used[0] if len(used) == 1 else used or None, "effort": effort,
-         "cost_usd": round(r["cost_usd"], 4) if isinstance(r["cost_usd"], (int, float)) else None, "duration_s": r["duration_s"], "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-         "file": rel(mdp, pdir), "pictures": [p for p, _ in pics], "focus": focus or "",
-         "concept": rel(concept, pdir) if concept else ("work/concept.md" if os.path.exists(os.path.join(pdir, "work", "concept.md")) else None),
-         "warnings": warnings}
-    if r["returncode"] or res.get("is_error"):
-        d["warnings"].append(f"Claude Code ended with {res.get('subtype') or 'exit ' + str(r['returncode'])}")
+         "cost_usd": cost, "duration_s": r["duration_s"], "at": time.strftime("%Y-%m-%d %H:%M:%S"), "file": rel(mdp, pdir),
+         "pictures": [p for p, _ in pics], "focus": focus or "", "warnings": warnings,
+         "concept": rel(concept, pdir) if concept else ("work/concept.md" if os.path.exists(os.path.join(pdir, "work", "concept.md")) else None)}
     open(mdp, "w", encoding="utf-8").write(md.rstrip() + "\n")
     jsave(jp, d)
     if not out:
@@ -450,11 +527,14 @@ def main():
         d = critique(pdir, a.video, a.model, a.effort, a.focus, a.concept, a.out, a.max_usd, not a.no_look,
                      log=lambda s: print(s, flush=True))
     except RuntimeError as e:
-        print(f"critic: couldn't run: {e}", flush=True)
+        cost = getattr(e, "cost", None)
+        print(f"critic: couldn't run: {e}" + (f" (${cost:.4f} spent)" if cost else ""), flush=True)
         sys.exit(1)
     print("\n" + open(os.path.join(pdir, d["file"]), encoding="utf-8").read().rstrip() + "\n", flush=True)
     for w in d.get("warnings") or []:
         print(f"warning: {w}", flush=True)
+    if d.get("pictures"):                      # made already: the director opens only the ones it needs
+        print("the pictures it looked at: " + ", ".join(d["pictures"]), flush=True)
     print(result_line(d), flush=True)
 
 
