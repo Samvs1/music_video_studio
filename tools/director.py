@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STUDIO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from mv.common import delivery, jload, jsave, song_file, project as load_pj, save_project  # noqa: E402
+from mv.claude import claude_bin, claude_print, kill_tree  # noqa: E402
 
 TEMPLATES = os.path.join(STUDIO, "templates")
 SKILL = os.path.join(STUDIO, ".claude", "skills", "musicvideo", "SKILL.md")
@@ -35,14 +36,6 @@ DENY_BASH = ["curl", "wget", "Invoke-WebRequest", "iwr", "Invoke-RestMethod", "i
 SYSTEM_APPEND = ("You are running unattended inside Music Video Studio as the director of one music video. Nobody "
                  "answers questions: decide and keep going. Stay inside this project folder (the studio tools may be "
                  "read and run, not edited). No network: everything you need is installed. Watch the clock.")
-
-
-def claude_bin():
-    """The claude command as a list (MV_CLAUDE overrides; a .py there runs with this Python: tests use a stand-in)."""
-    c = os.environ.get("MV_CLAUDE") or shutil.which("claude")
-    if not c:
-        return None
-    return [sys.executable, c] if c.endswith(".py") else [c]
 
 
 def parse_budget(s):
@@ -143,25 +136,14 @@ def story(pdir, model=None, log=print):
         notes = "\n".join(x for x in (user_notes(pj), refs_people(pdir, pj)) if x)
         prompt = fill(open(os.path.join(TEMPLATES, "story-prompt.md"), encoding="utf-8").read(),
                       {"notes": notes or "(no notes given)", "title": title, "date": time.strftime("%Y-%m-%d")})
-        # the prompt goes in on stdin, not as an argument: on Windows an npm `claude.cmd` passes arguments through
-        # cmd.exe, which mangles newlines, quotes and parentheses
-        cmd = [*cl, "-p", "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools", "Read",
-               "--disallowedTools", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "--strict-mcp-config",
-               "--no-session-persistence"]
-        if model or (pj.get("director") or {}).get("model"):
-            cmd += ["--model", model or pj["director"]["model"]]
         log("Claude is reading the song folder (1-3 min)...")
-        r = subprocess.run(cmd, cwd=pdir, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=1200)
-        try:
-            res = json.loads(r.stdout)
-            text = res.get("result", "")
-        except Exception:
-            res, text = {}, r.stdout
+        # one headless print-mode call with the Read tool only (mv/claude.py: the prompt on stdin)
+        r = claude_print(prompt, pdir, model=model or (pj.get("director") or {}).get("model"), tools=["Read"], timeout=1200)
+        res, text = r["json"], r["text"]
         st.step(1)
         text = re.sub(r"^```(?:markdown)?\s*|\s*```\s*$", "", text.strip())
         if "# Song story" not in text or "## What it's about" not in text:
-            raise RuntimeError("Claude didn't return a song story: " + (text or r.stderr)[-400:])
+            raise RuntimeError("Claude didn't return a song story: " + (text or r["stderr"])[-400:])
         sp = os.path.join(pdir, "song", "song-story.md")
         if os.path.exists(sp) and "_2–4 sentences" not in open(sp, encoding="utf-8").read():
             os.makedirs(os.path.join(pdir, "cache", "story"), exist_ok=True)
