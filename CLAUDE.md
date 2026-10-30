@@ -22,7 +22,11 @@ what it can't hear; Claude Code directs the video, interactively (`/musicvideo <
   `tools/pipeline.py` (`studio.py pipeline validate|status|render|gate|assemble|build`): the pipeline every run
   follows; `tools/mv/session.py` one stream-json Claude Code session (busy from a message to an idle session until
   its result; messages sent while busy join the running turn); `tools/mv/renderlock.py` the render queue (one video
-  render at a time per machine, `<studio>/cache/render.lock`, `MV_RENDER_LOCK=0` off).
+  render at a time per machine, `<studio>/cache/render.lock`, `MV_RENDER_LOCK=0` off). `tools/mv/live.py`: the live
+  preview (the web app plays the scenes in the browser with the song, no render, from a live server per project on
+  127.0.0.1 in the renderer's URL space; timelines from `work/live.json` (optional override), `work/plan.json`, the
+  renders). The user's live notes reach a running director; directors mark notes done with `studio.py note-done <p>
+  <id> "<fix>"` (the web app writes `review/notes.json` too).
 - `.claude/skills/musicvideo/SKILL.md`: the pipeline, the director's workflow and craft rules (+ `anti-defaults.md`).
 - `templates/`: the director, planner, builder and revise briefs, the story prompt, the critic's prompt. `app/`: the
   web app. `tests/`: smoke + server tests.
@@ -56,7 +60,8 @@ venv. Bash heredocs mangle quotes: for non-trivial patches write a small script 
 - Craft (details in the skill): every cut and hit on a musical event within a frame; lyric text on the beat or 8th at
   or just before its sung word; text readable long enough, ≥ 3:1 contrast, never clipped; nothing revealed in a
   shot's last beat; one committed visual language; fix the film, not the frame; no rapid bright flashing; say which
-  timestamps need a human ear.
+  timestamps need a human ear. Scenes should play near real time at half size where they can (heavy work in setup):
+  the user plays them live with the song mid-run.
 - Privacy: songs, notes, reference pictures and videos stay in `projects/` (git ignores the media). The web app listens
   on 127.0.0.1 only.
 
