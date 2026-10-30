@@ -8,7 +8,7 @@ The project being worked on comes from MV_PROJECT (set by tools/studio.py). A pr
   final/         music-video.mp4 and the earlier versions (music-video_v1.mp4, ...)
   review/        the user's notes (notes.json)
 """
-import glob, json, os, re, shutil, subprocess
+import glob, json, os, re, shutil, subprocess, time
 
 STUDIO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the studio install
 TOOLS = os.path.join(STUDIO, "tools")
@@ -52,12 +52,26 @@ def jload(path, default=None):
 
 
 def jsave(path, obj, indent=1):
-    """Write JSON atomically (a crash never leaves half a file)."""
+    """Write JSON atomically (a crash never leaves half a file). The temporary file is the writer's own (two processes
+    or threads saving one file don't move each other's), and on Windows the replace is tried again for a moment while
+    someone reads the file (the web app polls these files every 2 s; an open file can't be replaced there)."""
+    import threading
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=indent, ensure_ascii=False, default=_np)
-    os.replace(tmp, path)
+    for k in range(40):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if k == 39:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            time.sleep(0.05)
 
 
 def _np(o):

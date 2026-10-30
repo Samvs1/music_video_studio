@@ -230,9 +230,50 @@ def probe_browser(gpu="auto"):
 
 
 # ------------------------------------------------------------------ rendering
+# a relative module specifier in JS: import ... from "./x.js", import "./x.js", export ... from "../lib/x.js",
+# import("./x.js"), new URL("./tex.png", import.meta.url); in HTML also <script src> / <link href> / <img src>
+_JS_REFS = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(?\s*|\bnew\s+URL\s*\(\s*)(["'])((?:\.{1,2}/|/(?!_mv/|/))[^"'\n]+?)\1""")
+_HTML_REFS = re.compile(r"""<(?:script|link|img|source)\b[^>]*?\b(?:src|href)\s*=\s*(["'])((?:\.{1,2}/|/(?!_mv/|/))?[^"':\n]+?)\1""", re.I)
+
+
+def reached(scene_path, project, most=500):
+    """Every file a scene reaches by relative static or dynamic import (and, in an HTML scene, its <script src> /
+    <link href> / <img src>), followed recursively and outside its folder too (a shared lib in work/scenes/lib/).
+    "/x/y.js" is the project's file; bare names ("three") and /_mv/... are the studio's runtime and vendored
+    libraries (they change only with the studio). Files that don't exist are left out."""
+    project = os.path.abspath(project)
+    seen, todo = set(), [os.path.abspath(scene_path)]
+    while todo and len(seen) < most:
+        f = todo.pop()
+        if f in seen or not os.path.isfile(f):
+            continue
+        seen.add(f)
+        if not f.lower().endswith((".js", ".mjs", ".html", ".htm", ".css")):
+            continue
+        try:
+            txt = open(f, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        refs = [m.group(2) for m in _JS_REFS.finditer(txt)]
+        if f.lower().endswith((".html", ".htm")):
+            refs += [m.group(2) for m in _HTML_REFS.finditer(txt)]
+        if f.lower().endswith(".css"):
+            refs += re.findall(r"""@import\s+(?:url\()?\s*["']((?:\.{1,2}/)[^"']+)["']""", txt)
+        for r in refs:
+            r = urllib.parse.unquote(r.split("?")[0].split("#")[0])
+            if not r or "://" in r or r.startswith(("data:", "/_mv/", "//")):
+                continue
+            q = os.path.join(project, r.lstrip("/")) if r.startswith("/") else os.path.join(os.path.dirname(f), r)
+            todo.append(os.path.abspath(os.path.normpath(q)))
+    seen.discard(os.path.abspath(scene_path))
+    return sorted(seen)
+
+
 def scene_key(scene_path, project, cfg):
-    """What decides a chunk's pixels: the scene's folder (its code and assets; renders and caches excluded), the
-    runtime, the song data, the render settings. Any change renders the scene's chunks again."""
+    """What decides a chunk's pixels: the scene's folder (its code and assets; renders and caches excluded), every
+    file it reaches by a relative import (the shared lib, wherever it is: a lib change renders again, a sibling
+    segment's change in its own folder doesn't), the runtime, the song data, the render settings. Any change renders
+    the scene's chunks again."""
     h = hashlib.sha1()
     d = os.path.dirname(os.path.abspath(scene_path))
     files = {os.path.abspath(scene_path)}
@@ -243,12 +284,13 @@ def scene_key(scene_path, project, cfg):
                 files.add(os.path.join(root, f))
         if root == d and os.path.abspath(d) in (os.path.abspath(project), os.path.abspath(os.path.join(project, "work"))):
             break                                    # a scene loose in the project / work folder: don't hash everything below
+    files.update(reached(scene_path, project))
     for f in sorted(files):
         try:
             if os.path.getsize(f) < 50e6:
                 h.update(os.path.relpath(f, d).encode("utf-8", "replace"))
                 h.update(open(f, "rb").read())
-        except OSError:
+        except (OSError, ValueError):                # (ValueError: another drive on Windows has no relative path)
             pass
     h.update(open(os.path.join(RUNTIME, "mv.js"), "rb").read())
     for f in ("song-map.json", "frames.json", "hits.json"):
@@ -256,6 +298,20 @@ def scene_key(scene_path, project, cfg):
         h.update(f"{f}:{os.path.getmtime(p) if os.path.exists(p) else 0}".encode())
     h.update(json.dumps(cfg, sort_keys=True).encode())
     return h.hexdigest()[:16]
+
+
+def render_cfg(project, quality="final", scale=1.0, transparent=False, lossless=False, seed=1, width=None, height=None,
+               fps=None):
+    """The settings that decide a render's pixels (part of the cache key), as render() works them out:
+    (cfg, w, h, fps, jpeg). The pipeline uses it to tell whether a render is still current without rendering."""
+    d = delivery(jload(os.path.join(project, "project.json"), {}))
+    fps = fps or d["fps"]
+    w = int(round((width or d["width"]) * scale / 2)) * 2
+    h = int(round((height or d["height"]) * scale / 2)) * 2
+    jpeg = False if (transparent or lossless) else (88 if quality == "preview" else 98)
+    cfg = {"w": w, "h": h, "fps": fps, "seed": seed, "quality": quality, "transparent": transparent, "rt": RUNTIME_VERSION,
+           "capture": "png" if not jpeg else f"jpeg{jpeg}"}
+    return cfg, w, h, fps, jpeg
 
 
 def merge_texts(per_frame, fps, space=None):
@@ -408,10 +464,7 @@ def render(scene, out, project=None, frames=None, width=None, height=None, fps=N
     Returns the sidecar dict (also written to <out>.mv.json)."""
     from concurrent.futures import ProcessPoolExecutor
     project = os.path.abspath(project or ROOT)
-    d = delivery(jload(os.path.join(project, "project.json"), {}))
-    fps = fps or d["fps"]
-    w = int(round((width or d["width"]) * scale / 2)) * 2
-    h = int(round((height or d["height"]) * scale / 2)) * 2
+    cfg, w, h, fps, jpeg = render_cfg(project, quality, scale, transparent, lossless, seed, width, height, fps)
     fm = jload(os.path.join(project, "song", "frames.json"), None)
     if fm is None:
         raise SystemExit("song/frames.json is missing: run ingest first")
@@ -422,9 +475,6 @@ def render(scene, out, project=None, frames=None, width=None, height=None, fps=N
         raise SystemExit(f"empty frame range {a}:{b}")
     out = os.path.abspath(out)
     mode = "png" if transparent and not out.lower().endswith(".mov") else ("png" if transparent else "mp4")
-    jpeg = False if (transparent or lossless) else (88 if quality == "preview" else 98)
-    cfg = {"w": w, "h": h, "fps": fps, "seed": seed, "quality": quality, "transparent": transparent, "rt": RUNTIME_VERSION,
-           "capture": "png" if not jpeg else f"jpeg{jpeg}"}
     key = scene_key(scene, project, cfg)
     parts = out + ".parts"
     cdir = os.path.join(parts, key)
@@ -493,7 +543,7 @@ def render(scene, out, project=None, frames=None, width=None, height=None, fps=N
     side = {"scene": os.path.relpath(scene, project).replace("\\", "/"), "range": [a, b], "fps": fps, "w": w, "h": h,
             "t0": round(a / fps, 4), "t1": round(b / fps, 4), "transparent": transparent, "format": "png" if mode == "png" and not out.endswith(".mov") else os.path.splitext(out)[1][1:],
             "browser": info, "texts": merge_texts(per_frame, fps, (w, h)), "intents": [dict(x) for x in {json.dumps(i, sort_keys=True): i for i in intents}.values()],
-            "logs": sorted(set(logs))[:50], "rendered_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            "logs": sorted(set(logs))[:50], "rendered_at": time.strftime("%Y-%m-%d %H:%M:%S"), "key": key}
     jsave(out.rstrip("/\\") + ".mv.json", side)
     for old in glob.glob(os.path.join(parts, "*")):              # older scene versions' chunks are not needed any more
         if os.path.basename(old) != key:

@@ -9,6 +9,8 @@
 Re-running continues where it stopped: Blender skips frames that already exist (--fresh starts over).
 Eevee and Workbench need OpenGL: on a Linux box without a display they run under xvfb-run automatically.
 Writes <out>.mv.json (frame range, engine, timings, the text the scene declared with mv.text()).
+Video renders wait their turn in the machine's render queue (mv/renderlock.py: one render at a time; MV_RENDER_WHO
+names it while it renders, MV_RENDER_LOCK=0 turns the queue off); --still doesn't wait.
 """
 import argparse, glob, json, os, platform, shutil, subprocess, sys, time
 
@@ -16,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 sys.path.insert(0, TOOLS)
 from mv.common import ROOT, delivery, jload, jsave, need_project, ffmpeg, h264_args  # noqa: E402
+from mv.renderlock import render_queue  # noqa: E402
 
 
 def find_blender():
@@ -160,6 +163,14 @@ def render(scene, out, project=None, frames=None, engine="auto", samples=None, s
     return side
 
 
+def shown(path):
+    """A path as the render queue shows it: relative to the project when it can be."""
+    try:
+        return os.path.relpath(path, ROOT).replace("\\", "/")
+    except ValueError:                             # another drive (Windows)
+        return path
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scene")
@@ -198,8 +209,13 @@ def main():
         rng = None
     out = a.out or os.path.join("work", "renders", os.path.splitext(os.path.basename(scene))[0])
     out = out if os.path.isabs(out) else os.path.join(ROOT, out)
-    render(scene, out, ROOT, rng, a.engine, a.samples, a.scale or (0.5 if a.preview else 1.0), a.preview, a.transparent,
-           a.workers, [float(x) for x in a.still.split(",")] if a.still else None, a.fresh, a.seed)
+    args = (scene, out, ROOT, rng, a.engine, a.samples, a.scale or (0.5 if a.preview else 1.0), a.preview, a.transparent,
+            a.workers, [float(x) for x in a.still.split(",")] if a.still else None, a.fresh, a.seed)
+    if a.still:                                    # stills don't wait for the render queue
+        render(*args)
+        return
+    with render_queue(f"{os.path.basename(ROOT)}: {shown(scene)} -> {shown(out)}"):
+        render(*args)
 
 
 if __name__ == "__main__":

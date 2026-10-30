@@ -1,5 +1,7 @@
 """The director's eyes: it can't watch the video or hear the song, so these turn a rendered video into pictures and
-numbers laid against the song. Output goes to work/eyes/<video name>/ (PNG + markdown), paths printed.
+numbers laid against the song. Output goes to work/eyes/<video name>/ (PNG + markdown), paths printed; a pipeline
+segment's video keeps its eyes next to it (work/segments/<id>/eyes/<name>/), a pitch's in its pitch folder
+(work/pitches/<round>/<pN>/eyes/<name>/).
 
   python tools/studio.py run <p> eyes.py sheet  VIDEO [--times 1.2,30.5 | --every 4 | --section "chorus 1" | --moments 3 | --range 20 40 --n 24]
       contact sheet; every tile's margin: timecode, frame, bar:beat, section, chord, the lyric being sung, hits on it
@@ -84,7 +86,30 @@ class Video:
 
 
 def out_dir(video):
-    d = os.path.join(WORK, "eyes", os.path.splitext(os.path.basename(video.rstrip("/\\")))[0])
+    """Where a video's pictures go: work/eyes/<name>/. A pipeline segment's video (inside work/segments/<id>/) or a
+    pitch's (inside work/pitches/<round>/<pN>/) keeps them in that folder: <folder>/eyes/<name>/, next to it."""
+    v = os.path.abspath(video.rstrip("/\\"))
+    stem = os.path.splitext(os.path.basename(v))[0]
+    parts = os.path.normpath(os.path.dirname(v)).split(os.sep)
+    low = [os.path.normcase(x) for x in parts]
+    base = None
+    for i in range(len(low) - 2, -1, -1):          # the innermost work/segments/<id> or work/pitches/<round>/<pN>
+        if low[i] == "work" and low[i + 1] == "segments" and len(low) > i + 2:
+            base = parts[:i + 3]
+        elif low[i] == "work" and low[i + 1] == "pitches" and len(low) > i + 3:
+            base = parts[:i + 4]
+        if base:
+            break
+    if base:
+        d = os.path.join(os.sep.join(base), "eyes", stem)
+    else:
+        work = WORK
+        if not work:                               # called from another tool without MV_PROJECT: the video's project
+            up = os.path.dirname(v)
+            while not os.path.isfile(os.path.join(up, "project.json")) and os.path.dirname(up) != up:
+                up = os.path.dirname(up)
+            work = os.path.join(up if os.path.isfile(os.path.join(up, "project.json")) else os.path.dirname(v), "work")
+        d = os.path.join(work, "eyes", stem)
     os.makedirs(d, exist_ok=True)
     return d
 

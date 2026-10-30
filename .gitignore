@@ -9,6 +9,7 @@ CLAUDE.local.md
 
 # local tooling / caches
 .venv/
+/cache/
 __pycache__/
 *.pyc
 *.part

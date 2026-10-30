@@ -9,10 +9,13 @@ request) -> story: draft (stand-in Claude) and save -> the lyric timing editor's
 as it is; the song analysed again) -> lyrics placed where Whisper heard them (a stand-in transcription: the editor's
 align job, then plain-text lyrics analysed with it) -> a director run with live progress (its brief lists the pictures; the
 critic's notes on v1) -> the video (range request) -> "Ask the critic" (a critique job on v1, a bad video refused) -> notes
-(add, done, delete) -> a review round -> stopping a running director cleanly -> doctor. Then
-each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in tests/out/ui/; on the brief
-page a picture is added and named, on the song page the lyric timing editor opens, taps, undoes and closes, and
-aligns with Whisper; the Direct page has the critic select, the Watch page the critic's box with its scores.
+(add, done, delete) -> a review round -> stopping a running director cleanly -> a pipeline run started from the
+Direct page's form in headless Chromium (the settings it sends and keeps; GET pipeline and session-log; the pipeline
+view while builders work and after the run: the stage bar, a card per session with its log, the critic's reports, the
+costs by role) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
+tests/out/ui/; on the brief page a picture is added and named, on the song page the lyric timing editor opens, taps,
+undoes and closes, and aligns with Whisper; the Direct page has the critic select and the last run's pipeline, the
+Watch page the critic's box with its scores.
 Exit code 0 = all passed.
 """
 import argparse, io, json, os, shutil, socket, subprocess, sys, time
@@ -177,6 +180,7 @@ def main():
         d = requests.get(f"{B}/api/p/{name}/director").json()
         say(d.get("state") == "stopped" and time.time() - t0 < 300, "the run stopped cleanly", f"{d.get('stop_reason')} after {time.time() - t0:.0f} s")
         os.remove(os.path.join(STUDIO, "projects", name, "FAKE_CLAUDE_SLOW"))
+        pipeline_check(B, name, out, browser=not a.no_browser)
         r = requests.get(B + "/api/doctor").json()
         say("Music Video Studio" in r.get("text", ""), "GET /api/doctor")
         if not a.no_browser:
@@ -214,6 +218,158 @@ def critic_check(B, name, st, d):
     r = requests.post(f"{B}/api/p/{name}/critique", json={"video": "../../tools/studio.py"}).json()
     r2 = requests.post(f"{B}/api/p/{name}/critique", json={"version": 99}).json()
     say("error" in r and "error" in r2, "POST critique refuses a video outside the project and an unknown version", f"{r.get('error')}; {r2.get('error')}")
+
+
+def pipeline_check(B, name, out, browser=True):
+    """A pipeline run started from the Direct page (the stand-in for Claude Code). Before it, the page shows the last
+    run (solo, stopped) as it always did. Its form sends the mode, the planner's effort, the builders (how many, model,
+    effort) and the critic to `studio.py direct`, and keeps them in project.json. While it runs, GET pipeline has the
+    stages, the sessions and the critic's reports, and the page's pipeline view (in headless Chromium) has the stage
+    bar and a card per session, with a builder's log opened and still open after the page refreshed; after it, every
+    stage done, the critic's reports (one opened), the costs by role. No JavaScript errors. session-log reads a
+    builder's log and refuses a path outside the sessions. The run delivers a version that passes the checks."""
+    shots = os.path.join(out, "ui")
+    os.makedirs(shots, exist_ok=True)
+    pw = page = b = None
+    errs = []
+    form = {"budget": "40", "mode": "pipeline", "model": "fake", "critic_model": "sonnet", "effort": "low", "planner_effort": "max",
+            "builders": "2", "builder_model": "", "builder_effort": "high"}
+    if browser:
+        sys.path.insert(0, os.path.join(STUDIO, "tools"))
+        from mv.web import launch
+        from playwright.sync_api import sync_playwright
+        pw = sync_playwright().start()
+        b, _ = launch(pw, "off")
+        page = b.new_page(viewport={"width": 1400, "height": 1000})
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
+    try:
+        if page:
+            page.goto(f"{B}/#{name}/direct")
+            page.wait_for_selector("#dir-live .box", timeout=10000)
+            live = page.inner_text("#dir-live")
+            say("stopped" in live and page.locator("#dir-live .stages").count() == 0 and page.locator("#dir-ev").count() == 1,
+                "UI: a solo run's view as before (its live log, no stage bar)", live.splitlines()[0][:80] if live else "empty")
+            page.fill("#d-budget", "30")
+            solo_hint = page.inner_text("#d-mode-hint")
+            page.fill("#d-budget", form["budget"])
+            page.select_option("#d-mode", "pipeline")
+            page.fill("#d-model", form["model"])
+            page.select_option("#d-critic", form["critic_model"])
+            page.select_option("#d-effort", form["effort"])
+            page.select_option("#d-peffort", form["planner_effort"])
+            page.fill("#d-builders", form["builders"])
+            page.fill("#d-bmodel", form["builder_model"])
+            page.select_option("#d-beffort", form["builder_effort"])
+            pipe_hint = page.inner_text("#d-mode-hint")
+            say("runs solo" in solo_hint and "pipeline" in pipe_hint and "up to 2 builders" in pipe_hint
+                and page.locator("#d-solo.off").count() == 1, "UI: the Direct form says which mode a budget runs",
+                f"30 min auto: {solo_hint[:60]!r}; pipeline: {pipe_hint[:60]!r}")
+            sent = []
+
+            def no_nudge(route):                  # the stand-in would go round the final three more times
+                body = json.loads(route.request.post_data or "{}")
+                sent.append(body)
+                route.continue_(post_data=json.dumps(dict(body, nudge=False)))
+            page.route("**/api/p/*/direct", no_nudge)
+            page.click("#go-direct")
+            page.wait_for_timeout(1500)
+            page.unroute("**/api/p/*/direct")
+            got = sent[0] if sent else {}
+            say(all(str(got.get(k)) == str(x) for k, x in form.items()), "UI: the Direct form sends the pipeline's settings",
+                str({k: got.get(k) for k in form}))
+        else:
+            requests.post(f"{B}/api/p/{name}/brief", json={"director": dict(form)})
+            requests.post(f"{B}/api/p/{name}/direct", json=dict(form, nudge=False))
+        t0, seen, live_ok, p = time.time(), set(), None, {}
+        while time.time() - t0 < 1500:
+            p = requests.get(f"{B}/api/p/{name}/pipeline").json()
+            d = requests.get(f"{B}/api/p/{name}/director").json()
+            if p.get("run") == d.get("run") and d.get("mode") == "pipeline":
+                seen |= {x["stage"] for x in p.get("stages") or []}
+                working = [s for s in p.get("sessions") or [] if s.get("role") == "builder" and s.get("state") not in ("built", "failed", "skipped", "stopped", "queued")]
+                if page and live_ok is None and working:                     # the live view while builders work
+                    page.wait_for_selector(".scard .xp-l", timeout=10000)
+                    page.wait_for_timeout(2200)
+                    bar = page.inner_text("#dir-live .stages") if page.locator("#dir-live .stages").count() else ""
+                    now = page.inner_text(".stg.now") if page.locator(".stg.now").count() else ""
+                    cards = page.locator(".scard").count()
+                    link = page.locator(".scard .xp-l[data-xp^='log:work/pipeline/sessions']").first
+                    key = link.get_attribute("data-xp")
+                    link.click()
+                    page.wait_for_function("k => [...document.querySelectorAll('.xp-b')].some(e => e.dataset.xp === k && /session started/.test(e.innerText))", arg=key, timeout=10000)
+                    page.wait_for_timeout(4500)                               # the view is drawn again every 2 s
+                    kept = page.evaluate("k => [...document.querySelectorAll('.xp-b')].some(e => e.dataset.xp === k && e.style.display !== 'none' && /session started/.test(e.innerText))", key)
+                    page.screenshot(path=os.path.join(shots, "direct-pipeline-live.png"), full_page=True)
+                    live_ok = bool(bar) and "Plan" in bar and "Final" in bar and bool(now) and cards >= 3 and kept
+                    say(live_ok, "UI: the pipeline's run view while builders work (the stage bar, a card per session, a builder's log kept open)",
+                        f"now: {now.splitlines()[0] if now else '-'}; {cards} cards; log kept open: {kept}")
+            if d.get("state") in ("done", "stopped", "error") and d.get("run") == p.get("run") and \
+                    not requests.get(f"{B}/api/p/{name}/job").json().get("running"):
+                break
+            time.sleep(1)
+        d = requests.get(f"{B}/api/p/{name}/director").json()
+        p = requests.get(f"{B}/api/p/{name}/pipeline").json()
+        st = requests.get(f"{B}/api/p/{name}").json()
+        ses = {s.get("name"): s for s in p.get("sessions") or []}
+        v = next((x for x in st["versions"] if x.get("n") == d.get("version")), {})
+        say(d.get("state") == "done" and d.get("mode") == "pipeline" and bool(v.get("checks")) and all(x == "PASS" for x in v["checks"].values())
+            and [x["stage"] for x in p.get("stages") or []][:6] == ["plan", "gate", "build", "assemble", "revise", "final"],
+            "a pipeline run from the web app: all five stages, a version that passes the checks",
+            f"v{d.get('version')} {v.get('checks')}; stages {[x['stage'] for x in p.get('stages') or []]}; {d.get('stop_reason')}; {time.time() - t0:.0f} s")
+        cmd = json.load(open(os.path.join(STUDIO, "projects", name, "work", "director", f"run-{d.get('run')}", "command.json"), encoding="utf-8"))["cmd"]
+        eff = cmd[cmd.index("--effort") + 1] if "--effort" in cmd else None
+        b1 = ses.get("builder s1") or {}
+        pj = st["project"].get("director") or {}
+        say(eff == "max" and p.get("settings", {}).get("builders") == 2 and b1.get("model") == "fake" and b1.get("effort") == "high"
+            and b1.get("state") == "built" and (pj.get("mode"), pj.get("builders"), pj.get("planner_effort")) == ("pipeline", "2", "max"),
+            "the Direct form's settings reach the run (the planner's effort, the builders' count, model and effort) and are kept",
+            f"planner effort {eff}; settings {p.get('settings')}; builder s1 {b1.get('model')}/{b1.get('effort')} {b1.get('state')}; kept {pj}")
+        kinds = {c.get("kind") for c in p.get("critiques") or []}
+        urls = [p["gates"][0].get("url"), p["gates"][0].get("video_url"), b1.get("preview_url"), (b1.get("files") or {}).get("brief")] if p.get("gates") else []
+        say({"gate", "builder", "assemble", "final"} <= kinds and urls and all(u and requests.get(B + u).ok for u in urls)
+            and (p.get("costs") or {}).get("critic", 0) > 0 and any(x.get("url") for x in p.get("previews") or []),
+            "GET pipeline: the critic's reports at every gate, the costs by role, the files' URLs", f"critiques {sorted(map(str, kinds))}; costs {p.get('costs')}")
+        lg = requests.get(f"{B}/api/p/{name}/session-log", params={"log": b1.get("log", "")}).json()
+        bad = requests.get(f"{B}/api/p/{name}/session-log", params={"log": "work/pipeline/sessions/../../../tools/x/events.jsonl"})
+        say(any("session started" in x for x in lg.get("lines") or []) and bad.status_code == 400,
+            "GET session-log: a builder's log, readable; a path outside the sessions refused", f"{len(lg.get('lines') or [])} lines; {bad.json()}")
+        if page:
+            page.reload()
+            page.wait_for_selector("#dir-live .stages", timeout=10000)
+            page.wait_for_timeout(1500)
+            done = page.locator(".stg.done").count()
+            rows = page.locator(".crit .crow").count()
+            costs = page.inner_text("#dir-live .costs") if page.locator("#dir-live .costs").count() else ""
+            page.locator(".crit .crow .xp-l").first.click()
+            page.wait_for_function("() => [...document.querySelectorAll('.crit .xp-b')].some(e => e.style.display !== 'none' && /Verdict/.test(e.innerText))", timeout=10000)
+            page.screenshot(path=os.path.join(shots, "direct-pipeline.png"), full_page=True)
+            say(done >= 6 and rows >= 5 and "builders" in costs and "total" in costs,
+                "UI: the pipeline's run view after the run (every stage done, the critic's reports with one opened, the costs by role)",
+                f"{done} stages done, {rows} critic rows; {costs.replace(chr(10), ' ')}")
+        # an interactive planner's gate after the run: state.json is its own now ("Your pipeline"), the run's view stays
+        r = subprocess.run([sys.executable, os.path.join(STUDIO, "tools", "studio.py"), "pipeline", "gate", name, "--model", "off"],
+                           cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=900)
+        p2 = requests.get(f"{B}/api/p/{name}/pipeline").json()
+        ok = r.returncode == 0 and p2.get("mode") == "interactive" and p2.get("stage") == "gate" and p2.get("state") == "done" \
+            and (p2.get("run_view") or {}).get("run") == d.get("run")
+        inter = ""
+        if page:
+            page.reload()
+            page.wait_for_selector("#pipe-live .box", timeout=10000)
+            inter = page.inner_text("#pipe-live")
+            ok = ok and "Your pipeline" in inter and page.locator("#dir-live .stages").count() == 1
+        say(ok, "an interactive planner's gate after the run: its own state.json, 'Your pipeline' on the Direct page, the run's view kept",
+            f"exit {r.returncode}; mode {p2.get('mode')} {p2.get('stage')} {p2.get('state')}; run view {(p2.get('run_view') or {}).get('run')}; "
+            f"{inter.splitlines()[0][:80] if inter else (r.stdout + r.stderr)[-300:]}")
+        if page:
+            say(not errs, "UI: the Direct page's pipeline view (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
+    finally:
+        if b:
+            b.close()
+        if pw:
+            pw.stop()
 
 
 def lyric_timing_check(B, name):
@@ -438,6 +594,9 @@ def browser_pages(B, name, out):
             if h.endswith("/direct"):
                 say(page.locator("#d-critic option").count() == 4 and page.input_value("#d-critic") in ("sonnet", "fake"),
                     "UI: the Direct page's critic select", page.input_value("#d-critic"))
+                say(page.locator("#dir-live .stages").count() == 1 and page.input_value("#d-mode") == "pipeline"
+                    and page.input_value("#d-builders") == "2", "UI: the Direct page shows the last run's pipeline, with the settings kept",
+                    f"mode {page.input_value('#d-mode')}, builders {page.input_value('#d-builders')}")
             if h.endswith("/song"):                               # add a picture through the page and name it
                 from PIL import Image
                 pic = os.path.join(out, "ui_ref.png")

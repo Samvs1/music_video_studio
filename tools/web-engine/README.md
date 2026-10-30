@@ -69,7 +69,12 @@ the song folder and the project folder.
 ## Output, speed, resume
 - `.mp4`: chunks on a global grid (2 s), each encoded without B-frames, joined frame-exact by stream copy. A re-run
   with the same scene version reuses finished chunks (a crash, a section render followed by the whole song); any change in
-  the scene's folder renders them again. `--fresh` starts over.
+  the scene's folder, or in a file it reaches by a relative `import` (static or dynamic, followed through the files it
+  imports, outside its folder too: a shared `work/scenes/lib/`), renders them again; a sibling scene in its own folder
+  doesn't. `--fresh` starts over. Keep each scene in its own folder: a scene loose in `work/scenes/` hashes everything
+  below it.
+- One render at a time per machine: a video render waits for the render queue (`waiting for the render queue: <who>
+  since <time>`; see `tools/README.md`). `--still` doesn't wait.
 - `--transparent`: PNG frames `frame_000123.png` numbered by song frame (alpha kept), or a ProRes 4444 `.mov`.
 - Every output gets `<out>.mv.json`: the frame range, the browser and WebGL renderer used, and every text on screen.
 - Capture: JPEG q98 for opaque passes (Chrome's PNG encoder is ~7× slower on busy frames; invisible after H.264),

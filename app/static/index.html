@@ -231,6 +231,42 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 #dir-ev{font-size:12px;line-height:1.55}
 video{max-height:58vh}
 .chip.on .mut{color:#5a4a00}
+/* the Direct page: the pipeline's form and run view */
+.dgrp{border:1px solid var(--line);border-radius:11px;padding:10px 12px 12px;margin-top:12px;font-size:13px;transition:opacity .15s}
+.dgrp.off{opacity:.42}
+.dgrp label{margin-top:8px}
+.stages{display:flex;align-items:stretch;gap:4px;margin:12px 0 6px;flex-wrap:wrap}
+.stages .arr{align-self:center;color:#55555c}
+.stg{flex:1;min-width:88px;padding:6px 10px 5px;border-radius:9px;background:#151517;border:1px solid var(--line);color:var(--mut);font-size:12px}
+.stg b{display:block;font-size:13.5px;font-weight:600;white-space:nowrap}
+.stg b span{font-weight:400;font-size:12px}
+.stg small{display:block;font:11px SpaceMono,monospace;margin-top:1px}
+.stg.done{color:var(--ok);border-color:#2f5a3e}
+.stg.now{color:#111;background:var(--acc);border-color:var(--acc)}
+.stg.now small{color:#5a4a00}
+.stg.skip{opacity:.45}
+.stg.solo.done{color:var(--acc);border-color:#5a4a12}
+.segbar{display:flex;gap:2px;height:26px;margin:10px 0 4px;border-radius:7px;overflow:hidden}
+.segbar div{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden;white-space:nowrap;font:11px SpaceMono,monospace;background:#3a3a40;color:var(--fg)}
+.segbar .s-built{background:var(--ok);color:#111}
+.segbar .s-drafted{background:#2f5a3e}
+.segbar .s-working{background:var(--acc);color:#111}
+.segbar .s-failed{background:var(--bad);color:#111}
+.costs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+.scards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:10px;align-items:start}
+.scard{background:#151517;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:13px;min-width:0}
+.scard.on{border-color:var(--acc)}
+.scard.ok{border-color:#2f5a3e}
+.scard.bad{border-color:var(--bad)}
+.scard .tag.on{background:var(--acc);color:#111}
+.scard .tag.ok{background:#1f3b29;color:var(--ok)}
+.scard .tag.bad{background:#4a1d18;color:#ffb0a6}
+.scard pre.log{max-height:118px;font-size:11px;margin:6px 0 0;padding:6px 8px}
+.scard .crow{border-top:0;padding:4px 0 0}
+.links{gap:4px 12px;margin-top:6px;font-size:12.5px}
+.xp-b{flex-basis:100%;margin-top:6px}
+.xp-b .sv-md{background:#121214;border:1px solid var(--line);border-radius:10px;padding:8px 12px;max-height:420px;overflow:auto}
+img.sf{height:34px;border-radius:4px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -393,6 +429,7 @@ async function startJob(kind, body, onDone) {
 async function stopJob() { const r = await post(`/api/p/${S.name}/stop`); toast(r.stopping || "Stopping"); }
 let jobKinds = [];
 function renderJob(j) {
+  lastJob = j;
   jobKinds.forEach(k => {
     const g = $("#go-" + k), st = $("#stop-" + k);
     if (g) g.disabled = !!j.running || g.dataset.off === "1";
@@ -507,53 +544,222 @@ async function saveStory() { try { await post(`/api/p/${S.name}/story`, {text: $
 function storyPreview() { const el = $("#st-prev"); el.style.display = ""; el.innerHTML = mdHtml($("#st-text").value); }
 
 // ---------------------------------------------------------------- 5. direct
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const opts = (list, cur) => list.map(o => { const [v, l] = [].concat(o); return `<option value="${esc(v)}" ${String(cur) === String(v) ? "selected" : ""}>${esc(l ?? v)}</option>`; }).join("");
 function vDirect() {
   const d = S.project.director || {}, latest = S.versions.filter(v => v.n).slice(-1)[0];
   const open = latest ? S.notes.filter(n => !n.done && String(n.version).replace("v", "") === String(latest.n)) : [];
   const cmd = `/musicvideo ${S.name}`;
   $("#pane").innerHTML = `<h2>Direct</h2>
   <div class="cards2"><div class="box"><div class="hand">on its own</div><h2 style="font-size:24px">Let Claude direct it</h2>
-    <p class="mut">Claude Code works alone for the time you give it: concept, style frames, scenes, previews, looking at them, revising, the final render, the checks and a report. You can watch it work here. Uses your Claude plan.</p>
-    <div class="two"><div><label>Time budget (minutes)</label><input id="d-budget" type="number" min="5" value="${parseInt(d.budget) || 90}"></div>
-      <div><label>Effort</label><select id="d-effort">${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${((d.effort || "high") === e) ? "selected" : ""}>${e}</option>`).join("")}</select></div></div>
+    <p class="mut">Claude Code makes the video alone for the time you give it: concept, style frames, scenes, previews, revising on the critic's notes, the final render, the checks and a report. You can watch it work here. Uses your Claude plan.</p>
+    <div class="two"><div><label>Time budget (minutes)</label><input id="d-budget" type="number" min="5" value="${parseInt(d.budget) || 90}" oninput="dirMode()"></div>
+      <div><label>Mode</label><select id="d-mode" onchange="dirMode()">${opts([["auto", "auto"], ["pipeline", "pipeline"], ["solo", "solo"]], d.mode || "auto")}</select></div></div>
+    <p class="hint" id="d-mode-hint"></p>
     <div class="two"><div><label>Model</label><input id="d-model" value="${esc(d.model || "opus")}"></div>
-      <div><label>Critic</label><select id="d-critic">${["sonnet", "haiku", "opus", "off"].map(m => `<option ${((d.critic_model || "sonnet") === m) ? "selected" : ""}>${m}</option>`).join("")}</select></div></div>
-    <p class="hint">The critic is a cheaper model with fresh eyes: it looks at every preview and the final while the director works and sends it notes, ambition first, then craft. The director decides what to take. It saves the director's tokens on looking at pictures.</p>
+      <div><label>Critic</label><select id="d-critic">${opts(["sonnet", "haiku", "opus", "off"], d.critic_model || "sonnet")}</select></div></div>
+    <div class="dgrp" id="d-pipe"><b>The pipeline</b> <span class="mut">the planner (the model above) plans and makes the first draft; builders build the other segments in parallel; the critic checks at every gate and reports back to the planner</span>
+      <div class="two"><div><label>Planner effort</label><select id="d-peffort">${opts(EFFORTS, d.planner_effort || "max")}</select></div>
+        <div><label>Builders at once</label><input id="d-builders" type="number" min="0" max="8" value="${d.builders !== undefined && d.builders !== "" ? esc(d.builders) : 3}" oninput="dirMode()"></div></div>
+      <div class="two"><div><label>Builder model</label><input id="d-bmodel" value="${esc(d.builder_model || "")}" placeholder="the planner's"></div>
+        <div><label>Builder effort</label><select id="d-beffort">${opts(EFFORTS, d.builder_effort || "high")}</select></div></div></div>
+    <div class="dgrp" id="d-solo"><b>Solo</b> <span class="mut">one session makes the whole video; the critic looks at each of its previews and the final</span>
+      <div class="two"><div><label>Effort</label><select id="d-effort">${opts(EFFORTS, d.effort || "high")}</select></div><div></div></div></div>
+    <p class="hint">The critic is a cheaper model with fresh eyes: it looks at the renders (the pipeline's gates, or every preview in a solo run) and reports back in text, ambition first, then craft. The director decides what to take. Looking at pictures is where the tokens go, so the expensive model doesn't do it.</p>
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
     ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
-    ${open.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto"> Review round: address my ${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n} and make v${latest.n + 1}</label>` : ""}
+    ${open.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto" onchange="dirMode()"> Review round: address my ${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n} and make v${latest.n + 1}</label>` : ""}
     <div class="row" style="margin-top:12px"><button id="go-direct" onclick="startDirect()" ${S.song.map ? "" : "disabled"}>Start the director</button><button class="ghost small" id="stop-direct" onclick="stopJob()" style="display:none">Stop it (wraps up cleanly)</button></div>
     ${S.song.map ? "" : `<p class="hint" style="color:var(--bad)">Analyse the song first.</p>`}</div>
   <div class="box"><div class="hand">with you</div><h2 style="font-size:24px">Direct it together</h2>
-    <p class="mut">Open Claude Code in the studio folder and run the skill. Same workflow, but you can talk along.</p>
+    <p class="mut">Open Claude Code in the studio folder and run the skill. Same pipeline, but you can talk along: your session is the planner, and the builders and the critic it starts show up here too.</p>
     <code class="cmd" style="font-size:12px">${esc(S.studio)}</code><code class="cmd">${esc(cmd)}</code><button class="small" onclick="navigator.clipboard.writeText('${cmd}');toast('Copied')">Copy command</button></div></div>
-  <div id="dir-live" style="margin-top:16px"></div>`;
+  <div id="dir-live" style="margin-top:16px"></div><div id="pipe-live" style="margin-top:16px"></div>`;
+  dirMode();
   watchJob("direct", refresh);
   dirLive(); clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
 }
+function dirMode() {                  // which mode this form starts (auto decides like the runner) and what applies to it
+  const m = $("#d-mode").value, b = +$("#d-budget").value || 0, n = $("#d-builders").value === "" ? 3 : +$("#d-builders").value;
+  const rev = !!($("#d-revise") && $("#d-revise").checked), am = S.auto_mode || {}, from = (rev ? am.revise_from_min : am.pipeline_from_min) || 45;
+  let eff = m, why = "";
+  if (m === "pipeline" && rev && am.plan_ok === false) { eff = "solo"; why = "the video being revised was made without a valid work/plan.json"; }
+  if (m === "auto") {
+    if (n <= 0) { eff = "solo"; why = "no builders"; }
+    else if (b < 45) { eff = "solo"; why = "under 45 minutes, the pipeline's stages don't pay off"; }
+    else if (rev && am.plan_ok === false) { eff = "solo"; why = "the video being revised was made without a valid work/plan.json"; }
+    else if (b < from) { eff = "solo"; why = `the final render alone takes about ${dur(am.final_est_s || 0)} here (${esc(am.final_how || "")}): its stages (the plan, the gate, a builder round, a preview, then the final) need about ${from} min on this machine`; }
+    else eff = "pipeline";
+  }
+  $("#d-pipe").classList.toggle("off", eff === "solo");
+  $("#d-solo").classList.toggle("off", eff === "pipeline");
+  $("#d-mode-hint").innerHTML = eff === "pipeline"
+    ? `${m === "auto" ? "This budget runs <b>the pipeline</b>" : "<b>The pipeline</b>"}: plan → gate (the critic on the language) → build (${n > 0 ? `up to ${n} builder${n > 1 ? "s" : ""} at once` : "no builders: the planner builds every segment"}) → assemble (the critic on the whole film) → revise → final.${am.final_est_s ? ` The final render takes about ${dur(am.final_est_s)} here.` : ""}`
+    : `${m !== "solo" ? `This ${m === "auto" ? "budget " : ""}runs <b>solo</b> (${why})` : "<b>Solo</b>"}: one session does everything, and the critic looks at its previews.`;
+}
 async function startDirect() {
-  const body = {budget: $("#d-budget").value, effort: $("#d-effort").value, model: $("#d-model").value, seed_notes: $("#d-seed").value,
-                revise: !!($("#d-revise") && $("#d-revise").checked), critic_model: $("#d-critic").value};
-  await post(`/api/p/${S.name}/brief`, {director: {model: body.model, effort: body.effort, budget: body.budget, critic_model: body.critic_model}});
+  const v = id => $(id).value;
+  const body = {budget: v("#d-budget"), mode: v("#d-mode"), model: v("#d-model"), effort: v("#d-effort"), critic_model: v("#d-critic"),
+                planner_effort: v("#d-peffort"), builders: v("#d-builders"), builder_model: v("#d-bmodel").trim(), builder_effort: v("#d-beffort"),
+                seed_notes: v("#d-seed"), revise: !!($("#d-revise") && $("#d-revise").checked)};
+  await post(`/api/p/${S.name}/brief`, {director: {model: body.model, effort: body.effort, budget: body.budget, critic_model: body.critic_model, mode: body.mode,
+                                                   planner_effort: body.planner_effort, builders: body.builders, builder_model: body.builder_model, builder_effort: body.builder_effort}});
+  dirWant = Date.now();
   startJob("direct", body);
+  clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
   setTimeout(dirLive, 1500);
 }
+let dirWant = 0, lastJob = null;     // when this page started a run (its first status can take a while), the last job state
 async function dirLive() {
   const el = $("#dir-live"); if (!el) return clearInterval(dpoll);
-  let d; try { d = await api(`/api/p/${S.name}/director`); } catch (e) { return; }
-  if (!d || !d.run) { el.innerHTML = ""; return; }
+  let d, p;
+  try { [d, p] = await Promise.all([api(`/api/p/${S.name}/director`), api(`/api/p/${S.name}/pipeline`)]); } catch (e) { return; }
+  // the run's pipeline (state.json, or the run's own copy in history/ once an interactive planner took state.json
+  // over: p.run_view), and an interactive planner's pipeline newer than the last run
+  const rv = p && p.mode === "interactive" ? p.run_view : p;
+  const pipe = !!(d && d.run && rv && rv.run === d.run && d.mode && d.mode !== "solo");
+  const inter = !!(p && p.mode === "interactive" && (p.updated || 0) > ((d && d.started) || 0));
+  el.innerHTML = d && d.run ? (pipe ? pipeRun(d, rv) : soloRun(d)) : "";
+  xpRestore(el);
+  const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
+  const pl = $("#pipe-live");
+  if (pl) { pl.innerHTML = inter ? pipeInteractive(p) : ""; xpRestore(pl); }
+  const running = d && ["running", "finishing"].includes(d.state);
+  const jobOn = lastJob && lastJob.running && lastJob.job === "direct";
+  const building = p && p.mode === "interactive" && p.state === "running" && (p.stage !== "build" || p.now - p.updated < 120);
+  if (!running && !jobOn && !building && Date.now() - dirWant > 300000) clearInterval(dpoll);
+}
+function runHead(d, extra) {
   const running = ["running", "finishing"].includes(d.state), left = d.deadline - d.now;
-  const pct = Math.min(100, Math.max(0, (d.now - d.started) / d.budget_s * 100));
-  el.innerHTML = `<div class="box"><div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : ""}">${esc(d.state)}</span>
-      <span class="mut">${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)} &middot; budget ${esc(d.budget)}${d.critic_model && d.critic_model !== "off" ? ` &middot; critic ${esc(d.critic_model)} $${(d.critic_cost_usd || 0).toFixed(2)}` : ""}</span><span class="sp" style="flex:1"></span>
-      <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; $${(d.cost_usd || 0).toFixed(2)}${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
-    ${running ? `<div class="prog"><div style="width:${pct}%"></div></div>` : `<p class="hint">${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}
-    <pre class="log" id="dir-ev" style="max-height:420px">${esc((d.events || []).map(e => String(e.text).split("\n").map((l, i) => `${i ? "".padStart(8) : dur(e.t).padStart(8)}  ${l}`).join("\n")).join("\n"))}</pre>
+  const cost = d.costs && d.costs.total != null ? d.costs.total : d.cost_usd || 0;
+  const none = !running && d.result === "no final";   // it ended without a new final: say so, in red
+  return `<div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : none ? "background:var(--bad);color:#fff" : ""}">${esc(none ? d.state + ": no new final" : d.state)}</span>
+      <span class="mut">${extra}</span><span class="sp" style="flex:1"></span>
+      <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; $${(+cost).toFixed(2)}${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
+    ${running ? `<div class="prog"><div style="width:${Math.min(100, Math.max(0, (d.now - d.started) / d.budget_s * 100))}%"></div></div>` : `<p class="hint"${none ? ' style="color:var(--bad)"' : ""}>${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}`;
+}
+const evLog = d => esc((d.events || []).map(e => String(e.text).split("\n").map((l, i) => `${i ? "".padStart(8) : dur(e.t).padStart(8)}  ${l}`).join("\n")).join("\n"));
+function soloRun(d) {                 // a solo run, as it always looked
+  return `<div class="box">${runHead(d, `${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)} &middot; budget ${esc(d.budget)}${d.critic_model && d.critic_model !== "off" ? ` &middot; critic ${esc(d.critic_model)} $${(d.critic_cost_usd || 0).toFixed(2)}` : ""}`)}
+    <pre class="log" id="dir-ev" style="max-height:420px">${evLog(d)}</pre>
     ${(d.critiques || []).length ? `<div class="crit" id="dir-crit"><b>The critic's notes in this run</b>
       ${d.critiques.map(c => `<div class="crow"><span class="mut">${c.t != null ? dur(c.t) : ""}</span><span class="v">${esc(c.video)}</span>${scoreChips(c.scores)}<span class="mut">${c.cost_usd != null ? "$" + c.cost_usd.toFixed(2) : ""}${c.used ? " &middot; " + esc(USED[c.used] || c.used) : ""}</span><a href="${c.url}" target="_blank">read</a></div>`).join("")}</div>` : ""}
     ${d.brief ? `<a href="${d.brief}" target="_blank">the brief</a>` : ""}</div>`;
-  const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
-  if (!running) clearInterval(dpoll);
+}
+
+// the pipeline's run view: the stages, a card per session, the critic at the gates, costs by role
+const STG = [["plan", "Plan"], ["gate", "Gate"], ["build", "Build"], ["assemble", "Assemble"], ["revise", "Revise"], ["final", "Final"]];
+const hm = t => new Date(t * 1000).toTimeString().slice(0, 5);
+function stageBar(p, over) {
+  const recs = p.stages || [], cur = p.stage, now = p.now || Date.now() / 1000;
+  const spent = k => recs.filter(x => x.stage === k).reduce((a, x) => a + ((x.ended || (over ? x.started : now)) - x.started), 0);
+  const by = {plan: p.plan_by, build: p.build_by, final: p.final_by};
+  const pills = STG.map(([k, l]) => {
+    const seen = recs.some(x => x.stage === k), live = k === cur && !over;
+    const label = k === "revise" && p.round ? `Revise <span>(round ${p.round})</span>` : k === "build" && p.build_round > 1 ? `Build <span>(round ${p.build_round})</span>` : l;
+    const last = recs.filter(x => x.stage === k).slice(-1)[0];
+    const sub = live ? `since ${hm(last ? last.started : now)}${by[k] ? `<br>by ${hm(by[k])}` : ""}` : seen ? dur(spent(k)) : by[k] && !over ? `by ${hm(by[k])}` : over ? "&ndash;" : "&nbsp;";
+    return `<div class="stg ${live ? "now" : seen ? "done" : over ? "skip" : ""}" title="${esc(k)}"><b>${seen && !live ? "&#10003; " : ""}${label}</b><small>${sub}</small></div>`;
+  });
+  if (recs.some(x => x.stage === "solo"))
+    pills.push(`<div class="stg ${cur === "solo" && !over ? "now" : "done"} solo"><b>Solo</b><small>${cur === "solo" && !over ? "the rest of the run" : dur(spent("solo"))}</small></div>`);
+  return `<div class="stages">${pills.join('<span class="arr">&rsaquo;</span>')}</div>`;
+}
+const STATE_CLS = {working: "on", rendering: "on", critic: "on", revising: "on", stopping: "on", idle: "", queued: "",
+                   built: "ok", done: "ok", failed: "bad", stopped: "", skipped: ""};
+function segStrip(p) {               // the plan's segments over the song, coloured by where they are
+  const segs = (p.segments || []).filter(x => x.kind === "segment" && x.from != null && x.to != null).sort((a, b) => a.from - b.from);
+  if (!segs.length) return "";
+  const total = Math.max(...segs.map(x => +x.to)) || 1, ov = (p.segments || []).filter(x => x.kind === "overlay");
+  return `<div class="segbar">${segs.map(x => { const st = x.builder_state && STATE_CLS[x.builder_state] === "on" ? "working" : x.status || "todo";
+    return `<div class="s-${esc(st)}" style="flex:${Math.max(0.5, (x.to - x.from) / total * 100)}" title="${esc(`${x.id}: ${x.name || ""} · ${fmt(x.from)}–${fmt(x.to)} · ${x.owner}${x.id === p.hero ? " (the hero)" : ""} · ${st}`)}">${esc(x.id)}${x.id === p.hero ? " &#9733;" : ""}${x.owner === "builder" ? " &middot; b" : ""}</div>`; }).join("")}</div>
+    <div class="hint" style="margin-top:2px">${segs.map(x => `<span class="sc">${esc(x.id)} ${fmt(x.from)}–${fmt(x.to)} &middot; ${esc(x.owner)} &middot; <b>${esc(x.status || "todo")}</b>${x.preview_url ? ` <a href="${x.preview_url}" target="_blank">&#9654;</a>` : ""}</span>`).join(" ")}${ov.length ? ` &middot; overlays: ${ov.map(x => esc(x.id)).join(", ")}` : ""}${p.plan_url ? ` &middot; <a href="${p.plan_url}" target="_blank">plan.json</a>` : ""}</div>`;
+}
+function costLine(co) {
+  if (!co) return "";
+  return `<div class="costs">${[["planner", "planner"], ["builders", "builders"], ["critic", "critic"]].map(([k, l]) => `<span class="sc">${l} <b>$${(+(co[k] || 0)).toFixed(2)}</b></span>`).join(" ")} <span class="sc">total <b>$${(+(co.total ?? ((+co.planner || 0) + (+co.builders || 0) + (+co.critic || 0)))).toFixed(2)}</b></span></div>`;
+}
+function sessCard(s, p) {
+  const st = s.state || "?", cls = STATE_CLS[st] ?? "", c = s.critique || null, f = s.files || {};
+  const seg = s.segment ? (p.segments || []).find(x => x.id === s.segment) : null;
+  return `<div class="scard ${cls}"><div class="row" style="gap:8px"><b>${esc(s.name || s.role)}</b>${s.role === "builder" && s.round ? `<span class="mut">round ${s.round}</span>` : ""}
+      <span class="tag ${cls}" style="margin:0">${esc(st)}</span><span class="sp" style="flex:1"></span><b>$${(+(s.cost_usd || 0)).toFixed(2)}</b></div>
+    <div class="mut">${esc(s.model_used || s.model || "?")} &middot; effort ${esc(s.effort || "?")} &middot; ${s.turns || 0} turns${seg ? ` &middot; ${esc(seg.id)} ${fmt(seg.from)}–${fmt(seg.to)}` : ""}</div>
+    ${s.task ? `<div class="hint">task: ${esc(s.task)}</div>` : ""}${s.error ? `<div class="hint" style="color:${st === "built" ? "var(--mut)" : "var(--bad)"}">${esc(s.error)}</div>` : ""}
+    ${c && c.file ? `<div class="crow">critic ${scoreChips(c.scores)}${c.url ? xpLink("md:" + c.url, "read") : ""}</div>` : ""}
+    ${(s.last || []).length ? `<pre class="log">${esc(s.last.join("\n"))}</pre>` : ""}
+    <div class="row links">${s.preview_url ? `<a href="${s.preview_url}" target="_blank">&#9654; ${esc(s.segment)} preview</a>` : ""}${f.brief ? `<a href="${f.brief}" target="_blank">brief</a>` : ""}${f.messages ? `<a href="${f.messages}" target="_blank">messages</a>` : ""}${f.studio ? `<a href="${f.studio}" target="_blank">studio log</a>` : ""}
+      ${s.log ? xpLink("log:" + s.log, "log") : ""}</div>${s.log ? xpBody("log:" + s.log) : ""}${c && c.url ? xpBody("md:" + c.url) : ""}</div>`;
+}
+function critRows(p, t0) {           // the gates', the builders' and the assembles' critiques, oldest first
+  const rows = [], have = new Set(), ts = t => t0 ? dur(t - t0) : hm(t);
+  (p.gates || []).forEach(g => { rows.push({at: g.at, kind: "gate 1: the language", video: g.video, video_url: g.video_url, c: g, url: g.url, frames: g.frames}); have.add(g.file); });
+  (p.assembles || []).forEach(a => {   // the runner asks the critic on the final itself: its critique is in the run's list
+    let c = a.critique || {}, url = a.url;
+    if (!c.file) { const x = (p.critiques || []).find(y => y.video === a.video && ["assemble", "final"].includes(y.kind) && !have.has(y.file)); if (x) { c = x; url = x.url; } }
+    rows.push({at: a.at, kind: a.quality === "final" ? "the final" : "assemble", video: a.video, video_url: a.video_url, c, url, a}); if (c.file) have.add(c.file); });
+  (p.critiques || []).filter(c => !have.has(c.file)).forEach(c => rows.push({at: t0 && c.t != null ? t0 + c.t : null, kind: c.kind === "builder" ? (c.who || "builder") : c.kind || "critic", video: c.video, video_url: c.video_url, c, url: c.url}));
+  rows.sort((a, b) => (a.at || 0) - (b.at || 0));
+  if (!rows.length) return "";
+  return `<div class="crit"><b>The critic's reports</b> <span class="mut">at the gates, on each builder's segment and on every assembled film</span>
+    ${rows.map(r => { const a = r.a, ch = a && a.checks ? Object.entries(a.checks) : [];
+      return `<div class="crow"><span class="mut">${r.at ? ts(r.at) : ""}</span><span class="org">${esc(r.kind)}</span>${r.video_url ? `<a class="v" href="${r.video_url}" target="_blank">&#9654; ${esc(r.video)}</a>` : `<span class="v">${esc(r.video || "")}</span>`}
+        ${r.c && r.c.file ? scoreChips(r.c.scores) : `<span class="mut">no critique</span>`}
+        <span class="mut">${r.c && r.c.cost_usd != null ? "$" + (+r.c.cost_usd).toFixed(2) : ""}${a && a.seconds ? ` &middot; ${dur(a.seconds)}` : ""}${a && (a.placeholders || []).length ? ` &middot; slates: ${esc(a.placeholders.join(", "))}` : ""}${a && (a.stand_ins || []).length ? ` &middot; stand-ins: ${esc([].concat(a.stand_ins).map(x => x.id || x).join(", "))}` : ""}</span>
+        ${ch.map(([k, x]) => `<span class="sc">${esc(k)} <b style="color:${x === "PASS" ? "var(--ok)" : x === "WARN" ? "var(--acc)" : "var(--bad)"}">${esc(x)}</b></span>`).join(" ")}
+        ${(r.frames || []).filter(Boolean).map(u => `<a href="${u}" target="_blank"><img class="sf" src="${u}" alt="style frame"></a>`).join("")}
+        ${r.url ? xpLink("md:" + r.url, "read") : ""}${r.url ? xpBody("md:" + r.url) : ""}</div>`; }).join("")}</div>`;
+}
+function pipeBody(p, t0) {           // what a pipeline shows, autonomous or interactive
+  const ses = (p.sessions || []).slice().sort((a, b) => (a.role === "planner" ? -1 : 0) - (b.role === "planner" ? -1 : 0) || (b.round || 0) - (a.round || 0));
+  const prev = (p.previews || []).filter(x => !t0 || x.at >= t0 - 5);             // a run's own previews
+  return `${segStrip(p)}${costLine(p.costs)}
+    ${ses.length ? `<div class="scards">${ses.map(s => sessCard(s, p)).join("")}</div>` : ""}
+    ${critRows(p, t0)}
+    ${prev.length ? `<p class="hint">previews: ${prev.map(x => `<a href="${x.url}" target="_blank">${esc(x.file.split("/").pop())}</a>`).join(" &middot; ")}</p>` : ""}`;
+}
+function pipeRun(d, p) {
+  const se = p.settings || {}, pl = se.planner || [d.model, d.effort], bu = se.builder || [d.builder_model, d.builder_effort];
+  const over = !["running", "finishing"].includes(d.state);
+  const msgs = p.messages || [];
+  return `<div class="box">${runHead(d, `${esc(d.kind)} &middot; <b style="color:var(--fg)">${esc(d.mode)}</b> &middot; planner ${esc(d.model_used || pl[0])} ${esc(pl[1] || "")} &middot; ${se.builders ?? d.builders ?? 0} builder${(se.builders ?? d.builders) === 1 ? "" : "s"} ${esc(bu[0] || "")} ${esc(bu[1] || "")} &middot; critic ${esc((se.critic || [d.critic_model])[0])} &middot; budget ${esc(d.budget)}`)}
+    ${d.mode_why && d.mode !== "pipeline" ? `<p class="hint" style="color:var(--acc)">${esc(d.mode)}: ${esc(d.mode_why)}</p>` : ""}
+    ${stageBar(p, over)}${p.final_est && !over ? `<p class="hint" style="margin-top:0">the final render: about ${dur(p.final_est)} here${p.final_by ? `; the studio starts it by ${hm(p.final_by)} at the latest` : ""}</p>` : ""}
+    ${pipeBody(p, d.started)}
+    <div class="row" style="margin-top:12px"><b>The planner's live log</b><span class="mut">the studio's notes and the planner's work</span></div>
+    <pre class="log" id="dir-ev" style="max-height:420px">${evLog(d)}</pre>
+    ${msgs.length ? `<details class="gal"><summary>${msgs.length} message${msgs.length > 1 ? "s" : ""} from the studio to the planner</summary><div class="hint">${msgs.map(m => `${dur(m.t)} &middot; ${esc(m.why)}${m.ok === false ? " (not delivered)" : ""}`).join("<br>")}</div></details>` : ""}
+    <div class="row links">${d.brief ? `<a href="${d.brief}" target="_blank">the brief</a>` : ""}${d.messages ? `<a href="${d.messages}" target="_blank">every message in full</a>` : ""}</div></div>`;
+}
+function pipeInteractive(p) {         // a builder round publishes every 2 s: quiet for 2 min means it was cut off (a gate or an assemble says only when it starts and ends)
+  const on = p.state === "running" && (p.stage !== "build" || p.now - p.updated < 120), stop = on && p.stage === "build";
+  return `<div class="box"><div class="row"><b>Your pipeline</b><span class="tag" style="margin:0;${on ? "background:var(--acc);color:#111" : ""}">${esc(p.stage || "")} ${esc(on || p.state !== "running" ? p.state || "" : "no news")}</span>
+      <span class="mut">your Claude Code session is the planner; these are the gates, the builders and the critic it started</span><span class="sp" style="flex:1"></span><span class="mut">${p.interactive_started ? `since ${hm(p.interactive_started)} &middot; ` : ""}updated ${hm(p.updated)}</span>
+      ${stop ? `<button class="ghost small" onclick="stopJob()">Stop the builders</button>` : ""}</div>
+    ${pipeBody(p, null)}</div>`;
+}
+
+// expandable parts that survive the view being drawn again every 2 s: a session's log, a critic's report
+const XP = {open: new Set(), body: {}, scroll: {}};
+const xpLink = (k, l) => `<a href="javascript:void 0" class="xp-l" data-xp="${esc(k)}" onclick="xpToggle(this.dataset.xp)">${XP.open.has(k) ? "hide " + l : l}</a>`;
+const xpBody = k => `<div class="xp-b" data-xp="${esc(k)}" style="${XP.open.has(k) ? "" : "display:none"}">${XP.body[k] ?? '<span class="mut">loading&hellip;</span>'}</div>`;
+async function xpLoad(k) {
+  const [kind, src] = [k.slice(0, k.indexOf(":")), k.slice(k.indexOf(":") + 1)];
+  try {
+    if (kind === "md") XP.body[k] = `<div class="sv-md">${mdHtml(await (await fetch(src)).text())}</div>`;
+    else { const r = await api(`/api/p/${S.name}/session-log?log=${encodeURIComponent(src)}`);
+           XP.body[k] = `<pre class="log" style="max-height:340px">${r.cut ? "[... the start is in the file]\n" : ""}${esc(r.lines.join("\n")) || "(nothing yet)"}</pre>`; }
+  } catch (e) { XP.body[k] = `<span class="mut">couldn't load it: ${esc(e.message)}</span>`; }
+  document.querySelectorAll(".xp-b").forEach(el => { if (el.dataset.xp === k) { el.innerHTML = XP.body[k]; xpScroll(el, k); } });
+}
+function xpToggle(k) {
+  if (XP.open.has(k)) XP.open.delete(k); else { XP.open.add(k); xpLoad(k); }
+  document.querySelectorAll(".xp-b").forEach(el => { if (el.dataset.xp === k) el.style.display = XP.open.has(k) ? "" : "none"; });
+  document.querySelectorAll(".xp-l").forEach(el => { if (el.dataset.xp === k) el.textContent = (XP.open.has(k) ? "hide " : "") + el.textContent.replace(/^hide /, ""); });
+}
+function xpScroll(el, k) { const pre = el.querySelector("pre"); if (pre) { pre.scrollTop = XP.scroll[k] ?? 1e9; pre.onscroll = () => { XP.scroll[k] = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4 ? 1e9 : pre.scrollTop; }; } }
+function xpRestore(root) {            // after a redraw: the open logs scrolled as they were, and fetched again (they grow)
+  root.querySelectorAll(".xp-b").forEach(el => { const k = el.dataset.xp; if (XP.open.has(k)) { xpScroll(el, k); if (k.startsWith("log:")) xpLoad(k); } });
 }
 
 const USED = {"sent": "sent to the director", "in the nudge": "in the nudge to use the time left", "waiting": "not sent yet",

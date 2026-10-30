@@ -7,9 +7,26 @@ It speaks the same headless protocol the studio uses:
   claude -p --output-format json ... (the prompt on stdin)             -> the story step: a song story from the song map;
         a prompt with <!-- mv:critic --> gets a canned critique instead (markdown + a json block, its worst problem at
         the first ★★★ moment the prompt names; it says how many of the pictures it was told to open exist)
-  claude -p --input-format stream-json --output-format stream-json ... -> the director: reads the brief from stdin,
-        emits init / assistant / tool_use / result events, runs tests/mini_director.py in the project folder (cwd),
-        writes report.md, answers the studio's follow-up messages, exits when stdin closes.
+  claude -p --input-format stream-json --output-format stream-json ... -> a session: reads the first message from
+        stdin, emits init / assistant / tool_use / result events, answers the studio's follow-ups, exits when stdin
+        closes. Like the real CLI (verified on Claude Code 2.1.311), a turn ends with ONE result, and messages that
+        arrive while it works are merged into that turn: after its work it takes every line already waiting on stdin
+        and answers them in the same result. The role comes from the first message's marker:
+        - none (the director brief): runs tests/mini_director.py in the project folder (cwd), writes report.md.
+        - <!-- mv:planner --> (the pipeline's planner): writes work/concept.md, the lib, the hero s2 (a copy of
+          tests/scenes/field.js importing the lib), the type overlay (tests/scenes/lyrics.html), a style frame and
+          work/plan.json (s1 builder, s2 planner + hero, s3 builder; cuts at bars[n//3] and bars[2n//3]); renders the
+          hero with `studio.py pipeline render`; to the gate: keeps the language; to "the language is locked": renders
+          the overlay; to the first assemble report: sets the stage to final; to the final: writes report.md. A
+          review round (the revise brief with the marker): marks the notes done, sets the stage to final.
+          FAKE_PLANNER=bad writes a plan.json that never validates (the solo fallback; to the switch it then runs the
+          mini director like a solo director).
+        - <!-- mv:builder -->: writes its scene (a copy of field.js) where the brief says, renders its segment preview
+          with the command in the brief, and answers the critic's round (a line in its log).
+          FAKE_BUILDER="f1:hang,f2:noscene,f3:crash" makes those segments' builders go wrong: hang (no events, no
+          result, until it is killed), noscene (ends every turn without writing its scene), crash (exits 1 mid-turn).
+        - <!-- mv:echo -->: works FAKE_ECHO_S seconds (default 2) on each turn, then answers every message of the turn
+          (the session plumbing's test).
 FAKE_CLAUDE_SLOW=<s> (or a file of that name in the project) sleeps that long first (to test stopping a run).
 FAKE_CLAUDE_NO_BUDGET=1 refuses --max-budget-usd the way an older Claude Code would (unknown option).
 FAKE_CLAUDE_CRITIC_ERROR=1 answers a critic prompt the way Claude Code reports a login or usage-limit error: exit 1,
@@ -77,42 +94,241 @@ def critic(prompt):
           "modelUsage": {"fake-critic": {}}})
 
 
-def director():
+def text_of(line):
+    try:
+        return json.loads(line)["message"]["content"][0]["text"]
+    except Exception:
+        return None
+
+
+def studio_cmd(*args, log=None):
+    """tools/studio.py, the way a session's Bash tool runs it (stdin closed: ffmpeg would eat the studio's messages)."""
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(os.path.dirname(TESTS), "tools", "studio.py"), *args], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
+                       env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    tail = [x for x in (r.stdout + r.stderr).splitlines() if x.strip()][-2:]
+    if log:
+        log(f"$ studio.py {' '.join(args[:4])}: exit {r.returncode}; {' | '.join(tail)[:300]}")
+    return r
+
+
+def edit_json(path, fn):
+    d = json.load(open(path, encoding="utf-8"))
+    fn(d)
+    json.dump(d, open(path, "w", encoding="utf-8"), indent=1)
+
+
+class Director:
+    """The solo director (the director brief without a marker)."""
+
+    def __init__(self, brief):
+        self.brief = brief
+
+    def first(self, say):
+        say("Rendering with the scripted mini director.", "Bash", {"command": "python tests/mini_director.py ."})
+        sys.path.insert(0, TESTS)
+        import mini_director
+        try:
+            mini_director.run(os.getcwd(), log=lambda s: say(s.strip()))
+            if "review round" in self.brief.lower():
+                mark_notes_done()
+                with open("report.md", "a", encoding="utf-8") as f:
+                    f.write("\n## Round 2\nAddressed every note (test stand-in).\n")
+            say("Delivered final/music-video.mp4 and wrote report.md.")
+        except Exception as ex:
+            say(f"The mini director failed: {ex}")
+
+    def answer(self, msg, say):
+        say(f"(studio said: {msg[:60]}...) Nothing more to improve in the test.")
+
+
+def mark_notes_done():
+    p = os.path.join("review", "notes.json")
+    notes = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
+    for n in notes:
+        if not n.get("done"):
+            n.update(done=True, fix="re-rendered (test stand-in)")
+    json.dump(notes, open(p, "w", encoding="utf-8"), indent=1)
+
+
+class Planner:
+    """The pipeline's planner."""
+
+    def __init__(self, brief):
+        self.brief = brief
+        self.project = os.path.basename(os.getcwd())
+        self.assembles = 0
+        self.solo = None
+
+    def first(self, say):
+        if "review round" in self.brief.lower():
+            mark_notes_done()
+            with open("report.md", "a", encoding="utf-8") as f:
+                f.write("\n## Round 2\nAddressed every note through the pipeline (test stand-in).\n")
+            edit_json(os.path.join("work", "plan.json"), lambda d: d.update(stage="final"))
+            say("Marked the notes done and set the plan's stage to final.", "Edit", {"file_path": "work/plan.json"})
+            return
+        say("Reading the song folder, writing the concept, the lib, the hero and the plan.", "Read", {"file_path": "song/README.md"})
+        m = json.load(open(os.path.join("song", "song-map.json"), encoding="utf-8"))
+        field = open(os.path.join(TESTS, "scenes", "field.js"), "rb").read()
+        sd = os.path.join("work", "scenes")
+        for sid in ("s2", "type", "lib"):
+            os.makedirs(os.path.join(sd, sid), exist_ok=True)
+        open(os.path.join(sd, "lib", "look.js"), "wb").write(b'// the shared visual language (smoke test)\nexport const LOOK = {ink: "#e9e4d8"};\n')
+        open(os.path.join(sd, "s2", "scene.js"), "wb").write(b'import { LOOK } from "../lib/look.js";   // the shared language\n' + field)
+        open(os.path.join(sd, "type", "type.html"), "wb").write(open(os.path.join(TESTS, "scenes", "lyrics.html"), "rb").read())
+        os.makedirs(os.path.join("work", "style-frames"), exist_ok=True)
+        from PIL import Image
+        Image.new("RGB", (320, 180), (16, 20, 24)).save(os.path.join("work", "style-frames", "a.png"))
+        open(os.path.join("work", "concept.md"), "w", encoding="utf-8").write(
+            "# Concept (test stand-in)\nA field of marks re-dealt on every downbeat; the stop freezes it.\n")
+        open(os.path.join("work", "song-notes.md"), "w", encoding="utf-8").write("# Song notes (test stand-in)\n")
+        bars = [b["t"] for b in m["bars"]]
+        c1, c2, dur = round(bars[len(bars) // 3], 3), round(bars[2 * len(bars) // 3], 3), m["duration"]
+        seg = lambda sid, a, b, owner, status: {"id": sid, "name": f"{sid} (smoke)", "from": a, "to": b, "renderer": "web",  # noqa: E731
+                                                "scene": f"work/scenes/{sid}/scene.js", "owner": owner, "brief": "the field, re-dealt",
+                                                "enter": "the field", "exit": "the field", "moments": [], "status": status}
+        plan = {"stage": "planned", "hero": "s2", "lib": "work/scenes/lib/", "style_frames": ["work/style-frames/a.png"],
+                "rules": "marks on a dark field; every downbeat re-deals them",
+                "segments": [seg("s1", 0.0, c1, "builder", "todo"), seg("s2", c1, c2, "planner", "drafted"),
+                             seg("s3", c2, dur, "builder", "todo")],
+                "overlays": [{"id": "type", "scene": "work/scenes/type/type.html", "transparent": True, "owner": "planner",
+                              "brief": "the sung lines on plates"}]}
+        if os.environ.get("FAKE_PLANNER") == "bad":
+            plan["segments"][1]["from"] = c1 + 1.0            # a gap: never valid
+        json.dump(plan, open(os.path.join("work", "plan.json"), "w", encoding="utf-8"), indent=1)
+        say("Rendering the hero's preview.", "Bash", {"command": f"studio.py pipeline render {self.project} --preview --only s2"})
+        studio_cmd("pipeline", "render", self.project, "--preview", "--only", "s2", log=say)
+        say("plan.json says planned; the hero's preview is rendered.")
+
+    def answer(self, msg, say):
+        if self.solo:
+            return self.solo.answer(msg, say)
+        if "switching this run to solo" in msg:
+            self.solo = Director(self.brief)
+            return self.solo.first(say)
+        if "The language is locked" in msg:
+            studio_cmd("pipeline", "render", self.project, "--preview", "--only", "type", log=say)
+            say("Rendered the type overlay; s2 is drafted.")
+        elif "Gate 1" in msg:
+            say("The critic's notes on the language: keeping the language as it is (test stand-in).")
+        elif "assembled a preview of the whole film" in msg:
+            self.assembles += 1
+            if self.assembles == 1:
+                edit_json(os.path.join("work", "plan.json"), lambda d: d.update(stage="final"))
+                say("The film holds: set the plan's stage to final.", "Edit", {"file_path": "work/plan.json"})
+        elif "The final is assembled" in msg or "Time is short" in msg or "couldn't be assembled" in msg:
+            open("report.md", "w", encoding="utf-8").write(
+                "# Report (the pipeline's test stand-in)\n\nThree segments in one language: s1 and s3 by builders, the hero "
+                "s2 by the planner; the sung lines as a transparent overlay.\n\nTimestamps to check by ear: the stop.\n")
+            say("Wrote report.md.", "Write", {"file_path": "report.md"})
+        else:
+            say(f"(studio said: {msg[:60]}...) Noted.")
+
+
+class Builder:
+    """A pipeline builder."""
+
+    def __init__(self, brief):
+        self.brief = brief
+        self.id = (re.search(r"--only ([a-z0-9_-]+)", brief) or [None, "s1"])[1]
+        self.project = os.path.basename(os.getcwd())
+
+    def first(self, say):
+        self.mode = dict(x.split(":", 1) for x in (os.environ.get("FAKE_BUILDER") or "").split(",") if ":" in x).get(self.id)
+        if self.mode == "hang":
+            time.sleep(3600)                       # no events, no result: the studio's "hung" check must catch it
+        if self.mode == "crash":
+            os._exit(1)
+        if self.mode == "noscene":
+            return say("I'll write the scene later (test stand-in: it never does).")
+        scene = (re.search(r"Your scene: `([^`]+)`", self.brief) or [None, f"work/scenes/{self.id}/scene.js"])[1]
+        os.makedirs(os.path.dirname(scene), exist_ok=True)
+        open(scene, "wb").write(open(os.path.join(TESTS, "scenes", "field.js"), "rb").read())
+        say(f"Wrote {scene}; rendering the segment preview.", "Write", {"file_path": scene})
+        studio_cmd("pipeline", "render", self.project, "--preview", "--only", self.id, log=say)
+        d = os.path.join("work", "segments", self.id)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "log.md"), "a", encoding="utf-8") as f:
+            f.write(f"# {self.id} (test stand-in)\nThe field over my range.\n")
+        if self.id == "s1":
+            open(os.path.join(d, "requests.md"), "w", encoding="utf-8").write("- the lib could export the plate colour (test stand-in)\n")
+        say("The preview is rendered.")
+
+    def answer(self, msg, say):
+        if getattr(self, "mode", None) == "noscene":
+            say("Still no scene (test stand-in).")
+        elif "critic" in msg:
+            with open(os.path.join("work", "segments", self.id, "log.md"), "a", encoding="utf-8") as f:
+                f.write("Took the critic's push (test stand-in).\n")
+            say("Took the critic's push; nothing to re-render in the test.")
+        else:
+            say(f"(studio said: {msg[:60]}...) Noted.")
+
+
+class Echo:
+    """Works a little on each turn; says what it got (the session plumbing's test)."""
+
+    def __init__(self, brief):
+        self.wait = float(os.environ.get("FAKE_ECHO_S") or 2)
+
+    def first(self, say):
+        time.sleep(self.wait)
+        say("echo: the first message")
+
+    def answer(self, msg, say):
+        say(f"echo: {msg[:80]}")
+        time.sleep(self.wait)
+
+
+def session():
+    """A stream-json session: one turn per message that finds it idle; lines that come in while it works join that turn."""
+    import queue, threading
+    q = queue.Queue()
+
+    def reader():
+        for line in sys.stdin:
+            q.put(line)
+        q.put(None)
+    threading.Thread(target=reader, daemon=True).start()
     t0 = time.time()
-    first = sys.stdin.readline()
-    brief = json.loads(first)["message"]["content"][0]["text"] if first.strip() else ""
-    emit({"type": "system", "subtype": "init", "model": "fake-director", "tools": ["Read", "Bash"], "permissionMode": "dontAsk",
-          "session_id": "fake"})
-    assistant("Reading the brief and the song folder.", "Read", {"file_path": "song/README.md"})
+    first = q.get()
+    brief = (text_of(first) or "") if first else ""
+    role = Planner if "<!-- mv:planner -->" in brief else Builder if "<!-- mv:builder -->" in brief else \
+        Echo if "<!-- mv:echo -->" in brief else Director
+    emit({"type": "system", "subtype": "init", "model": f"fake-{role.__name__.lower()}", "tools": ["Read", "Bash"],
+          "permissionMode": "dontAsk", "session_id": "fake"})
+    who = role(brief)
+    assistant("Reading the brief.", "Read", {"file_path": "song/README.md"})
     slow = os.environ.get("FAKE_CLAUDE_SLOW") or (open("FAKE_CLAUDE_SLOW").read().strip() if os.path.exists("FAKE_CLAUDE_SLOW") else "0")
     time.sleep(float(slow))
-    assistant("Rendering with the scripted mini director.", "Bash", {"command": "python tests/mini_director.py ."})
-    sys.path.insert(0, TESTS)
-    import mini_director
-    try:
-        mini_director.run(os.getcwd(), log=lambda s: assistant(s.strip()))
-        if "review round" in brief.lower():
-            p = os.path.join("review", "notes.json")
-            notes = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
-            for n in notes:
-                if not n.get("done"):
-                    n.update(done=True, fix="re-rendered (test stand-in)")
-            json.dump(notes, open(p, "w", encoding="utf-8"), indent=1)
-            with open("report.md", "a", encoding="utf-8") as f:
-                f.write("\n## Round 2\nAddressed every note (test stand-in).\n")
-        assistant("Delivered final/music-video.mp4 and wrote report.md.")
-    except Exception as ex:
-        assistant(f"The mini director failed: {ex}")
-    result(4, t0)
-    turns = 4
-    for line in sys.stdin:                         # the studio's follow-ups (nudges, time warnings) until stdin closes
-        try:
-            msg = json.loads(line)["message"]["content"][0]["text"]
-        except Exception:
-            continue
-        turns += 1
-        assistant(f"(studio said: {msg[:60]}...) Nothing more to improve in the test.")
+    say = lambda text, tool=None, inp=None: assistant(text, tool, inp)     # noqa: E731
+    who.first(say)
+    turns, done = 4, first is None
+    while True:
+        while True:                                # what came in meanwhile joins this turn
+            try:
+                line = q.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                done = True
+                break
+            msg = text_of(line)
+            if msg:
+                turns += 1
+                who.answer(msg, say)
         result(turns, t0)
+        if done:
+            return
+        line = q.get()                             # idle until the next message
+        if line is None:
+            return
+        msg = text_of(line)
+        if msg:
+            turns += 1
+            who.answer(msg, say)
 
 
 def main():
@@ -122,7 +338,7 @@ def main():
     elif a[:2] == ["auth", "status"]:
         print(json.dumps({"loggedIn": True, "authMethod": "fake"}))
     elif "stream-json" in a:
-        director()
+        session()
     elif "-p" in a:
         if "--max-budget-usd" in a and os.environ.get("FAKE_CLAUDE_NO_BUDGET"):
             print("error: unknown option '--max-budget-usd'", file=sys.stderr)

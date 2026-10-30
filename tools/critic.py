@@ -2,7 +2,7 @@
 director (often the most expensive model) doesn't have to spend its own tokens looking at every picture.
 
   python tools/studio.py critique <p> <video> [--model sonnet] [--effort medium] [--focus "..."] [--concept PATH]
-                                              [--out DIR] [--max-usd 2] [--no-look]
+                                              [--out DIR] [--max-usd 2] [--no-look] [--pictures a.png,b.png]
   python tools/studio.py critique <p> v2      a delivered version: also saved as final/critic_v2.md (+ .json)
   python tools/studio.py run <p> critic.py <video> ...                     (the same as the first form)
 
@@ -15,7 +15,8 @@ final, a pitch's proof clip.
    user's notes (their avoid is a hard rule), the anti-defaults and the craft rules (inlined from the skill, so they
    stay in sync), what the eyes measured, the checks when they are about this video, the pictures to open, and the
    previous critique (what got fixed). Not report.md or work/log.md: fresh eyes judge the picture against the intent,
-   not the director's account of it.
+   not the director's account of it. --pictures adds stills to open with the video's (the pipeline's language gate:
+   the style frames).
 3. One headless print-mode call (mv/claude.py): read-only tools, cwd = the project folder, the prompt on stdin.
 4. work/critic/<name>_NN.md + .json (verdict, scores, problems, keep, safe, anti_defaults, fixed_since_last; plus the
    video, its size and mtime, model, effort, cost_usd, duration_s, at) and a line in work/critic/log.jsonl. With
@@ -51,9 +52,12 @@ def mmss(t):
 
 # ------------------------------------------------------------------ settings and results (also used by director.py)
 def settings(pj):
-    """(model, effort) of the automatic critic from project.json "director" (critic_model "off" = no critic)."""
+    """(model, effort) of the automatic critic from project.json "director" (critic_model "off" = no critic). Inside an
+    autonomous run the run's critic wins (MV_CRITIC_MODEL / MV_CRITIC_EFFORT, set for the planner's and the builders'
+    sessions), so their own `critique` and `pipeline` commands use the critic the run was started with."""
     d = pj.get("director") or {}
-    return (str(d.get("critic_model") or DEFAULT_MODEL), str(d.get("critic_effort") or DEFAULT_EFFORT))
+    return (str(os.environ.get("MV_CRITIC_MODEL") or d.get("critic_model") or DEFAULT_MODEL),
+            str(os.environ.get("MV_CRITIC_EFFORT") or d.get("critic_effort") or DEFAULT_EFFORT))
 
 
 def score_line(scores):
@@ -236,6 +240,9 @@ def describe(pdir, video, song):
         kind = "a preview the director rendered while working"
     elif v.startswith("work/pitches/"):
         kind = "a pitch's proof clip: one director's pitch for the whole video, shown on a short window of the song"
+    elif v.startswith("work/segments/"):
+        kind = ("one segment of the film, rendered on its own (the pipeline: the planner and builder agents each build "
+                "segments in one shared visual language; the studio joins them)")
     else:
         kind = "a render the director made while working"
     size = f"{w}×{h} (the delivery size)" if (w, h) == (d["width"], d["height"]) else \
@@ -428,10 +435,28 @@ def build_prompt(pdir, video, what, pics, eyes_d, concept=None, focus="", out=No
 
 
 # ------------------------------------------------------------------ the critique
+def also_pictures(pdir, pictures):
+    """Stills to open with the video's own pictures (--pictures: e.g. the style frames): [(path, what it is)] and a
+    warning for each one that isn't there."""
+    out, warns = [], []
+    for p in pictures or ():
+        p = str(p).strip()
+        if not p:
+            continue
+        ap = os.path.abspath(p if os.path.isabs(p) else os.path.join(pdir, p))
+        if not os.path.isfile(ap):
+            warns.append(f"a picture to look at too isn't there: {p}")
+            continue
+        what = ("a style frame: the look the director is aiming for (a still, not a frame of this video)"
+                if "style" in rel(ap, pdir).lower() else "a still the director asked you to look at too (not a frame of this video)")
+        out.append((rel(ap, pdir), what))
+    return out, warns
+
+
 def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=None, max_usd=DEFAULT_MAX_USD,
-             fresh_look=True, log=print):
+             fresh_look=True, log=print, pictures=()):
     """Look, ask, write. Returns the critique (dict, as written to the json) or raises RuntimeError when it couldn't
-    run (no Claude Code, no pictures, no answer: NoAnswer, with what the call cost)."""
+    run (no Claude Code, no pictures, no answer: NoAnswer, with what the call cost). pictures: stills to open too."""
     from mv.song import Song
     pdir = os.path.abspath(pdir)
     video = os.path.abspath(video if os.path.isabs(video) else os.path.join(pdir, video))
@@ -449,6 +474,8 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
     size, mtime = os.path.getsize(video), os.path.getmtime(video)
     kind, rng, what = describe(pdir, video, song)
     pics, eyes_d, warns = look(pdir, video, song, rng, log, fresh_look)
+    more, w2 = also_pictures(pdir, pictures)
+    pics, warns = pics + more, warns + w2
     prompt = build_prompt(pdir, video, what, pics, eyes_d, concept, focus, out)
     cdir = os.path.join(pdir, "work", "critic")
     od = (out if os.path.isabs(out) else os.path.join(pdir, out)) if out else cdir
@@ -499,11 +526,13 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
     return d
 
 
-def command(pdir, video, model=None, effort=None, max_usd=None, out=None, concept=None, focus="", fresh_look=True, python=None):
-    """critic.py as a command list + env, for running it in the background (the director runner, the pitch round)."""
+def command(pdir, video, model=None, effort=None, max_usd=None, out=None, concept=None, focus="", fresh_look=True, python=None,
+            pictures=()):
+    """critic.py as a command list + env, for running it in the background (the director runner, the pitch round, the
+    pipeline's gates)."""
     cmd = [python or sys.executable, "-W", "ignore", os.path.join(HERE, "critic.py"), video]
     for flag, v in (("--model", model), ("--effort", effort), ("--max-usd", max_usd), ("--out", out), ("--concept", concept),
-                    ("--focus", focus)):
+                    ("--focus", focus), ("--pictures", ",".join(pictures or ()))):
         if v:
             cmd += [flag, str(v)]
     if not fresh_look:
@@ -521,11 +550,12 @@ def main():
     ap.add_argument("--out", help="write critic.md + critic.json in this folder instead of work/critic/")
     ap.add_argument("--max-usd", type=float, default=DEFAULT_MAX_USD, help="spending cap for this critique")
     ap.add_argument("--no-look", action="store_true", help="use the pictures that are there; don't run eyes.py look")
+    ap.add_argument("--pictures", default="", help="more stills to open, comma-separated (e.g. the style frames)")
     a = ap.parse_args()
     pdir = need_project()
     try:
         d = critique(pdir, a.video, a.model, a.effort, a.focus, a.concept, a.out, a.max_usd, not a.no_look,
-                     log=lambda s: print(s, flush=True))
+                     log=lambda s: print(s, flush=True), pictures=[x for x in a.pictures.split(",") if x.strip()])
     except RuntimeError as e:
         cost = getattr(e, "cost", None)
         print(f"critic: couldn't run: {e}" + (f" (${cost:.4f} spent)" if cost else ""), flush=True)

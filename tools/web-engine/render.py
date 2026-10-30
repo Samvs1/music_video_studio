@@ -8,8 +8,10 @@
         [--workers N] [--gpu auto|on|off] [--seed N] [--fresh] [--chunk 2.0] [--lossless]
 
 Paths are relative to the project folder. A re-run after a crash (or a section render) reuses finished chunks of the
-same scene version; any change to the scene's folder renders them again. Writes <out>.mv.json next to the output:
-the frame range, the browser / GPU used, and every text that was on screen (for the text checks).
+same scene version; any change to the scene's folder, or to a file it imports (a shared lib), renders them again.
+Writes <out>.mv.json next to the output: the frame range, the browser / GPU used, and every text that was on screen
+(for the text checks). Video renders wait their turn in the machine's render queue (mv/renderlock.py: one render at
+a time; MV_RENDER_WHO names it while it renders, MV_RENDER_LOCK=0 turns the queue off); --still doesn't wait.
 """
 import argparse, os, sys
 
@@ -17,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from mv import web  # noqa: E402
 from mv.common import ROOT, jload, need_project  # noqa: E402
+from mv.renderlock import render_queue  # noqa: E402
 
 
 def frame_range(a, fps, n_total, song_dir):
@@ -32,6 +35,14 @@ def frame_range(a, fps, n_total, song_dir):
     if a.from_ is not None or a.to is not None:
         return int(round((a.from_ or 0) * fps)), int(round(a.to * fps)) if a.to is not None else n_total
     return 0, n_total
+
+
+def shown(path):
+    """A path as the render queue shows it: relative to the project when it can be."""
+    try:
+        return os.path.relpath(path, ROOT).replace("\\", "/")
+    except ValueError:                             # another drive (Windows)
+        return path
 
 
 def main():
@@ -75,8 +86,9 @@ def main():
     fps = a.fps or delivery()["fps"]
     n_total = int(round(fm.get("duration", 0) * fps))
     rng = frame_range(a, fps, n_total, os.path.join(ROOT, "song"))
-    web.render(scene, out, ROOT, rng, a.width, a.height, fps, "preview" if a.preview else "final", scale, a.transparent,
-               a.workers, a.gpu, a.seed, a.chunk, a.fresh, a.lossless)
+    with render_queue(f"{os.path.basename(ROOT)}: {shown(scene)} -> {shown(out)}"):
+        web.render(scene, out, ROOT, rng, a.width, a.height, fps, "preview" if a.preview else "final", scale, a.transparent,
+                   a.workers, a.gpu, a.seed, a.chunk, a.fresh, a.lossless)
 
 
 if __name__ == "__main__":
