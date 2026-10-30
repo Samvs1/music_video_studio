@@ -54,7 +54,7 @@ segments into the final, so the checks know where every text was.
 | `sync VIDEO` | hard visual changes vs the nearest musical event (beat, 8th, sung word, kick, snare, stop, 16th, onset): in sync = within one frame; drift (median offset) per section; the misses listed |
 
 A preview works (`--preview` renders, any size); a section render works when its `.mv.json` says where it sits.
-A pipeline segment's video keeps its eyes next to it: `work/segments/<id>/eyes/<name>/` (a pitch's proof:
+A plan segment's video keeps its eyes next to it: `work/segments/<id>/eyes/<name>/` (a pitch's proof:
 `work/pitches/<round>/<pN>/eyes/<name>/`).
 
 ## critic.py: fresh eyes on a cheaper model (`studio.py critique <p> <video>`)
@@ -74,100 +74,103 @@ can't run (no pictures of this cut, no answer, or Claude Code's own error text s
 instead of a critique) it writes no critique, logs the error and its cost, prints `critic: couldn't run: <why>
 ($0.0310 spent)` and exits 1. Read the report first; open only the pictures it points at: the critic does the looking,
 so the director's tokens go into the video. In autonomous runs the runner does this for every new
-`work/previews/*.mp4` and the final by itself (a ready final first).
+`work/previews/*.mp4` and the final by itself (a ready final first), but never twice at one cut: not at one that has
+a critique already (the path, size and mtime match) or is being critiqued (a marker in `work/critic/pending/`, which
+`plan assemble` and every critic.py run set for their cut), nor at an older preview once a newer cut has one. Such a
+critique goes into the run's status as it comes (`used`: "the director ran it"), with no message.
 
-`--pictures` adds stills to open with the video's (the pipeline's language gate passes the style frames).
+`--pictures` adds stills to open with the video's (e.g. the style frames).
 
-## pipeline.py: the pipeline's studio side (`studio.py pipeline <sub> <p>`)
-The planner writes **`work/plan.json`**; the studio checks it, renders each segment over its own frame range,
-assembles previews and the final from it, and gates the visual language with the critic. Every command prints a short
-summary (it comes back to a planner as tool output).
+## plan.py: the plan tools, optional (`studio.py plan <sub> <p>`)
+An optional toolbox around an optional **`work/plan.json`**: a scene list for the whole song. The director decides
+whether a plan helps its video (several scenes in sequence, web and Blender passes, a part an agent builds); when it
+does, these render each segment over its own frame range with a cache and join, layer and mux the film in one
+command, with the eyes, the checks and the critic. Without a plan, render and compose by hand (below). Every command
+prints a short summary (it comes back to the director as tool output).
 | command | what |
 |---|---|
 | `validate <p>` | checks `work/plan.json`: exit 1 with errors that say what to change (the numbers to set), plus warnings |
-| `status <p>` | the plan; per segment whether its preview / final render is current; stages, sessions, gates, assembles and costs from `work/pipeline/state.json`; the final's estimated render time here; who holds the render queue |
-| `render <p> [--preview\|--final] [--only s1,s3]` | each segment over its own frames: web `render.py <scene> --frames a:b --out work/segments/<id>/<id>_<q>.mp4`; Blender `run.py` (frames in `<id>_<q>_frames/`) + `compose.py encode`; overlays as transparent passes `work/segments/<id>/<id>_<q>/` (PNG with alpha). A render that is still current isn't started at all; the logs are in `work/segments/<id>/render_<q>.log`, the times in `work/pipeline/renders.json` |
-| `assemble <p> [--preview\|--final] [--no-critic] [--critic-model M] [--no-look] [--no-check]` | render what's needed, `compose.py concat` the segments, `layer` the overlays, `mux` the song → `work/previews/preview_N.mp4` (half size) or `final/music-video.mp4`; then `eyes.py look`, for a final the checks, then the critic on the whole film (the arc, the joins, the language held, the ending; its report is printed). A preview gets a labelled slate for a segment that isn't built or failed; the final refuses |
-| `gate <p> [--model M] [--effort E] [--max-usd 2]` | the language gate: validate, the hero segment's preview (from the cache when unchanged), then the critic on it plus the style frames: "is this language strong and specific enough to hand to builders, and bold enough?" (recorded in `state.json` `gates`) |
-| `build <p> [--only ids] [--builders 3] [--builder-model M] [--builder-effort high] [--budget 30m] [--critic-model M]` | builder agents (an interactive planner's; the autonomous runner does the same itself): one headless Claude Code session per segment (the builder segments that aren't built, or `--only` those, or the tasks in `work/pipeline/tasks.json`, moved aside once they go out), at most `--builders` at once, each with `templates/build-brief.md` (the concept, the rules, its segment and its neighbours' joins, the lib's files, 2-3 style frames, the song over its range as text, the craft rules; no song-folder reading), writing only in `work/scenes/<id>/` and `work/segments/<id>/` (deny rules for the rest), rendering through the render queue; then the critic on its segment preview and one revision. Blocks until they're done (or the budget, or `studio.py stop`), prints one line per segment (state, the critic's scores, requests for the lib, cost). Sessions in `work/pipeline/sessions/b<round>-<id>/` |
+| `status <p>` | the plan; per item whether its preview / final render is current; the last previews with the critic's scores; the final's estimated render time here; who holds the render queue |
+| `render <p> [--preview\|--final] [--only s1,s3]` | each segment over its own frames: web `render.py <scene> --frames a:b --out work/segments/<id>/<id>_<q>.mp4`; Blender `run.py` (frames in `<id>_<q>_frames/`) + `compose.py encode`; overlays as transparent passes `work/segments/<id>/<id>_<q>/` (PNG with alpha). A render that is still current isn't started at all; the logs are in `work/segments/<id>/render_<q>.log`, the times in `work/plan/renders.json` (written under a lock: an agent may render from a process of its own) |
+| `assemble <p> [--preview\|--final] [--no-critic] [--critic-model M] [--no-look] [--no-check]` | render what's needed, `compose.py concat` the segments, `layer` the overlays, `mux` the song → `work/previews/preview_N.mp4` (half size) or `final/music-video.mp4`; then `eyes.py look`, the checks (a preview: flash and text; a final: all), then the critic on the whole film (the arc, the joins, whether one look holds, the ending; its report is printed). A preview gets a labelled slate for a segment without a scene (or whose render failed); the final refuses and says which. The cut is marked as being critiqued (`work/critic/pending/`) from the mux on, so an autonomous run's critic doesn't look at it again (it records the critique in the run's view); with `--no-critic` it does look, and its notes come as a message. Logs in `work/plan/assemble/` |
 
-How long they take, for a planner deciding what to run in the background: `validate` and `status` seconds; `render
---only <id>` a segment's render (it may first wait for the render queue); `gate` the hero's render (usually from the
-cache) plus a critique, 2-5 min; `build` blocks for the builders' whole time (10-40 min: always in the background);
-`assemble --preview` what changed plus the eyes and a critique, 3-6 min; `assemble --final` every segment at full size
-(`status` prints the estimate) plus the checks and a critique. The skill (`.claude/skills/musicvideo/SKILL.md`, "The
-pipeline (every run)") has the stage-by-stage table.
+How long they take: `validate` and `status` seconds; `render --only <id>` a segment's render (it may first wait for the
+render queue); `assemble --preview` what changed plus the eyes and a critique, 3-6 min; `assemble --final` every
+segment at full size (`status` prints the estimate) plus the checks and a critique: run the last two in the background.
 
 ```json
-{"stage": "planning|planned|final", "hero": "s2", "lib": "work/scenes/lib/", "style_frames": ["work/style-frames/a.png"],
- "rules": "what every segment must keep (one paragraph)",
- "segments": [{"id": "s1", "name": "intro: the lantern wakes", "from": 0.0, "to": 24.24, "renderer": "web",
-   "scene": "work/scenes/s1/scene.js", "owner": "builder", "brief": "what happens, how bold, the lyric plan",
-   "enter": "state at its start", "exit": "state at its end", "moments": ["12:0 the light catches"], "status": "todo",
-   "render_args": ["--engine", "workbench"]}],
- "overlays": [{"id": "type", "scene": "work/scenes/type/type.html", "from": 0, "to": 65.42, "transparent": true,
-   "mode": "normal", "opacity": 1, "owner": "planner", "brief": "..."}]}
+{"segments": [{"id": "s1", "name": "intro: the lantern wakes", "from": 0.0, "to": 24.24, "renderer": "web",
+               "scene": "work/scenes/s1/scene.js", "render_args": ["--engine", "workbench"]}],
+ "overlays": [{"id": "type", "name": "the sung lines", "scene": "work/scenes/type/type.html", "from": 0, "to": 65.42,
+               "transparent": true, "mode": "normal", "opacity": 1}]}
 ```
 The rules `validate` holds: segments in song order, following on without gaps or overlaps, the first from 0, the last
 to the song's end (boundaries become frames: `round(t × fps)`; a cut that isn't within a frame of a downbeat is a
-warning); ids `[a-z0-9_-]+`, unique across segments and overlays (`lib` is the lib's); each scene in its **own folder**
-`work/scenes/<id>/` (the render cache follows a scene's folder and its imports, and a builder writes only there), a
-`web` scene `.js/.mjs/.html`, a `blender` scene `.py`; the hero (the planner's own first draft) must exist once the
-plan is `planned`, every scene once it is `final` or its status is `drafted`/`built`; style frames exist; `render_args`
-(e.g. `--engine workbench`, `--samples 64`, `--seed 2`) can't set the range, size, output or transparency. Overlays
-(`from`/`to` default to the whole song, `transparent` true, `mode` normal|screen|add|multiply|lighten|darken|difference,
-`opacity` 0-1) are layered over the joined segments in order. A segment importing another segment's folder is a
-warning: share code through the lib.
+warning); ids `[a-z0-9_-]+`, unique across segments and overlays (`lib` is the shared code's); each scene in its **own
+folder** `work/scenes/<id>/` (the render cache follows a scene's folder and what it imports, so a change in one segment
+doesn't render another), a `web` scene `.js/.mjs/.html`, a `blender` scene `.py`; a scene not written yet is no error
+(a preview shows a slate); `render_args` (e.g. `--engine workbench`, `--samples 64`, `--seed 2`) can't set the range,
+size, output or transparency. Overlays (`from`/`to` default to the whole song, `transparent` true, `mode`
+normal|screen|add|multiply|lighten|darken|difference, `opacity` 0-1) are layered over the joined segments in order. A
+segment importing another segment's folder is a warning: share code through `work/scenes/lib/` (and `work/kit/`).
+Other fields are the director's own notes and are left alone; a plan from an earlier version of the studio (with
+`stage`, `hero`, `owner`, `status` or briefs) reads as it is.
+**The final's estimate** (`status`): each item's measured preview render time × what a final frame costs against a
+preview frame for its renderer on this machine (`tools/speeds.json`: the 1080p row over the 540p preview row; the web
+engine's parallel row; ×2.5 without a benchmark), else its last final render, else speeds.json; plus the join, the
+layers, the mux and the checks.
 
 `work/plan.json` is also the live preview's timeline (below): the user plays its segments in their slots, with the
-song, while the pipeline works.
+song, while the director works.
 
-**work/pipeline/tasks.json** (the planner's fix tasks for builders, stage 4): `[{"segment": "s3", "what": "the note, and what you want"}]`;
-each builder gets the task, its segment's last critique and its scene as it is.
+## Agents in a run (the director's choice)
+The autonomous director has full reign: it builds the video itself, or deploys agents where it wants to; nothing
+requires them. What the studio does around them (`director.py`, `mv/session.py`):
+- **The tools**: `--allowedTools` has `Agent` (the init event lists it as `Task`; its tool_use is `Agent`, with
+  `description`, `model`, `prompt`, `run_in_background`) and `TaskStop`, and the director's own to-do list
+  (`TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`: Claude Code 2.1.312 has these, not `TodoWrite`); `SendMessage`
+  and `ListAgents` aren't allowed (SendMessage can reach the user's other Claude sessions on the machine by name);
+  `--ultracode` adds `Workflow` (multi-agent workflows) and one opt-in line to the brief. The briefs ask for `run_in_background: true`: without
+  it Claude Code 2.1.312 ran the agent in the foreground (the director's turn waits for it).
+- **The sandbox**: agents share the director's session and its permission rules (the studio's folders read-only, no
+  network commands). `studio.py permtest <p>` checks it with the real Claude Code: an agent's write into the project
+  is allowed, its write into `tools/` refused.
+- **The session while they work**: the stream says what runs (`system/background_tasks_changed` with the current
+  tasks, `task_started`, `task_progress`, `task_updated`, `task_notification`; an agent's own events carry
+  `parent_tool_use_id`). While any task runs, the session is *working* even when the director's own turn has ended:
+  the runner sends no nudge or "no final yet" reminder and never closes it (STOP and the deadline + grace still end
+  it); critic notes, live notes and time warnings still go in. When the last task ends the session starts a turn of
+  its own (a new `system/init`, no user message; seen within a second), and the runner waits up to 90 s for it. An
+  agent's progress counts as a sign of life.
+- **What the run records**: the live log gets a line per agent (`🤖 agent: build s3 (haiku) started` / `done in 2 min,
+  14 tool calls`), its own tool calls at most once per 20 s, indented, and `↻ the director started a turn of its own
+  (its agent finished)`. `status.json` has `agents` [{id, description, model, subagent_type, started, ended (seconds
+  from the run's start), state running | done | failed | stopped, tools, last}], `model_usage` {model: {input_tokens,
+  output_tokens, cache_read_tokens, cache_write_tokens, cost_usd}}, `background` (tasks running now), `working`,
+  `budget_hit`. `studio.py clock` says how many agents are running.
+- **Costs**: `total_cost_usd` and `modelUsage` in a `result` are the session's running totals (verified: 0.00735,
+  0.00820, 0.00863 over three results), so the session's cost is its latest result's (agents included), the cost per
+  model the latest `modelUsage`; `num_turns` is per turn and adds up. The run's total is that plus the critic's calls.
+  report.md's run settings and the web app's run view list the cost per model, labelled: the director's model, the
+  models its agents asked for ("agents"), Claude Code's own small calls (unlabelled), the critic, the total.
+  `--max-usd N` passes `--max-budget-usd N` (a hard cap on the session, its agents included): when a result says it
+  was reached the run ends there without more messages, and report.md says so.
+- **Renders**: every video render waits its turn in the render queue (below), the agents' too.
 
-**work/pipeline/state.json** (live; the web app polls it; `update_state` re-reads and writes it atomically, under a
-lock file next to it, `state.json.lock`, since the runner, `pipeline build` and a planner's own commands all write it): `run`,
-`mode` (pipeline | solo | interactive), `state`, `stage` (plan | gate | build | assemble | revise | final | solo | done),
-`stage_started`, `round` (the assembles so far), `build_round`, `stages` [{stage, started, ended, round}], `started`,
-`deadline`, `budget_s`, `plan_by`, `build_by`, `final_by` (when the studio starts the final at the latest),
-`final_est`, `sessions` [{name, role (planner | builder), segment, round, model, model_used, effort, state, cost_usd,
-turns, log (its events.jsonl), status, brief, critique, error, task, last (its last lines)}], `segments` {id: {kind,
-owner, status, from, to, renderer, scene, exists, builder, builder_state, critique, error}}, `gates`, `assembles`
-(written by `gate` and `assemble`), `critiques` (this run's: video, scores, file, cost_usd, kind gate | builder |
-assemble | final, who), `messages` [{t, to, why}], `costs` {planner, builders, critic, total}, `settings`. A new
-autonomous run starts a fresh one (the last goes to `work/pipeline/history/`). An interactive planner's `gate`,
-`assemble` and `build` (not inside an autonomous run) make it theirs: mode `interactive`, `interactive_started`, the
-stage, state running, then done | failed | stopped; an autonomous run's state goes to
-`work/pipeline/history/state_run-<n>.json` first (GET pipeline returns it as `run_view`, so the page still shows that
-run). Inside an autonomous run (its `current.json` written in the last 3 min) these commands leave the state alone.
-
-**The clock** (`pipeline.stage_times`, one rule for the runner, the planner's brief, `--mode auto` and the Direct page's
-hint): the plan stage ends at 30% of the budget; the gate takes 5 min; the builders end at 62% of the budget, at least
-10 min after the gate, and never later than the preview assemble plus 5 min before the final; the final starts at the
-latest its estimate × 1.3 + 8 min before the end. The pipeline fits a budget when a builder round of 10 min fits
-(`pipeline_from(estimate)`: the smallest such budget). `estimate_final`: each item's preview seconds per frame × what a
-final frame costs against a preview frame for its renderer on this machine (`tools/speeds.json`: the 1080p row over
-the 540p preview row; the web engine's parallel row; ×2.5 without a benchmark), else its last final render, else
-speeds.json; `estimate_rough` (no plan yet): the whole song with the web engine plus one overlay pass.
-The web app's Direct page shows it (`GET /api/p/<p>/pipeline`: the state with the URLs of the files it names, the
-segments from plan.json; a session's full log from `GET /api/p/<p>/session-log?log=<its events.jsonl>`): the stage
-bar, a card per session, the critic's reports at the gates, the previews and the costs by role, for an autonomous
-run, and in a "Your pipeline" box for an interactive planner's `gate`, `build` and `assemble` (with a Stop for
-running builders).
-
-**The render queue** (`mv/renderlock.py`): one video render at a time on this machine. `web-engine/render.py` and
-`blender/run.py` take `<studio>/cache/render.lock` (O_CREAT|O_EXCL: pid, who, what, started) before a video render (not
+## The render queue (`mv/renderlock.py`)
+One video render at a time on this machine, the director's and its agents' alike: parallel agents speed up
+thinking and code, not rendering. `web-engine/render.py` and `blender/run.py` take `<studio>/cache/render.lock` (O_CREAT|O_EXCL: pid, who, what, started) before a video render (not
 `--still`); a waiting render prints `waiting for the render queue: <who> (<what>) since <time>` (at once, then every
 ~30 s) and `render queue: my turn after N s`. A lock whose process is gone (a render killed with its tree), that was
 held for 6 h (a hung render), or that shows no sign of life for 10 min (the holder touches it every minute; on Windows
 a dead render's pid can soon belong to another process) is taken over. `MV_RENDER_WHO` names the render
-(the pipeline sets `<who>: <id> <quality>`), `MV_RENDER_LOCK=0` turns the queue off, `MV_RENDER_LOCK_FILE` moves it
+(the plan tools set `<who>: <id> <quality>`), `MV_RENDER_LOCK=0` turns the queue off, `MV_RENDER_LOCK_FILE` moves it
 (the tests do).
 
 ## Live preview: the scenes in the browser, with the song (`mv/live.py`, the web app's Watch page "▶ live")
 The user is the only one who can hear. The live view plays the project's scenes in their browser with the song, no
-render, while the director (or the planner and its builders) works, and their notes from there reach a running
-director within seconds. The pieces:
+render, while the director (and any agents of its) works, and their notes from there reach a running director
+within seconds. The pieces:
 - **The runtime in live mode** (`web-engine/runtime/mv.js`, `web-engine/README.md` "Live preview"): the renderer's own
   page on a clock the web app owns; frames drop when a scene is slower than real time, the timing stays true; stateful
   scenes catch up as a render pre-rolls (one too slow to keep time skips frames, and says its state is then only close
@@ -191,14 +194,11 @@ director within seconds. The pieces:
   (`work/scenes/**` but the lib, a pitch's scenes, any scene a timeline names) also plays alone.
 - **Live notes**: a note made in the live view (N) is `{"version": "live", "t", "text", "scene" (what was on top),
   "timeline" (its source: live.json, plan.json, renders, pitch:round-K/pN or scene:<path>)}` in `review/notes.json`. During an autonomous run the runner (`director.py` `LiveNotes`) looks every ~5 s
-  for live notes made since the run started, not done and not forwarded, and sends them to the director (solo) or the
-  planner as one message with the song context (time, bar:beat, section, the sung line, the plan's segment there, the
-  scene seen) and "treat it like a review note; mark it done with a one-line fix" (`studio.py note-done <p> <id>
-  "<fix>"`); then marks them `"forwarded_run": n`.
-  A busy planner gets them in its running turn; an idle one at once while it plans, revises or waits for builders (the
-  assemble then waits for its turn), and otherwise in the next assemble report, which lists the run's live notes again
-  with what was marked. While the studio gates or assembles they wait for that report (a busy planner too: a fix then
-  would race the renders), and in the final stage for the review round. Open live notes also go into the next run's
+  for live notes made since the run started, not done and not forwarded, and sends them to the director as one
+  message with the song context (time, bar:beat, section, the sung line, the plan's segment there, the scene seen) and
+  "treat it like a review note; mark it done with a one-line fix" (`studio.py note-done <p> <id> "<fix>"`); then marks
+  them `"forwarded_run": n`. A busy director gets them in its running turn, an idle one at once (a turn of their own,
+  while its agents work too); not once the run is stopping or less than 2 minutes are left. Open live notes also go into the next run's
   brief (a review round's with the other notes; a first run's, e.g. after a stopped one, as notes on the scenes as they
   were). `review/notes.json` is written through `live.update_notes` (a lock file, a re-read, the change by id, an atomic
   replace): the web app, the runner and the director's `studio.py note-done` all write it.
@@ -211,7 +211,7 @@ director within seconds. The pieces:
 | `text VIDEO` | reading time (0.8 s + 55 ms/char, 1.4-3 s), contrast ≥ 3:1, inside title-safe, never clipped, ≥ 34 px at 1080p, lyric text on (or just before) its sung word |
 | `all VIDEO` | the three + `eyes.py sync`; `work/checks/report.md`; exit 1 on any FAIL |
 
-## A typical pipeline (one way, not the way)
+## By hand, without a plan (one way, not the way)
 ```
 web-engine/render.py work/scenes/world.js --out work/renders/world.mp4 --preview            # iterate at half size
 eyes.py look work/renders/world.mp4                                                          # look, fix, repeat
@@ -242,14 +242,15 @@ project.json `lyrics_fix` (`held_lines`, `words`, `text`; see `fix_lyrics.py`).
 
 ## The studio around it
 `studio.py doctor` (install check; writes `installed.md`), `benchmark` (speeds.json), `models.py status|fetch`,
-`director.py` (`studio.py story | direct | clock | stop | deliver | versions | permtest`: the solo runner and the
-pipeline's stages, `PipelineRun`), `critic.py` (`studio.py critique`),
-`pipeline.py` (`studio.py pipeline`),
+`director.py` (`studio.py story | direct | clock | stop | deliver | versions | permtest`: the autonomous run,
+`Runner`, with its `CriticWatcher` and `LiveNotes`), `critic.py` (`studio.py critique`), `plan.py` (`studio.py plan`),
 `studio.py serve` (web app).
 Shared code: `mv/session.py` (one long stream-json Claude Code session: start, send, events into a status, turn
 ends, stop with grace, the process tree killed; busy from a message to an idle session until its `result`, messages
-sent while busy join the running turn: verified on Claude Code 2.1.311), `mv/common.py` (paths, project, fonts,
-ffmpeg, encoders), `mv/claude.py` (the claude command and one
+sent while busy join the running turn; working while its agents or background commands run, and the turn it starts
+by itself when they end; its cost the latest result's running total: verified on Claude Code 2.1.311-2.1.312; see
+"Agents in a run"), `mv/common.py` (paths, project, fonts, ffmpeg, encoders, `scene_inputs`: what a Blender scene's
+render cache follows, `file_lock`), `mv/claude.py` (the claude command and one
 headless print-mode call: the story step, the critic; `kill_tree` stops a process with what it started,
 `pid_alive` is Windows-safe), `mv/renderlock.py` (the render queue), `mv/device.py` (GPU or CPU, one model at a time),
 `mv/listen.py` (the song kit's ears), `mv/songdoc.py` (its writers), `mv/curves.py` (frame curves, hits), `mv/web.py`

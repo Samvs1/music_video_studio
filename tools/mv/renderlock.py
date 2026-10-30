@@ -1,6 +1,6 @@
 """The render queue: one video render at a time on this machine.
 
-Parallel builders speed up thinking and coding, not rendering: two renders at once only share the same CPU (or GPU)
+Parallel agents speed up thinking and coding, not rendering: two renders at once only share the same CPU (or GPU)
 and both take twice as long. So every video render (web-engine/render.py, blender/run.py; not --still) takes a
 machine-wide lock first and waits its turn:
 
@@ -9,8 +9,8 @@ machine-wide lock first and waits its turn:
         ...render...
 
 The lock is a file, <studio>/cache/render.lock, created with os.open(O_CREAT | O_EXCL) (atomic on Windows and POSIX)
-and holding {pid, who, what, started, token}. `who` is MV_RENDER_WHO (the pipeline sets it: "builder s1", "pitch
-p2", ...). While it waits, it prints `waiting for the render queue: <who> (<what>) since <time>` at once and then
+and holding {pid, who, what, started, token}. `who` is MV_RENDER_WHO (the runner sets it: "the director", "pitch
+p2", ...; the plan tools add the segment). While it waits, it prints `waiting for the render queue: <who> (<what>) since <time>` at once and then
 every ~30 s. A lock is stale (taken over) when its process is gone (a render killed with its tree leaves the file
 behind), when it has been held for 6 h (a hung render doesn't block the machine for good), or when it shows no sign
 of life for 10 min (the holder touches the file every minute, so a pid that Windows gave to another process doesn't
@@ -126,7 +126,7 @@ def _since(d):
 
 
 def describe(d):
-    """'builder s1 (work/scenes/s1/scene.js -> ...) since 14:02:11' for a lock record."""
+    """'the director: s1 preview (work/scenes/s1/scene.js -> ...) since 14:02:11' for a lock record."""
     what = f" ({d['what']})" if d.get("what") else ""
     return f"{d.get('who') or 'a render'}{what} since {_since(d)}"
 

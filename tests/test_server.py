@@ -9,18 +9,18 @@ request) -> story: draft (stand-in Claude) and save -> the lyric timing editor's
 as it is; the song analysed again) -> lyrics placed where Whisper heard them (a stand-in transcription: the editor's
 align job, then plain-text lyrics analysed with it) -> a director run with live progress (its brief lists the pictures; the
 critic's notes on v1) -> the video (range request) -> "Ask the critic" (a critique job on v1, a bad video refused) -> notes
-(add, done, delete) -> a review round -> stopping a running director cleanly -> a pipeline run started from the
-Direct page's form in headless Chromium (the settings it sends and keeps; GET pipeline and session-log; the pipeline
-view while builders work and after the run: the stage bar, a card per session with its log, the critic's reports, the
-costs by role; '▶ play the scenes live' offered) -> live preview (GET live, the live server's URL space and what it
+(add, done, delete) -> a review round -> stopping a running director cleanly -> a run started from the Direct page's
+form in headless Chromium (one director: effort max by default, Ultracode, a cost cap; the settings it sends and
+keeps; the run view while the director's agent works: its line in the live log, the Agents list, '▶ play the scenes
+live' offered; after the run the Agents list, the costs per model and the total) -> live preview (GET live, the live server's URL space and what it
 refuses, a live note round-trip; the Watch page's live view playing the plan's scenes with the song in headless Chromium,
 the size picker, the sound delay, a stateful scene caught up after a seek, N for a live note) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
 tests/out/ui/; on the brief page a picture is added and named, on the song page the lyric timing editor opens, taps,
-undoes and closes, and aligns with Whisper; the Direct page has the critic select and the last run's pipeline, the
-Watch page the critic's box with its scores.
+undoes and closes, and aligns with Whisper; the Direct page has the critic select and the settings kept, the Watch
+page the critic's box with its scores.
 Exit code 0 = all passed.
 """
-import argparse, io, json, os, shutil, socket, subprocess, sys, time
+import argparse, io, json, os, re, shutil, socket, subprocess, sys, time
 
 import requests
 
@@ -182,7 +182,7 @@ def main():
         d = requests.get(f"{B}/api/p/{name}/director").json()
         say(d.get("state") == "stopped" and time.time() - t0 < 300, "the run stopped cleanly", f"{d.get('stop_reason')} after {time.time() - t0:.0f} s")
         os.remove(os.path.join(STUDIO, "projects", name, "FAKE_CLAUDE_SLOW"))
-        pipeline_check(B, name, out, browser=not a.no_browser)
+        direct_form_check(B, name, out, browser=not a.no_browser)
         live_check(B, name, out, browser=not a.no_browser)
         r = requests.get(B + "/api/doctor").json()
         say("Music Video Studio" in r.get("text", ""), "GET /api/doctor")
@@ -223,20 +223,24 @@ def critic_check(B, name, st, d):
     say("error" in r and "error" in r2, "POST critique refuses a video outside the project and an unknown version", f"{r.get('error')}; {r2.get('error')}")
 
 
-def pipeline_check(B, name, out, browser=True):
-    """A pipeline run started from the Direct page (the stand-in for Claude Code). Before it, the page shows the last
-    run (solo, stopped) as it always did. Its form sends the mode, the planner's effort, the builders (how many, model,
-    effort) and the critic to `studio.py direct`, and keeps them in project.json. While it runs, GET pipeline has the
-    stages, the sessions and the critic's reports, and the page's pipeline view (in headless Chromium) has the stage
-    bar and a card per session, with a builder's log opened and still open after the page refreshed; after it, every
-    stage done, the critic's reports (one opened), the costs by role. No JavaScript errors. session-log reads a
-    builder's log and refuses a path outside the sessions. The run delivers a version that passes the checks."""
+def direct_form_check(B, name, out, browser=True):
+    """A run started from the Direct page's form (the stand-in for Claude Code: a director that deploys an agent and
+    uses the plan tools). Before it, the page shows the last run (stopped) with its live log. The form has one
+    director: the budget, the model, the effort (max by default), the critic, Ultracode (off by default) and a cost cap;
+    it sends them to `studio.py direct` and keeps them in project.json. While the agent works the run view (in headless
+    Chromium) shows the live log with the agent's lines, the Agents list with it at work, and offers '▶ play the scenes
+    live'; afterwards the run's header says ultracode, the cap and the total, the Agents list has it done with its
+    duration, and the costs show per model (the director's, the agents', the critic's) with the total (GET director's
+    costs and total_usd: the session's cost plus the critic's). No JavaScript errors. The run delivers a version that
+    passes the checks."""
     shots = os.path.join(out, "ui")
     os.makedirs(shots, exist_ok=True)
+    pdir = os.path.join(STUDIO, "projects", name)
     pw = page = b = None
     errs = []
-    form = {"budget": "40", "mode": "pipeline", "model": "fake", "critic_model": "sonnet", "effort": "low", "planner_effort": "max",
-            "builders": "2", "builder_model": "", "builder_effort": "high"}
+    form = {"budget": "30", "model": "fake", "effort": "max", "critic_model": "sonnet", "ultracode": True, "max_usd": "25"}
+    flag = os.path.join(pdir, "FAKE_DIRECTOR")
+    open(flag, "w").write("agents")
     if browser:
         sys.path.insert(0, os.path.join(STUDIO, "tools"))
         from mv.web import launch
@@ -246,28 +250,25 @@ def pipeline_check(B, name, out, browser=True):
         page = b.new_page(viewport={"width": 1400, "height": 1000})
         page.on("pageerror", lambda e: errs.append(str(e)))
         page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
+    pjf = os.path.join(pdir, "project.json")
+    pj = json.load(open(pjf, encoding="utf-8"))           # what the pipeline's form saved on every start (effort "high")
+    pj["director"] = dict(pj.get("director") or {}, effort="high", mode="auto", builders="3", builder_effort="high")
+    pj["director"].pop("ultracode", None)
+    json.dump(pj, open(pjf, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     try:
         if page:
             page.goto(f"{B}/#{name}/direct")
             page.wait_for_selector("#dir-live .box", timeout=10000)
             live = page.inner_text("#dir-live")
-            say("stopped" in live and page.locator("#dir-live .stages").count() == 0 and page.locator("#dir-ev").count() == 1,
-                "UI: a solo run's view as before (its live log, no stage bar)", live.splitlines()[0][:80] if live else "empty")
-            page.fill("#d-budget", "30")
-            solo_hint = page.inner_text("#d-mode-hint")
+            defaults = (page.input_value("#d-effort"), page.is_checked("#d-ultra"), page.input_value("#d-cap"))
+            say("stopped" in live and page.locator("#dir-ev").count() == 1 and defaults == ("max", False, ""),
+                "UI: the Direct page: the last run's view (its live log); the form's defaults (effort max, Ultracode off, no cap; "
+                "an effort the old forms saved doesn't count)", f"{live.splitlines()[0][:80] if live else 'empty'}; defaults {defaults}")
             page.fill("#d-budget", form["budget"])
-            page.select_option("#d-mode", "pipeline")
             page.fill("#d-model", form["model"])
             page.select_option("#d-critic", form["critic_model"])
-            page.select_option("#d-effort", form["effort"])
-            page.select_option("#d-peffort", form["planner_effort"])
-            page.fill("#d-builders", form["builders"])
-            page.fill("#d-bmodel", form["builder_model"])
-            page.select_option("#d-beffort", form["builder_effort"])
-            pipe_hint = page.inner_text("#d-mode-hint")
-            say("runs solo" in solo_hint and "pipeline" in pipe_hint and "up to 2 builders" in pipe_hint
-                and page.locator("#d-solo.off").count() == 1, "UI: the Direct form says which mode a budget runs",
-                f"30 min auto: {solo_hint[:60]!r}; pipeline: {pipe_hint[:60]!r}")
+            page.check("#d-ultra")
+            page.fill("#d-cap", form["max_usd"])
             sent = []
 
             def no_nudge(route):                  # the stand-in would go round the final three more times
@@ -279,97 +280,69 @@ def pipeline_check(B, name, out, browser=True):
             page.wait_for_timeout(1500)
             page.unroute("**/api/p/*/direct")
             got = sent[0] if sent else {}
-            say(all(str(got.get(k)) == str(x) for k, x in form.items()), "UI: the Direct form sends the pipeline's settings",
-                str({k: got.get(k) for k in form}))
+            say(all(got.get(k) == x for k, x in form.items()), "UI: the Direct form sends one director's settings (the effort, "
+                "the critic, Ultracode, the cost cap)", str({k: got.get(k) for k in form}))
         else:
             requests.post(f"{B}/api/p/{name}/brief", json={"director": dict(form)})
             requests.post(f"{B}/api/p/{name}/direct", json=dict(form, nudge=False))
-        t0, seen, live_ok, p = time.time(), set(), None, {}
+        t0, live_ok, d = time.time(), None, {}
         while time.time() - t0 < 1500:
-            p = requests.get(f"{B}/api/p/{name}/pipeline").json()
             d = requests.get(f"{B}/api/p/{name}/director").json()
-            if p.get("run") == d.get("run") and d.get("mode") == "pipeline":
-                seen |= {x["stage"] for x in p.get("stages") or []}
-                working = [s for s in p.get("sessions") or [] if s.get("role") == "builder" and s.get("state") not in ("built", "failed", "skipped", "stopped", "queued")]
-                if page and live_ok is None and working:                     # the live view while builders work
-                    page.wait_for_selector(".scard .xp-l", timeout=10000)
-                    page.wait_for_timeout(2200)
-                    bar = page.inner_text("#dir-live .stages") if page.locator("#dir-live .stages").count() else ""
-                    now = page.inner_text(".stg.now") if page.locator(".stg.now").count() else ""
-                    cards = page.locator(".scard").count()
-                    link = page.locator(".scard .xp-l[data-xp^='log:work/pipeline/sessions']").first
-                    key = link.get_attribute("data-xp")
-                    link.click()
-                    page.wait_for_function("k => [...document.querySelectorAll('.xp-b')].some(e => e.dataset.xp === k && /session started/.test(e.innerText))", arg=key, timeout=10000)
-                    page.wait_for_timeout(4500)                               # the view is drawn again every 2 s
-                    kept = page.evaluate("k => [...document.querySelectorAll('.xp-b')].some(e => e.dataset.xp === k && e.style.display !== 'none' && /session started/.test(e.innerText))", key)
-                    page.screenshot(path=os.path.join(shots, "direct-pipeline-live.png"), full_page=True)
-                    say(page.locator("#dir-live a.lv-go").count() == 1, "UI: the Direct page offers '▶ play the scenes live' during a run")
-                    live_ok = bool(bar) and "Plan" in bar and "Final" in bar and bool(now) and cards >= 3 and kept
-                    say(live_ok, "UI: the pipeline's run view while builders work (the stage bar, a card per session, a builder's log kept open)",
-                        f"now: {now.splitlines()[0] if now else '-'}; {cards} cards; log kept open: {kept}")
-            if d.get("state") in ("done", "stopped", "error") and d.get("run") == p.get("run") and \
-                    not requests.get(f"{B}/api/p/{name}/job").json().get("running"):
+            working = [a for a in d.get("agents") or [] if a.get("state") == "running"]
+            if page and live_ok is None and working and d.get("state") == "running":     # the run view while the agent works
+                page.wait_for_function("() => /agent: build s3 \\(haiku\\) started/.test(($('#dir-ev') || {}).innerText || '')", timeout=15000)
+                page.wait_for_function("() => /build s3/.test(($('#dir-agents') || {}).innerText || '')", timeout=15000)
+                at_work = page.inner_text("#dir-agents")
+                page.screenshot(path=os.path.join(shots, "direct-agent-live.png"), full_page=True)
+                live_ok = page.locator("#dir-live a.lv-go").count() == 1 and "running" in at_work and "haiku" in at_work
+                say(live_ok, "UI: during a run, the live log shows the director's agent, the Agents list has it at work (its "
+                    "description, model, running, how long) and '▶ play the scenes live' is offered", at_work.replace("\n", " | ")[:200])
+            if d.get("state") in ("done", "stopped", "error") and not requests.get(f"{B}/api/p/{name}/job").json().get("running"):
                 break
             time.sleep(1)
-        d = requests.get(f"{B}/api/p/{name}/director").json()
-        p = requests.get(f"{B}/api/p/{name}/pipeline").json()
         st = requests.get(f"{B}/api/p/{name}").json()
-        ses = {s.get("name"): s for s in p.get("sessions") or []}
         v = next((x for x in st["versions"] if x.get("n") == d.get("version")), {})
-        say(d.get("state") == "done" and d.get("mode") == "pipeline" and bool(v.get("checks")) and all(x == "PASS" for x in v["checks"].values())
-            and [x["stage"] for x in p.get("stages") or []][:6] == ["plan", "gate", "build", "assemble", "revise", "final"],
-            "a pipeline run from the web app: all five stages, a version that passes the checks",
-            f"v{d.get('version')} {v.get('checks')}; stages {[x['stage'] for x in p.get('stages') or []]}; {d.get('stop_reason')}; {time.time() - t0:.0f} s")
-        cmd = json.load(open(os.path.join(STUDIO, "projects", name, "work", "director", f"run-{d.get('run')}", "command.json"), encoding="utf-8"))["cmd"]
-        eff = cmd[cmd.index("--effort") + 1] if "--effort" in cmd else None
-        b1 = ses.get("builder s1") or {}
-        pj = st["project"].get("director") or {}
-        say(eff == "max" and p.get("settings", {}).get("builders") == 2 and b1.get("model") == "fake" and b1.get("effort") == "high"
-            and b1.get("state") == "built" and (pj.get("mode"), pj.get("builders"), pj.get("planner_effort")) == ("pipeline", "2", "max"),
-            "the Direct form's settings reach the run (the planner's effort, the builders' count, model and effort) and are kept",
-            f"planner effort {eff}; settings {p.get('settings')}; builder s1 {b1.get('model')}/{b1.get('effort')} {b1.get('state')}; kept {pj}")
-        kinds = {c.get("kind") for c in p.get("critiques") or []}
-        urls = [p["gates"][0].get("url"), p["gates"][0].get("video_url"), b1.get("preview_url"), (b1.get("files") or {}).get("brief")] if p.get("gates") else []
-        say({"gate", "builder", "assemble", "final"} <= kinds and urls and all(u and requests.get(B + u).ok for u in urls)
-            and (p.get("costs") or {}).get("critic", 0) > 0 and any(x.get("url") for x in p.get("previews") or []),
-            "GET pipeline: the critic's reports at every gate, the costs by role, the files' URLs", f"critiques {sorted(map(str, kinds))}; costs {p.get('costs')}")
-        lg = requests.get(f"{B}/api/p/{name}/session-log", params={"log": b1.get("log", "")}).json()
-        bad = requests.get(f"{B}/api/p/{name}/session-log", params={"log": "work/pipeline/sessions/../../../tools/x/events.jsonl"})
-        say(any("session started" in x for x in lg.get("lines") or []) and bad.status_code == 400,
-            "GET session-log: a builder's log, readable; a path outside the sessions refused", f"{len(lg.get('lines') or [])} lines; {bad.json()}")
+        ag = (d.get("agents") or [{}])[0]
+        who = {r.get("name"): r.get("who") for r in d.get("costs") or []}
+        say(d.get("state") == "done" and bool(v.get("checks")) and all(x == "PASS" for x in v["checks"].values())
+            and ag.get("description") == "build s3" and ag.get("state") == "done" and (d.get("model_usage") or {}).get("claude-haiku-fake")
+            and os.path.exists(os.path.join(pdir, "work", "plan.json")),
+            "a run from the web app: the director's agent (in GET director: agents, model_usage), a version that passes the checks",
+            f"v{d.get('version')} {v.get('checks')}; agent {ag}; {d.get('stop_reason')}; {time.time() - t0:.0f} s")
+        say(who.get("haiku-fake") == "agents" and who.get("fake-agentdirector") == "the director"
+            and abs(float(d.get("total_usd") or 0) - float(d.get("cost_usd") or 0) - float(d.get("critic_cost_usd") or 0)) < 1e-6
+            and float(d.get("critic_cost_usd") or 0) > 0,
+            "GET director: the costs per model, labelled (the director's, its agents'), and the total with the critic's",
+            f"{d.get('costs')}; total {d.get('total_usd')} = {d.get('cost_usd')} + {d.get('critic_cost_usd')}")
+        cmd = json.load(open(os.path.join(pdir, "work", "director", f"run-{d.get('run')}", "command.json"), encoding="utf-8"))["cmd"]
+        tools = cmd[cmd.index("--allowedTools") + 1:cmd.index("--disallowedTools")]
+        kept = st["project"].get("director") or {}
+        say(cmd[cmd.index("--effort") + 1] == "max" and "Workflow" in tools and "Agent" in tools
+            and cmd[cmd.index("--max-budget-usd") + 1] == "25" and d.get("ultracode") is True and d.get("max_usd") == 25
+            and (kept.get("effort"), kept.get("ultracode"), kept.get("max_usd")) == ("max", True, "25")
+            and not {"mode", "builders", "builder_effort"} & set(kept),
+            "the Direct form's settings reach the run (effort max, Workflow for Ultracode, --max-budget-usd) and are kept "
+            "(the old pipeline's settings dropped)",
+            f"effort {cmd[cmd.index('--effort') + 1]}; tools {tools}; kept {kept}")
         if page:
             page.reload()
-            page.wait_for_selector("#dir-live .stages", timeout=10000)
+            page.wait_for_selector("#dir-live .box", timeout=10000)
             page.wait_for_timeout(1500)
-            done = page.locator(".stg.done").count()
-            rows = page.locator(".crit .crow").count()
-            costs = page.inner_text("#dir-live .costs") if page.locator("#dir-live .costs").count() else ""
-            page.locator(".crit .crow .xp-l").first.click()
-            page.wait_for_function("() => [...document.querySelectorAll('.crit .xp-b')].some(e => e.style.display !== 'none' && /Verdict/.test(e.innerText))", timeout=10000)
-            page.screenshot(path=os.path.join(shots, "direct-pipeline.png"), full_page=True)
-            say(done >= 6 and rows >= 5 and "builders" in costs and "total" in costs,
-                "UI: the pipeline's run view after the run (every stage done, the critic's reports with one opened, the costs by role)",
-                f"{done} stages done, {rows} critic rows; {costs.replace(chr(10), ' ')}")
-        # an interactive planner's gate after the run: state.json is its own now ("Your pipeline"), the run's view stays
-        r = subprocess.run([sys.executable, os.path.join(STUDIO, "tools", "studio.py"), "pipeline", "gate", name, "--model", "off"],
-                           cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=900)
-        p2 = requests.get(f"{B}/api/p/{name}/pipeline").json()
-        ok = r.returncode == 0 and p2.get("mode") == "interactive" and p2.get("stage") == "gate" and p2.get("state") == "done" \
-            and (p2.get("run_view") or {}).get("run") == d.get("run")
-        inter = ""
-        if page:
-            page.reload()
-            page.wait_for_selector("#pipe-live .box", timeout=10000)
-            inter = page.inner_text("#pipe-live")
-            ok = ok and "Your pipeline" in inter and page.locator("#dir-live .stages").count() == 1
-        say(ok, "an interactive planner's gate after the run: its own state.json, 'Your pipeline' on the Direct page, the run's view kept",
-            f"exit {r.returncode}; mode {p2.get('mode')} {p2.get('stage')} {p2.get('state')}; run view {(p2.get('run_view') or {}).get('run')}; "
-            f"{inter.splitlines()[0][:80] if inter else (r.stdout + r.stderr)[-300:]}")
-        if page:
-            say(not errs, "UI: the Direct page's pipeline view (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
+            head = page.inner_text("#dir-live .row")
+            page.screenshot(path=os.path.join(shots, "direct-after.png"), full_page=True)
+            say("ultracode" in head and "cap $25" in head and page.is_checked("#d-ultra") and page.input_value("#d-cap") == "25",
+                "UI: after the run, its header says ultracode and the cap; the form keeps the settings", head.replace("\n", " ")[:160])
+            agents, costs = page.inner_text("#dir-agents"), page.inner_text("#dir-costs")
+            total = re.search(r"total \$(\d+\.\d\d)", costs)
+            say(re.search(r"done\s*build s3\s*haiku\s*\d+m \d\ds", agents) is not None and "haiku-fake" in costs and "agents" in costs
+                and "the director" in costs and "the critic sonnet" in costs and total is not None
+                and abs(float(total.group(1)) - float(d.get("total_usd") or 0)) <= 0.0051 and f"${total.group(1)}" in head,
+                "UI: after the run, the Agents list (build s3, haiku, done, its duration) and the costs per model (the director's, "
+                "the agents', the critic's) with the total", (agents + " || " + costs).replace("\n", " | ")[:300])
+            say(not errs, "UI: the Direct page's form and run view (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
     finally:
+        if os.path.exists(flag):
+            os.remove(flag)
         if b:
             b.close()
         if pw:
@@ -741,9 +714,9 @@ def browser_pages(B, name, out):
             if h.endswith("/direct"):
                 say(page.locator("#d-critic option").count() == 4 and page.input_value("#d-critic") in ("sonnet", "fake"),
                     "UI: the Direct page's critic select", page.input_value("#d-critic"))
-                say(page.locator("#dir-live .stages").count() == 1 and page.input_value("#d-mode") == "pipeline"
-                    and page.input_value("#d-builders") == "2", "UI: the Direct page shows the last run's pipeline, with the settings kept",
-                    f"mode {page.input_value('#d-mode')}, builders {page.input_value('#d-builders')}")
+                say(page.locator("#dir-ev").count() == 1 and page.input_value("#d-effort") == "max" and page.is_checked("#d-ultra")
+                    and page.input_value("#d-cap") == "25", "UI: the Direct page shows the last run, with the settings kept",
+                    f"effort {page.input_value('#d-effort')}, ultracode {page.is_checked('#d-ultra')}, cap {page.input_value('#d-cap')}")
             if h.endswith("/song"):                               # add a picture through the page and name it
                 from PIL import Image
                 pic = os.path.join(out, "ui_ref.png")

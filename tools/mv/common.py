@@ -9,6 +9,7 @@ The project being worked on comes from MV_PROJECT (set by tools/studio.py). A pr
   review/        the user's notes (notes.json)
 """
 import glob, json, os, re, shutil, subprocess, time
+from contextlib import contextmanager
 
 STUDIO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the studio install
 TOOLS = os.path.join(STUDIO, "tools")
@@ -242,3 +243,69 @@ def frames_of(path):
 def newest(pattern):
     fs = glob.glob(pattern)
     return max(fs, key=os.path.getmtime) if fs else None
+
+
+@contextmanager
+def file_lock(path, wait=5.0, stale_s=30.0):
+    """A lock between processes for one bookkeeping file (path + ".lock", os.open O_CREAT | O_EXCL): the web app and
+    the director's runner both write review/notes.json, and the director and its agents render in processes of their
+    own (the plan tools' render record). A lock file older than stale_s is left over from a writer that was killed.
+    After `wait` s it goes on without the lock: a bookkeeping write never holds up the work."""
+    lk = path + ".lock"
+    os.makedirs(os.path.dirname(lk), exist_ok=True)
+    t0, fd = time.time(), None
+    while fd is None and time.time() - t0 < wait:
+        try:
+            fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except (FileExistsError, PermissionError):       # Windows says PermissionError while it is being removed
+            try:
+                if time.time() - os.path.getmtime(lk) > stale_s:
+                    os.remove(lk)
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.02)
+        except OSError:
+            break
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            for _ in range(20):
+                try:
+                    os.remove(lk)
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError:                          # Windows: someone is checking its age right now
+                    time.sleep(0.05)
+
+
+SHARED_CODE = (("work", "scenes", "lib"), ("work", "kit"))      # code and assets the director shares across scenes
+SKIP_DIRS = ("__pycache__", "node_modules", "renders", "eyes")
+SKIP_FILES = (".mp4", ".mov", ".mv.json", ".part", ".tmp", ".pyc", ".blend1")
+
+
+def tree_files(d, skip=()):
+    """Every file in a folder and below, but renders, eyes, caches, frame folders and the folders in `skip`."""
+    out, skip = [], {os.path.normcase(os.path.abspath(x)) for x in skip}
+    for root, dirs, fs in os.walk(d):
+        dirs[:] = [x for x in dirs if x not in SKIP_DIRS and not x.endswith((".frames", ".parts"))
+                   and os.path.normcase(os.path.abspath(os.path.join(root, x))) not in skip]
+        out += [os.path.join(root, f) for f in fs if not f.endswith(SKIP_FILES)]
+    return sorted(out)
+
+
+def scene_inputs(scene, project, skip=()):
+    """What a Blender scene's render depends on, besides the settings: its own folder (work/scenes/<name>/ with its
+    modules and assets; only the file itself when it lies loose in work/scenes/, work/ or the project), and the shared
+    code every scene may import (work/scenes/lib/, work/kit/: mvblend puts them on sys.path). A change in any of them
+    renders the scene again."""
+    project, scene = os.path.abspath(project), os.path.abspath(scene)
+    d = os.path.dirname(scene)
+    loose = os.path.normcase(d) in {os.path.normcase(os.path.join(project, *p)) for p in ((), ("work",), ("work", "scenes"))}
+    files = {scene} | (set() if loose else set(tree_files(d, skip)))
+    for p in SHARED_CODE:
+        files.update(tree_files(os.path.join(project, *p), skip))
+    return sorted(files)

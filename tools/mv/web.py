@@ -319,7 +319,7 @@ def scene_key(scene_path, project, cfg):
 def render_cfg(project, quality="final", scale=1.0, transparent=False, lossless=False, seed=1, width=None, height=None,
                fps=None):
     """The settings that decide a render's pixels (part of the cache key), as render() works them out:
-    (cfg, w, h, fps, jpeg). The pipeline uses it to tell whether a render is still current without rendering."""
+    (cfg, w, h, fps, jpeg). The plan tools use it to tell whether a render is still current without rendering."""
     d = delivery(jload(os.path.join(project, "project.json"), {}))
     fps = fps or d["fps"]
     w = int(round((width or d["width"]) * scale / 2)) * 2

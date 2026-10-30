@@ -14,19 +14,23 @@
  5. every check on the final MP4 must pass: spec (incl. the audio identical to the song), flashes, text, sync
  6. deliver (v1), the eyes tools, songq; the critic (stand-in Claude): a critique of the final (files, parsed scores, a
     prompt with the pictures, the craft rules and the user's avoid but not the director's report), deliver --critic
-    reusing it as final/critic_v1.md, an old Claude Code without --max-budget-usd, the lenient parser; the pipeline's
-    studio side (tools/pipeline.py): validate good and bad plans, render the segments (and again from the cache), the
-    cache key following a lib import, assemble a preview, the language gate, the render queue, eyes next to a segment
- 6d. the session plumbing (messages sent while a turn runs join it: one result, as on the real CLI) and the
-    pipeline's stages as a state machine on a simulated clock, every way out (in-process, stand-ins)
+    reusing it as final/critic_v1.md, an old Claude Code without --max-budget-usd, the lenient parser, the watcher
+    (what it critiques, and not a cut that has or is getting a critique); the plan tools (tools/plan.py): validate
+    good, old and bad plans, render the segments (and again from the cache), the cache key following a lib import,
+    assemble a preview (its cut marked pending while the critic looks), the render queue, eyes next to a segment;
+    Blender scenes importing shared code (work/scenes/lib/, work/kit/) and rendering again when it changes
+ 6d. the session plumbing (messages sent while a turn runs join it: one result, as on the real CLI; a background agent
+    keeps the session working, then it starts a turn of its own; the costs as running totals; the cost cap) and the
+    runner in-process (no reminder, nudge or closing while agents work; live notes; the cap; the run settings)
  7. the autonomous director runner end to end with a stand-in for Claude Code (tests/fake_claude.py: no usage spent;
-    the critic's notes reach the director as a message and the new version gets final/critic_vN.md), then a review
-    round (a note -> --revise -> the next version, the note marked done); then the pipeline end to end (--mode
-    pipeline: the planner, gate 1, two builders with their critic rounds, the assembled preview, the final, the
-    version delivered with every check passing) and `pipeline build` for an interactive planner
+    the critic's notes reach the director as a message and the new version gets final/critic_vN.md; the cost isn't
+    double-counted), then a review round (a note -> --revise -> the next version, the note marked done); then a
+    director that deploys an agent and uses the plan tools, with --ultracode and --max-usd (the runner waits for the
+    agent, the agent in status.json and the live log, the costs per model, the critic once per cut, a live note), and
+    `direct --dry-run` (the defaults: effort max, the agent tools, no Workflow, no cap)
 The project is projects/_smoke (internal, git-ignored); --keep leaves it for a look. Exit code 0 = everything passed.
 """
-import argparse, json, os, re, shutil, subprocess, sys, time, urllib.request
+import argparse, glob, json, os, re, shutil, subprocess, sys, time, urllib.request
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 STUDIO = os.path.dirname(TESTS)
@@ -234,11 +238,11 @@ def main():
         say("PASS" if r.returncode == 0 and ".png" in r.stdout else "FAIL", f"eyes.py {args[0]}", r.stdout.strip().splitlines()[-1][-90:] if r.stdout.strip() else r.stderr[-300:])
 
     critic_check(m)
-    pipeline_check(m)
+    plan_check(m)
+    blender_shared_check(a.no_blender)
     live_check(m)
     session_check()
-    pipeline_machine_check()
-    builder_failures_check()
+    runner_check()
 
     if not a.no_director:
         print("== 7. the director runner (stand-in for Claude Code)", flush=True)
@@ -256,6 +260,13 @@ def main():
         sent = [x["why"] for x in rs.get("messages_sent", [])]
         say("PASS" if len(rs.get("events", [])) >= 3 and "the brief" in sent else "FAIL", "live progress (status.json events)",
             f"{len(rs.get('events', []))} events; studio messages: {', '.join(sent)}")
+        res = [json.loads(x) for x in open(os.path.join(PDIR, cur["dir"], "events.jsonl"), encoding="utf-8")
+               if x.strip() and '"result"' in x]
+        res = [x for x in res if x.get("type") == "result"]
+        say("PASS" if res and rs.get("cost_usd") == res[-1]["total_cost_usd"] and rs.get("turns") == sum(x["num_turns"] for x in res)
+            and (len(res) == 1 or rs["cost_usd"] < round(sum(x["total_cost_usd"] for x in res), 4)) else "FAIL",
+            "the run's cost is the session's latest running total (not the sum of its results); its turns add up",
+            f"cost {rs.get('cost_usd')}; the results' totals {[x['total_cost_usd'] for x in res]}; turns {rs.get('turns')}")
         vn = last.get("version")
         pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
         vc = next((v.get("critic") for v in pj.get("versions") or [] if v.get("n") == vn), None) or {}
@@ -279,7 +290,8 @@ def main():
                                                      f"{all(n.get('done') for n in notes)}")
         files = sorted(f for f in os.listdir(os.path.join(PDIR, "final")) if f.endswith(".mp4"))
         say("PASS" if sum(f.startswith("music-video_v") for f in files) >= 3 else "FAIL", "earlier versions kept", ", ".join(files))
-        pipeline_run_check(env)
+        agents_run_check(env)
+        flags_check()
     return finish(a, t_start)
 
 
@@ -342,84 +354,85 @@ def critic_check(m):
     watcher_check()
 
 
-def pipeline_check(m):
-    """The pipeline's studio side (tools/pipeline.py) on a plan of three segments (copies of tests/scenes/field.js in
-    their own folders, the middle one the hero, importing a shared lib) and the lyrics overlay: validate (the good
-    plan; gaps, overlaps, a bad id, a missing scene, a range outside the song, a scene outside its folder), render at
-    preview size and again from the cache, the cache key (a lib change renders the segment that imports it again, a
-    sibling's change doesn't), assemble a preview (with the stand-in critic), the language gate (eyes next to the
-    segment, the style frame shown to the critic), the render queue (a held queue makes a render wait; MV_RENDER_LOCK=0
-    doesn't), the status."""
-    print("== 6c. the pipeline (stand-in for Claude Code)", flush=True)
+def plan_check(m):
+    """The plan tools (tools/plan.py) on a plan of three segments (copies of tests/scenes/field.js in their own
+    folders, the middle one importing the shared code in work/scenes/lib/) and the lyrics overlay: validate (the good
+    plan; a plan from the stage machine, with its stage, hero, owners, statuses and briefs, reads as it is; gaps,
+    overlaps, a bad id, a range outside the song, a scene outside its folder; a scene not written yet is no error),
+    render at preview size and again from the cache, the cache key (a lib change renders the segment that imports it
+    again, a sibling's change doesn't), assemble a preview (with the stand-in critic; its cut marked pending only
+    while it works), a segment without a scene (a slate in a preview; the final refuses before rendering), the render
+    queue, the status."""
+    print("== 6c. the plan tools (stand-in for Claude Code)", flush=True)
     sys.path.insert(0, os.path.join(STUDIO, "tools"))
-    import pipeline
+    import plan as plans
+    import critic
     fake = {"MV_CLAUDE": os.path.join(TESTS, "fake_claude.py")}
     sd = os.path.join(PDIR, "work", "scenes")
     for sid in ("s1", "s2", "s3", "type", "lib"):
         os.makedirs(os.path.join(sd, sid), exist_ok=True)
     for sid in ("s1", "s3"):
         shutil.copyfile(os.path.join(TESTS, "scenes", "field.js"), os.path.join(sd, sid, "scene.js"))
-    open(os.path.join(sd, "s2", "scene.js"), "wb").write(b'import { LOOK } from "../lib/look.js";   // the shared language\n'
+    open(os.path.join(sd, "s2", "scene.js"), "wb").write(b'import { LOOK } from "../lib/look.js";   // the shared look\n'
                                                          + open(os.path.join(TESTS, "scenes", "field.js"), "rb").read())
-    open(os.path.join(sd, "lib", "look.js"), "wb").write(b'// the shared visual language (smoke test)\nexport const LOOK = {ink: "#e9e4d8"};\n')
+    open(os.path.join(sd, "lib", "look.js"), "wb").write(b'// the shared look (smoke test)\nexport const LOOK = {ink: "#e9e4d8"};\n')
     shutil.copyfile(os.path.join(TESTS, "scenes", "lyrics.html"), os.path.join(sd, "type", "type.html"))
-    os.makedirs(os.path.join(PDIR, "work", "style-frames"), exist_ok=True)
-    from PIL import Image
-    Image.new("RGB", (320, 180), (16, 20, 24)).save(os.path.join(PDIR, "work", "style-frames", "a.png"))
     bars = [b["t"] for b in m["bars"]]
     c1, c2, dur = round(bars[len(bars) // 3], 3), round(bars[2 * len(bars) // 3], 3), m["duration"]
-    seg = lambda sid, a, b, owner, status: {"id": sid, "name": f"{sid} (smoke)", "from": a, "to": b, "renderer": "web",  # noqa: E731
-                                            "scene": f"work/scenes/{sid}/scene.js", "owner": owner, "brief": "the field",
-                                            "enter": "the field", "exit": "the field", "moments": [], "status": status}
-    good = {"stage": "planned", "hero": "s2", "lib": "work/scenes/lib/", "style_frames": ["work/style-frames/a.png"],
-            "rules": "marks on a dark field; every downbeat re-deals them",
-            "segments": [seg("s1", 0.0, c1, "builder", "built"), seg("s2", c1, c2, "planner", "drafted"),
-                         seg("s3", c2, dur, "builder", "built")],
-            "overlays": [{"id": "type", "scene": "work/scenes/type/type.html", "transparent": True, "owner": "planner",
-                          "brief": "the sung lines on plates"}]}
+    seg = lambda sid, a, b: {"id": sid, "name": f"{sid} (smoke)", "from": a, "to": b, "renderer": "web",  # noqa: E731
+                             "scene": f"work/scenes/{sid}/scene.js"}
+    good = {"segments": [seg("s1", 0.0, c1), seg("s2", c1, c2), seg("s3", c2, dur)],
+            "overlays": [{"id": "type", "name": "the sung lines", "scene": "work/scenes/type/type.html", "transparent": True}]}
     plan_p = os.path.join(PDIR, "work", "plan.json")
     json.dump(good, open(plan_p, "w", encoding="utf-8"), indent=1)
-    r = studio("pipeline", "validate", P, check=False)
-    v = pipeline.validate(PDIR)
-    say("PASS" if r.returncode == 0 and v["ok"] and not v["warnings"] and "valid (stage planned)" in r.stdout else "FAIL",
-        "pipeline validate: a good plan (3 segments on downbeats + an overlay)", r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stderr[-300:])
+    r = studio("plan", "validate", P, check=False)
+    v = plans.validate(PDIR)
+    old = dict(good, stage="planned", hero="s2", lib="work/scenes/lib/", style_frames=["work/style-frames/gone.png"],
+               rules="marks on a dark field", segments=[dict(x, owner="builder", status="built", brief="b", enter="e", exit="x",
+                                                             moments=["1:0 x"]) for x in good["segments"]])
+    vo = plans.validate(PDIR, plan=old)
+    say("PASS" if r.returncode == 0 and v["ok"] and not v["warnings"] and "plan.json: valid · 3 segments + 1 overlay" in r.stdout
+        and vo["ok"] and not vo["warnings"] else "FAIL",
+        "plan validate: a good plan (3 segments on downbeats + an overlay); a plan from the stage machine reads as it is",
+        (r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stderr[-300:]) + f"; the old one: {vo['errors'] + vo['warnings']}")
 
     def bad(fn):
         p = json.loads(json.dumps(good))
         fn(p)
-        return pipeline.validate(PDIR, plan=p)
+        return plans.validate(PDIR, plan=p)
     cases = [("a gap", lambda p: p["segments"][1].update({"from": c1 + 1.0}), "a gap before it"),
              ("an overlap", lambda p: p["segments"][1].update({"from": c1 - 1.0}), "overlaps s1"),
              ("a bad id", lambda p: p["segments"][0].update({"id": "Intro 1"}), "id is 'Intro 1'"),
-             ("a missing scene", lambda p: p["segments"][1].update({"scene": "work/scenes/s2/missing.js"}), "doesn't exist"),
              ("a range outside the song", lambda p: p["segments"][2].update({"to": dur + 5}), "but the song is"),
-             ("a scene outside its folder", lambda p: p["segments"][0].update({"scene": "work/scenes/s3/scene.js"}), "its own folder"),
-             ("an unknown hero", lambda p: p.update({"hero": "s9"}), "isn't one of the segments")]
+             ("a scene outside its folder", lambda p: p["segments"][0].update({"scene": "work/scenes/s3/scene.js"}), "its own folder")]
     got = {name: bad(fn) for name, fn, _ in cases}
     miss = [name for name, _, want in cases if got[name]["ok"] or not any(want in e for e in got[name]["errors"])]
+    unwritten = bad(lambda p: p["segments"][1].update({"scene": "work/scenes/s2/missing.js"}))
     json.dump(dict(good, segments=[good["segments"][0], dict(good["segments"][1], **{"from": c1 + 1.0}), good["segments"][2]]),
               open(plan_p, "w", encoding="utf-8"))
-    r = studio("pipeline", "validate", P, check=False)
-    open(plan_p, "w", encoding="utf-8").write('{"stage": "planned", "segments": [}')
-    r2 = studio("pipeline", "validate", P, check=False)
+    r = studio("plan", "validate", P, check=False)
+    open(plan_p, "w", encoding="utf-8").write('{"segments": [}')
+    r2 = studio("plan", "validate", P, check=False)
     json.dump(good, open(plan_p, "w", encoding="utf-8"), indent=1)
     say("PASS" if not miss and r.returncode == 1 and "NOT valid" in r.stdout and f"Set s2.from to {c1:g}" in r.stdout
-        and r2.returncode == 1 and "isn't valid JSON at line 1" in r2.stdout else "FAIL",
-        "pipeline validate: bad plans are refused with what to change (" + ", ".join(n for n, _, _ in cases) + ", broken JSON)",
-        f"missed: {miss}; " + " | ".join(next((e for e in got[n]["errors"]), "-")[:70] for n, _, _ in cases[:2]))
+        and r2.returncode == 1 and "isn't valid JSON at line 1" in r2.stdout and unwritten["ok"]
+        and not next(x for x in unwritten["items"] if x["id"] == "s2")["exists"] else "FAIL",
+        "plan validate: bad plans are refused with what to change (" + ", ".join(n for n, _, _ in cases) + ", broken JSON); "
+        "a scene not written yet is no error", f"missed: {miss}; " + " | ".join(next((e for e in got[n]["errors"]), "-")[:70] for n, _, _ in cases[:2]))
     t0 = time.time()
-    r = studio("pipeline", "render", P, "--preview", check=False)
+    r = studio("plan", "render", P, "--preview", check=False)
     t_render = time.time() - t0
     t0 = time.time()
-    r2 = studio("pipeline", "render", P, "--preview", check=False)
+    r2 = studio("plan", "render", P, "--preview", check=False)
     say("PASS" if r.returncode == 0 and "4 rendered, 0 unchanged" in r.stdout and r2.returncode == 0 and "0 rendered, 4 unchanged" in r2.stdout
         and all(os.path.exists(os.path.join(PDIR, "work", "segments", s, f"{s}_preview.mp4")) for s in ("s1", "s2", "s3"))
-        and os.path.isdir(os.path.join(PDIR, "work", "segments", "type", "type_preview")) and time.time() - t0 < 30 else "FAIL",
-        "pipeline render --preview: each segment over its own range, the overlay as a transparent pass; again: all from the cache",
+        and os.path.isdir(os.path.join(PDIR, "work", "segments", "type", "type_preview")) and time.time() - t0 < 30
+        and os.path.exists(plans.renders_path(PDIR)) else "FAIL",
+        "plan render --preview: each segment over its own range, the overlay as a transparent pass; again: all from the cache",
         f"{t_render:.0f} s, then {time.time() - t0:.1f} s; " + (r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr[-400:]))
-    v = pipeline.validate(PDIR)
+    v = plans.validate(PDIR)
     its = {x["id"]: x for x in v["items"]}
-    cur = lambda: {k: pipeline.current(PDIR, its[k], "preview")[0] for k in ("s1", "s2", "s3")}   # noqa: E731
+    cur = lambda: {k: plans.current(PDIR, its[k], "preview")[0] for k in ("s1", "s2", "s3")}   # noqa: E731
     lib, s3 = os.path.join(sd, "lib", "look.js"), os.path.join(sd, "s3", "scene.js")
     keep_lib, keep_s3 = open(lib, "rb").read(), open(s3, "rb").read()
     open(lib, "ab").write(b"// the lib changed\n")
@@ -432,54 +445,60 @@ def pipeline_check(m):
     say("PASS" if after_lib == {"s1": True, "s2": False, "s3": True} and after_s3 == {"s1": True, "s2": True, "s3": False}
         and all(back.values()) else "FAIL", "the render cache follows imports: a lib change renders the segment that imports "
         "it again, a sibling segment's change doesn't", f"lib changed: {after_lib}; s3 changed: {after_s3}; restored: {back}")
-    r = studio("pipeline", "assemble", P, "--preview", "--critic-model", "fake", check=False, env=fake)
+    r = studio("plan", "assemble", P, "--preview", "--critic-model", "fake", check=False, env=fake)
     vid = (re.findall(r"-> (work/previews/preview_\d+\.mp4)\s*$", r.stdout, re.M) or [None])[-1]
     from mv.common import frames_of
     n = frames_of(os.path.join(PDIR, vid)) if vid else None
     stem = os.path.splitext(os.path.basename(vid or "x"))[0]
     fps = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))["format"]["fps"]
     n_song = int(round(json.load(open(os.path.join(PDIR, "song", "frames.json")))["duration"] * fps))
+    full = os.path.join(PDIR, vid) if vid else None
+    found = critic.find(PDIR, vid, os.path.getsize(full), os.path.getmtime(full)) if vid else None
+    left = glob.glob(os.path.join(PDIR, "work", "critic", "pending", "*.json"))
     say("PASS" if r.returncode == 0 and vid and n == n_song
         and "(stream copy) + 1 overlay" in r.stdout and os.path.exists(os.path.join(PDIR, "work", "eyes", stem, "index.md"))
-        and os.path.exists(os.path.join(PDIR, "work", "critic", f"{stem}_01.md")) and "the joins" in
-        open(os.path.join(PDIR, "work", "critic", "last-prompt.md"), encoding="utf-8").read() else "FAIL",
-        "pipeline assemble --preview: segments joined (stream copy), the type layered, the song muxed; eyes; the critic on the film",
-        f"{vid}: {n} frames" if vid else (r.stdout + r.stderr)[-800:])
+        and found and "the joins" in open(os.path.join(PDIR, "work", "critic", "last-prompt.md"), encoding="utf-8").read()
+        and not left and not critic.is_pending(PDIR, vid, os.path.getsize(full), os.path.getmtime(full)) else "FAIL",
+        "plan assemble --preview: segments joined (stream copy), the type layered, the song muxed; eyes; the critic on the "
+        "film (critic.find has it; no pending marker left)", f"{vid}: {n} frames; critique {found and found.get('file')}; "
+        f"markers left {len(left)}" if vid else (r.stdout + r.stderr)[-800:])
+    # the pending marker: there while a critique is made (this process), gone after; a dead process's is cleared
+    with critic.pending(PDIR, full):
+        during = critic.is_pending(PDIR, vid, os.path.getsize(full), os.path.getmtime(full))
+    after = critic.is_pending(PDIR, vid, os.path.getsize(full), os.path.getmtime(full))
+    dead = subprocess.Popen([PY, "-c", "pass"])
+    dead.wait()
+    stale = os.path.join(PDIR, "work", "critic", "pending", "stale.json")
+    json.dump({"video": vid, "size": os.path.getsize(full), "mtime": os.path.getmtime(full), "pid": dead.pid, "at": time.time()},
+              open(stale, "w"))
+    gone = not critic.is_pending(PDIR, vid, os.path.getsize(full), os.path.getmtime(full)) and not os.path.exists(stale)
+    say("PASS" if during and not after and gone else "FAIL", "the critic's pending marker: there while a critique of that cut "
+        "is made, gone after; a dead process's marker is cleared", f"during {during}, after {after}, a dead one cleared {gone}")
     os.replace(s3, s3 + ".off")                    # s3 not written yet: a slate in a preview; the final says no at once
-    json.dump(dict(good, segments=good["segments"][:2] + [dict(good["segments"][2], status="todo")]), open(plan_p, "w", encoding="utf-8"))
-    rf = studio("pipeline", "assemble", P, "--final", check=False)
-    r = studio("pipeline", "assemble", P, "--preview", "--no-critic", "--no-look", check=False)
+    rf = studio("plan", "assemble", P, "--final", check=False)
+    r = studio("plan", "assemble", P, "--preview", "--no-critic", "--no-look", check=False)
     os.replace(s3 + ".off", s3)
-    json.dump(good, open(plan_p, "w", encoding="utf-8"), indent=1)
     vid2 = (re.findall(r"-> (work/previews/preview_\d+\.mp4)\s*$", r.stdout, re.M) or [None])[-1]
     say("PASS" if rf.returncode == 1 and "no scene yet for s3" in rf.stdout and "render (" not in rf.stdout and r.returncode == 0
         and "s3 is a labelled slate" in r.stdout and vid2 and frames_of(os.path.join(PDIR, vid2)) == n_song else "FAIL",
-        "a segment not built yet: a labelled slate in a preview; the final refuses before rendering anything",
+        "a segment not written yet: a labelled slate in a preview; the final refuses before rendering anything",
         (rf.stdout.strip().splitlines() or ["-"])[-1][:120] + " | " + (r.stdout.strip().splitlines() or ["-"])[-1][:100])
-    r = studio("pipeline", "gate", P, "--model", "fake", check=False, env=fake)
-    st = json.load(open(os.path.join(PDIR, "work", "pipeline", "state.json"), encoding="utf-8"))
-    g = (st.get("gates") or [{}])[-1]
-    prompt = open(os.path.join(PDIR, "work", "critic", "last-prompt.md"), encoding="utf-8").read()
-    say("PASS" if r.returncode == 0 and g.get("file") and os.path.exists(os.path.join(PDIR, g["file"])) and g.get("scores")
-        and os.path.exists(os.path.join(PDIR, "work", "segments", "s2", "eyes", "s2_preview", "index.md"))
-        and "`work/style-frames/a.png`" in prompt and "strong and specific enough to hand to builders" in prompt
-        and "work/segments/s2/eyes/s2_preview/" in prompt else "FAIL",
-        "pipeline gate: the critic on the hero's preview + the style frames; the segment's eyes next to it", f"{g.get('file')} {g.get('scores')}")
     import eyes
     scratch = os.path.join(PDIR, "cache", "_eyes")                  # (not the project's own work/pitches: no stray round)
     pv = eyes.out_dir(os.path.join(scratch, "work", "pitches", "round-1", "p2", "proof.mp4"))
+    sv = eyes.out_dir(os.path.join(PDIR, "work", "segments", "s2", "s2_preview.mp4"))
     fv = eyes.out_dir(os.path.join(PDIR, "final", "music-video.mp4"))
     shutil.rmtree(scratch, ignore_errors=True)
     say("PASS" if os.path.normcase(pv) == os.path.normcase(os.path.join(scratch, "work", "pitches", "round-1", "p2", "eyes", "proof"))
+        and os.path.normcase(sv) == os.path.normcase(os.path.join(PDIR, "work", "segments", "s2", "eyes", "s2_preview"))
         and os.path.normcase(fv) == os.path.normcase(os.path.join(PDIR, "work", "eyes", "music-video")) else "FAIL",
-        "eyes out_dir: a pitch's proof keeps its eyes in its pitch folder, the final in work/eyes/", f"{pv}; {fv}")
+        "eyes out_dir: a segment's and a pitch's proof keep their eyes in their own folder, the final in work/eyes/", f"{sv}; {pv}; {fv}")
     queue_check()
-    r = studio("pipeline", "status", P, check=False)
-    r2 = studio("pipeline", "build", P, check=False)
-    say("PASS" if r.returncode == 0 and "render queue: free" in r.stdout and "preview ✓" in r.stdout and "gate language" in r.stdout
-        and "the final render: about" in r.stdout and r2.returncode == 0 and "nothing to build" in r2.stdout else "FAIL",
-        "pipeline status (segments, gates, the final's estimate, the render queue); build with every segment built: nothing to do",
-        " | ".join(x for x in r.stdout.splitlines() if x.startswith(("the final", "render queue", "gate"))))
+    r = studio("plan", "status", P, check=False)
+    say("PASS" if r.returncode == 0 and "render queue: free" in r.stdout and "preview ✓" in r.stdout and "the final render: about" in r.stdout
+        and re.search(r"preview work/previews/preview_\d+\.mp4 .* critic ambition 6", r.stdout) else "FAIL",
+        "plan status (the items' renders, the previews with the critic's scores, the final's estimate, the render queue)",
+        " | ".join(x for x in r.stdout.splitlines() if x.startswith(("the final", "render queue", "preview "))))
 
 
 def live_check(m):
@@ -776,13 +795,62 @@ def watcher_check():
         and c.done == ["final/music-video.mp4"] and e.done == [] and gave_way and f.done == ["final/music-video.mp4"] else "FAIL",
         "the critic watcher: the final first (and the reserved slot), the newer preview after it, none too late or while stopping, "
         "a running preview critique gives way to a new final", f"{a.done} {b.done} {c.done} {e.done} {f.done} gave way: {bool(gave_way)}")
+    # a cut that has a critique already (`plan assemble` made one) isn't critiqued again; one that is being made
+    # (its pending marker) waits, and is critiqued after all when the other one gave up without a critique
+    import critic
+    p2, p3 = os.path.join(d, "work", "previews", "preview_2.mp4"), os.path.join(d, "work", "previews", "preview_3.mp4")
+    for f, dt in ((p2, 30), (p3, 40)):
+        open(f, "wb").write(b"y" * 120)
+        os.utime(f, (started + dt, started + dt))
+    os.makedirs(os.path.join(d, "work", "critic"), exist_ok=True)
+    json.dump({"video": "work/previews/preview_2.mp4", "size": 120, "mtime": started + 30, "scores": {"ambition": 5},
+               "file": "work/critic/preview_2_01.md"}, open(os.path.join(d, "work", "critic", "preview_2_01.json"), "w"))
+    g = W(d, started, "fake", "medium", most=6)
+    g.done, g.handled = [], {g.key(fin), g.key(prev)}
+    with critic.pending(d, p3):
+        for i in range(3):
+            g.poll(2000.0 + 5 * i)
+            time.sleep(0.05)
+        while_pending = list(g.done)
+    for i in range(3, 5):
+        g.poll(2000.0 + 5 * i)
+        time.sleep(0.05)
+    seen = g.take()
+    say("PASS" if while_pending == [] and g.done == ["work/previews/preview_3.mp4"] and g.key(p2) in g.handled
+        and [(x.get("video"), x.get("seen")) for x in seen] == [("work/previews/preview_2.mp4", True)] else "FAIL",
+        "the critic watcher: a cut with a critique already (plan assemble's) isn't critiqued again but goes to the runner "
+        "for the run's record (marked seen); one being made waits for it (and is critiqued after all when that one left "
+        "none)", f"while pending {while_pending}; after {g.done}; handed on {[(x.get('video'), x.get('seen')) for x in seen]}")
+    # an older preview still waiting isn't critiqued after a newer cut has its critique (or is getting one) elsewhere
+    json.dump({"video": "work/previews/preview_3.mp4", "size": 120, "mtime": started + 40, "scores": {"ambition": 6},
+               "file": "work/critic/preview_3_01.md"}, open(os.path.join(d, "work", "critic", "preview_3_01.json"), "w"))
+    h = W(d, started, "fake", "medium", most=6)
+    h.done, h.handled = [], {h.key(fin)}
+    for i in range(3):
+        h.poll(3000.0 + 5 * i)
+        time.sleep(0.05)
+    k = W(d, started, "fake", "medium", most=6)     # the same with the newer one still being critiqued
+    k.done, k.handled = [], {k.key(fin), k.key(p2), k.key(p3)}
+    p4 = os.path.join(d, "work", "previews", "preview_4.mp4")
+    open(p4, "wb").write(b"z" * 130)
+    os.utime(p4, (started + 50, started + 50))
+    with critic.pending(d, p4):
+        for i in range(3):
+            k.poll(4000.0 + 5 * i)
+            time.sleep(0.05)
+    say("PASS" if h.done == [] and h.key(prev) in h.handled and k.done == [] and k.key(prev) in k.handled else "FAIL",
+        "the critic watcher: an older preview still waiting is passed over once a newer cut has a critique, or is getting "
+        "one, elsewhere", f"done {h.done} / {k.done}; passed over {h.key(prev) in h.handled} / {k.key(prev) in k.handled}")
 
 
 def session_check():
     """The session plumbing (mv/session.py) with the stand-in, which answers like the real CLI (verified on Claude
-    Code 2.1.311): messages sent while a turn runs join it (one result for all of them); a message to an idle session
-    starts a turn of its own."""
-    print("== 6d. the session plumbing and the pipeline's stages (stand-ins)", flush=True)
+    Code 2.1.311-2.1.312): messages sent while a turn runs join it (one result for all of them); a message to an idle
+    session starts a turn of its own; a background agent keeps the session working after its turn ended (no turn is
+    over then, and its progress is a sign of life), then the session starts a turn of its own; every turn starts with
+    an init but only the first is "session started"; the cost is the latest result's running total (not a sum), the
+    turns add up; a result over the --max-budget-usd cap says so."""
+    print("== 6d. the session plumbing (stand-ins)", flush=True)
     sys.path.insert(0, os.path.join(STUDIO, "tools"))
     import mv.session as ms
     from mv.session import Session
@@ -793,7 +861,7 @@ def session_check():
     cmd = [PY, os.path.join(TESTS, "fake_claude.py"), "-p", "--input-format", "stream-json", "--output-format", "stream-json"]
     s = Session(cmd, PDIR, d, name="echo", env=dict(os.environ, FAKE_ECHO_S="2", PYTHONIOENCODING="utf-8")).start()
 
-    def wait_turn(most=30):
+    def wait_turn(s, most=30):
         t0 = time.time()
         while time.time() - t0 < most and not s.turn_over():
             time.sleep(0.2)
@@ -802,7 +870,7 @@ def session_check():
     time.sleep(0.5)
     s.send("two", "second")
     s.send("three", "third")
-    over1 = wait_turn()
+    over1 = wait_turn(s)
     n1 = len(s.results)
     time.sleep(2.5)
     n1b = len(s.results)
@@ -813,7 +881,7 @@ def session_check():
     s.send("four", "fourth")
     busy = s.busy
     fresh = s.quiet() < 1 and not s.hung(time.time(), 2)
-    over2 = wait_turn()
+    over2 = wait_turn(s)
     n2 = len(s.results)
     s.ack()
     ms.CROSS_S, ms.CROSS_SETTLE_S = 10.0, 6.0      # a message that went in just before the result: wait for its own turn
@@ -825,7 +893,7 @@ def session_check():
         time.sleep(0.1)
     t_res = time.time()
     early = s.turn_over(t_res + 3)
-    over3 = wait_turn()
+    over3 = wait_turn(s)
     late = time.time() - t_res >= 5
     ms.CROSS_S, ms.CROSS_SETTLE_S = keep_cross
     s.ack()
@@ -837,16 +905,65 @@ def session_check():
         "an idle wait before a message isn't 'no sign of life'; a message just before a result waits for a turn of its own",
         f"results after the first turn {n1} (then {n1b}), joined {joined}, after the fourth {n2}; quiet at once {fresh}; "
         f"crossed: over at +3 s {early}, then {over3} after {late and '>= 5 s'}; alive {s.alive()}")
+    # a background agent: the turn ends while it works; the session is working, no turn is over, its progress is a sign
+    # of life; then the turn the session starts by itself; the costs as running totals
+    d2 = os.path.join(PDIR, "cache", "_session_agent")
+    shutil.rmtree(d2, ignore_errors=True)
+    s = Session(cmd, PDIR, d2, name="echo", env=dict(os.environ, FAKE_ECHO_S="1", FAKE_AGENT_S="5", PYTHONIOENCODING="utf-8")).start()
+    s.send("<!-- mv:echo-agent --> go", "first")
+    t0 = time.time()
+    while time.time() - t0 < 30 and not s.results:
+        time.sleep(0.1)
+    time.sleep(2.5)                                # the turn is 2.5 s over, its agent still works
+    mid = {"results": len(s.results), "busy": s.busy, "working": s.working, "over": s.turn_over(), "hung": s.hung(time.time(), 0.9),
+           "agents": [(a["description"], a["model"], a["state"]) for a in s.status["agents"]]}
+    over = wait_turn(s, 40)
+    st = s.status
+    evs = [e["text"] for e in st["events"]]
+    s.stop("the test is done", wait=10)
+    s.finish()
+    raw = [json.loads(x) for x in open(os.path.join(d2, "events.jsonl"), encoding="utf-8") if x.strip()]
+    res = [e for e in raw if e.get("type") == "result"]
+    inits = sum(1 for e in raw if e.get("type") == "system" and e.get("subtype") == "init")
+    a = (st.get("agents") or [{}])[0]
+    ok_agent = (mid["results"] == 1 and not mid["busy"] and mid["working"] and not mid["over"] and not mid["hung"]
+                and mid["agents"] == [("echo agent", "haiku", "running")] and over and len(res) == 2 and inits == 2
+                and sum("session started" in x for x in evs) == 1 and any("started a turn of its own (its agent finished)" in x for x in evs)
+                and any(x.startswith("🤖 agent: echo agent (haiku) started") for x in evs)
+                and any(x.startswith("🤖 agent: echo agent (haiku) done in") for x in evs)
+                and a.get("state") == "done" and a.get("ended") is not None and a["ended"] >= a["started"]
+                and st["cost_usd"] == res[-1]["total_cost_usd"] < sum(r["total_cost_usd"] for r in res)
+                and st["turns"] == sum(r["num_turns"] for r in res)
+                and set(st["model_usage"]) == {"fake-echo", "claude-haiku-fake"})
+    say("PASS" if ok_agent else "FAIL", "a background agent: the turn ends while it works (working, no turn over, its progress a "
+        "sign of life), then the session's own turn; the agent in status and the live log; 'session started' once; the cost "
+        "is the latest running total, the turns add up, the costs per model", f"mid {mid}; {len(res)} results, {inits} inits; "
+        f"cost {st['cost_usd']} (results {[r['total_cost_usd'] for r in res]}); turns {st['turns']}; agent {a}")
+    # the cost cap: the turn that goes past it says so
+    d3 = os.path.join(PDIR, "cache", "_session_cap")
+    shutil.rmtree(d3, ignore_errors=True)
+    s = Session(cmd + ["--max-budget-usd", "0.015"], PDIR, d3, name="echo", env=dict(os.environ, FAKE_ECHO_S="0.2",
+                                                                                    PYTHONIOENCODING="utf-8")).start()
+    s.send("<!-- mv:echo --> one", "first")
+    first_hit = wait_turn(s) and s.status.get("budget_hit")
+    s.ack()
+    s.send("two", "second")
+    wait_turn(s)
+    s.stop("the test is done", wait=10)
+    s.finish()
+    say("PASS" if not first_hit and s.status.get("budget_hit") and any("cost cap" in e["text"] for e in s.status["events"]) else "FAIL",
+        "the cost cap (--max-budget-usd): the result that goes past it marks the session (budget_hit)",
+        f"after the first turn {first_hit}, after the second {s.status.get('budget_hit')}; ${s.status.get('cost_usd')}")
 
 
 class FakeSession:
-    """The planner for the stage checks: the test says when it ends a turn (over()), and reads what it was sent."""
+    """The director for the runner's checks: the test says when it ends a turn (over()), and reads what it was sent."""
 
     def __init__(self):
         import threading
-        self.name, self.lock, self.closed, self.busy, self.returncode = "planner", threading.RLock(), False, False, None
-        self.status = {"events": [], "turns": 0, "cost_usd": 0.0, "messages_sent": [], "pid": 0}
-        self.sent, self._over, self._alive, self.proc = [], False, True, None
+        self.name, self.lock, self.closed, self.busy, self.returncode = "director", threading.RLock(), False, False, None
+        self.status = {"events": [], "turns": 0, "cost_usd": 0.0, "messages_sent": [], "pid": 0, "agents": [], "model_usage": {}}
+        self.sent, self._over, self._alive, self.proc, self.working = [], False, True, None, False
 
     def send(self, text, why):
         if self.closed or not self._alive:
@@ -859,7 +976,7 @@ class FakeSession:
         self._over = True
 
     def turn_over(self, now=None, settle=2):
-        return self._over
+        return self._over and not self.working
 
     def ack(self):
         self._over = False
@@ -872,9 +989,6 @@ class FakeSession:
 
     def note(self, line):
         self.status["events"].append({"t": 0, "text": line})
-
-    def tail(self, n=6):
-        return [e["text"] for e in self.status["events"][-n:]]
 
     def close_input(self):
         self.closed = True
@@ -889,525 +1003,188 @@ class FakeSession:
         return [w for w, _ in self.sent]
 
 
-class FakeBuilder:
-    def __init__(self, sid):
-        self.id, self.name, self.state, self.error, self.critique, self.s = sid, f"builder {sid}", "working", "", None, None
-        self.it = {"id": sid, "scene": f"work/scenes/{sid}/scene.js", "exists": True}
-
-
-class FakeRound:
-    """The builders for the stage checks: done when the test says (finish())."""
-
-    def __init__(self, pl, ids, tasks, on_event):
-        self.builders, self.tasks, self.on_event, self.stopping, self.critiques = [FakeBuilder(i) for i in ids], tasks, on_event, None, []
-        self.stopped_as = None
-        pl.rounds.append(self)
-
-    def poll(self, now=None):
-        pass
-
-    @property
-    def done(self):
-        return all(b.state in ("built", "failed", "stopped", "skipped") for b in self.builders)
-
-    def finish(self, state="built", why=""):
-        for b in self.builders:
-            b.state, b.error = state, why
-            self.on_event(state, b, why)
-
-    def stop(self, why, kind="forced"):
-        self.stopping, self.stopped_as = why, kind
-        for b in self.builders:
-            if b.state not in ("built", "failed", "stopped", "skipped"):
-                b.state = "stopped" if kind == "user" else "built"
-
-    def sessions(self):
-        return [{"name": b.name, "role": "builder", "segment": b.id, "state": b.state, "cost_usd": 0.1} for b in self.builders]
-
-    def lines(self):
-        return [f"- {b.id}: {b.state}" for b in self.builders]
-
-    def requests(self):
-        return []
-
-    def retire(self):
-        self.retired = True
-
-
-class FakePipeline:
-    """tools/pipeline.py for the stage checks: a scripted plan, and long steps that come back at once."""
-    BUILDER_GRACE_S = 180
-
-    def __init__(self, pdir):
-        import pipeline
-        self.real, self.pdir, self.rounds, self.calls, self.state = pipeline, pdir, [], [], {}
-        self.plan_ok, self.stage, self.tasks, self.final_ok, self.has_plan = True, "planned", {}, True, True
-        self.Builder = pipeline.Builder
-        self.FILM_FOCUS, self.mmss, self.outline, self.plan_text = pipeline.FILM_FOCUS, pipeline.mmss, lambda v: "-", lambda v, p, table=True: "errors: (test)"
-        self.stand_in_text = pipeline.stand_in_text
-        self.critique = None
-
-    def validate(self, pdir, plan=None, ready=False):
-        items = [{"id": "s1", "kind": "segment", "owner": "builder", "status": "todo", "t0": 0.0, "t1": 20.0, "renderer": "web",
-                  "scene": "work/scenes/s1/scene.js", "exists": True},
-                 {"id": "s2", "kind": "segment", "owner": "planner", "status": "drafted", "t0": 20.0, "t1": 40.0, "renderer": "web",
-                  "scene": "work/scenes/s2/scene.js", "exists": True}]
-        if not self.has_plan:
-            return {"ok": False, "errors": ["there is no work/plan.json yet: write it"], "plan": None, "items": [], "warnings": []}
-        return {"ok": self.plan_ok, "errors": [] if self.plan_ok else ["segments[1] (s2): a gap before it"], "warnings": [],
-                "plan": {"stage": self.stage, "segments": []}, "stage": self.stage, "hero": "s2", "items": items,
-                "style_frames": [], "lib": "work/scenes/lib/"}
-
-    def gate(self, pdir, *a, **kw):
-        self.calls.append("gate")
-        return {"ok": True, "errors": [], "video": "work/segments/s2/s2_preview.mp4", "critique": self.critique}
-
-    def assemble(self, pdir, quality="preview", **kw):
-        self.calls.append(f"assemble {quality}" + (" stand-ins" if kw.get("stand_ins") else ""))
-        if quality == "final" and not self.final_ok and not kw.get("stand_ins"):
-            return {"ok": False, "error": "the final needs every segment: s1: no scene", "renders": []}
-        return {"ok": True, "video": "final/music-video.mp4" if quality == "final" else "work/previews/preview_1.mp4",
-                "checks": {"flash": "PASS"}, "placeholders": [], "stand_ins": [], "critique": None}
-
-    def run_critic(self, *a, **kw):
-        return None
-
-    def estimate_final(self, pdir, v=None):
-        return 60.0, "the test"
-
-    def estimate_rough(self, pdir):
-        return 60.0, "the test"
-
-    def load_state(self, pdir):
-        return self.state
-
-    def update_state(self, pdir, fn):
-        fn(self.state)
-        return self.state
-
-    def set_stage(self, pdir, stage):
-        self.stage = stage
-
-    def set_status(self, pdir, ch):
-        return True
-
-    def read_tasks(self, pdir, v=None):
-        return dict(self.tasks), []
-
-    def consume_tasks(self, pdir, n):
-        self.calls.append("tasks consumed")
-        self.tasks = {}
-
-    def outputs(self, pdir, it, q):
-        return pdir, os.path.join(pdir, "nothing.mp4")
-
-    def BuildRound(self, pdir, v, ids, tasks, *a, on_event=None, **kw):
-        return FakeRound(self, ids, tasks, on_event)
-
-
-def pipeline_machine_check():
-    """The pipeline's stages (director.PipelineRun) driven in-process on a simulated clock, with a scripted planner and
-    stand-ins for the studio's long steps: the whole way through; a plan that never validates (three tries, then
-    solo); no plan at the plan stage's deadline + 5 min (solo); a builder that fails (the planner hears); the studio
-    starting the final when time is short (the builders stopped); STOP while building; the planner's session ending
-    (the studio finishes alone); tasks.json sending a builder back; a final that can't be assembled (the planner fixes
-    it, then a neighbour's scene stands in)."""
+def runner_check():
+    """The runner (director.Runner) in-process on a simulated clock with a scripted director: while its agents work
+    (the session working after its turn ended) no reminder, no nudge and no closing; when they're done and the turn is
+    over, the reminder comes; the user's live notes reach it at once (with the command that marks them done) and are
+    marked forwarded, a note from before the run or one done already isn't sent, a stopping run sends none; the cost
+    cap reached ends the run with no more messages and the session closed once its turn is over; report.md's run
+    settings: the costs per model (the director's, the agents', Claude Code's own small calls unlabelled; under half a
+    cent as <$0.01: director.cost_rows, as the web app's run view shows them), the total, the agents, ultracode, the
+    cap."""
+    print("== 6e2. the runner (in-process, a scripted director)", flush=True)
     import director
-    root = os.path.join(PDIR, "cache", "_machine")
+    root = os.path.join(PDIR, "cache", "_runner")
 
-    def make(revise=False, critic=True, budget=3600, stage="planned"):
+    def make(budget=3600, **st):
         shutil.rmtree(root, ignore_errors=True)
-        for sub in ("work/director/run-1", "final", "work/critic", "work/scenes/s1"):
+        for sub in ("work/director/run-1", "final", "review"):
             os.makedirs(os.path.join(root, *sub.split("/")), exist_ok=True)
-        open(os.path.join(root, "work", "critic", "gate_01.md"), "w").write("# Critique\nthe language (test)\n")
-        json.dump({"video": "work/segments/s2/s2_preview.mp4", "scores": {"ambition": 7}, "file": "work/critic/gate_01.md",
-                   "model": "fake", "cost_usd": 0.01}, open(os.path.join(root, "work", "critic", "gate_01.json"), "w"))
         s = FakeSession()
-        pl = FakePipeline(root)
-        pl.stage = stage
-        pl.critique = {"file": "work/critic/gate_01.md"} if critic else None
         t0 = time.time()
-        status = {"run": 1, "state": "running", "kind": "first", "model": "fake", "effort": "max", "budget_s": budget,
-                  "started": t0, "deadline": t0 + budget, "events": s.status["events"], "turns": 0, "cost_usd": 0.0,
-                  "messages_sent": s.status["messages_sent"], "critic_model": "fake", "critiques": [], "critic_cost_usd": 0.0,
-                  "mode": "pipeline"}
-        R = director.PipelineRun(root, 1, os.path.join(root, "work", "director", "run-1"), status, s, budget, t0,
-                                 critic={"model": "fake", "effort": "medium", "max": 6} if critic else None, log=lambda x: None,
-                                 builders=2, builder_model="fake", builder_effort="high", revise=revise, pl=pl)
-        R.inline = True
-        R.begin()
-        return R, s, pl, t0
-
-    def tick(R, t, n=1):
-        ok = True
-        for _ in range(n):
-            ok = R.step(t)
-        return ok
+        status = dict({"run": 1, "state": "running", "kind": "first", "model": "fake", "effort": "max", "budget_s": budget,
+                       "started": t0, "deadline": t0 + budget, "critiques": [], "critic_cost_usd": 0.0, "critic_model": "off"},
+                      **st) | {"events": s.status["events"], "messages_sent": s.status["messages_sent"], "agents": s.status["agents"]}
+        s.status = status
+        return director.Runner(root, 1, os.path.join(root, "work", "director", "run-1"), status, s, budget, t0, log=lambda x: None), s, t0
     out = {}
-    # the whole way: plan -> gate -> build -> assemble -> revise -> final
-    R, s, pl, t0 = make()
+    # agents at work: nothing, then the reminder
+    R, s, t0 = make()
     s.over()
-    tick(R, t0 + 60, 2)                      # the plan validates: gate 1, the report to the planner
-    s.over()
-    tick(R, t0 + 120, 2)                     # its last revision of the language: the builders start
-    rnd = pl.rounds[-1] if pl.rounds else None
-    s.over()
-    tick(R, t0 + 600)
-    if rnd:
-        rnd.finish("built")
-    tick(R, t0 + 660, 3)                     # the planner and the builders done: assemble, the report
-    pl.stage = "final"
-    s.over()
-    tick(R, t0 + 900, 3)                     # "final": the studio renders it, the planner gets the checks
-    s.over()
-    tick(R, t0 + 1000, 2)                    # delivered with most of the hour left: the nudge, back to stage 4
-    nudged = s.whys()[-1] == "use the time left" and R.stage == "revise" and pl.stage == "planned"
-    pl.stage = "final"
-    s.over()
-    tick(R, R.deadline - 600, 3)             # final again, 10 min before the end: no more nudges, the session ends
-    s.over()
-    tick(R, R.deadline - 590, 2)
-    out["whole"] = ([x["stage"] for x in R.stages], s.whys(), pl.calls, s.closed, nudged)
-    ok_whole = ([x["stage"] for x in R.stages] == ["plan", "gate", "build", "assemble", "revise", "final", "revise", "final"]
-                and rnd and rnd.builders[0].id == "s1" and nudged
-                and "gate 1: the critic on the language" in s.whys() and "builders started" in s.whys()
-                and any(w.startswith("assemble report") for w in s.whys()) and s.whys().count("the final: fix any FAIL, write report.md") == 2
-                and pl.calls == ["gate", "assemble preview", "assemble final", "assemble final"] and s.closed
-                and pl.state.get("stage") == "final" and pl.state.get("costs") is not None)
-    # a plan that never validates: three tries, then solo
-    R, s, pl, t0 = make()
-    pl.plan_ok = False
-    for k in range(3):
-        s.over()
-        tick(R, t0 + 60 * (k + 1))
-    out["invalid"] = (R.mode, s.whys())
-    ok_invalid = R.mode == "solo" and s.whys()[:2] == ["plan.json isn't valid (1 of 3)", "plan.json isn't valid (2 of 3)"] \
-        and s.whys()[-1] == "switching to solo" and R.critics is not None and "switching this run to solo" in s.sent[-1][1]
-    # no plan at all by the plan stage's deadline + 5 min: solo
-    R, s, pl, t0 = make()
-    pl.has_plan = False
-    tick(R, R.plan_by + 1)
-    tick(R, R.plan_by + 301)
-    out["late"] = (R.mode, s.whys())
-    ok_late = R.mode == "solo" and "the plan stage ends" in s.whys() and s.whys()[-1] == "switching to solo"
-    # a builder fails: the planner hears; then the studio starts the final when time is short
-    R, s, pl, t0 = make(critic=False)
-    s.over()
-    tick(R, t0 + 60, 2)                      # critic off: straight from the gate to the builders
-    rnd = pl.rounds[-1] if pl.rounds else None
-    if rnd:
-        rnd.on_event("failed", rnd.builders[0], "its session ended (exit 1)")
-    told = [t for w, t in s.sent if w == "builder s1 failed"]
-    tick(R, R.deadline - R.final_need() + 5)
-    out["forced"] = (R.stage, s.whys(), rnd and rnd.stopped_as)
-    ok_fail_forced = bool(rnd) and told and "take it over" in told[0] and R.stage == "final" and "the final starts now" in s.whys() \
-        and rnd.stopped_as == "forced" and pl.calls[-1] == "assemble final"
-    # STOP while building
-    R, s, pl, t0 = make(critic=False)
-    s.over()
-    tick(R, t0 + 60, 2)
-    rnd = pl.rounds[-1] if pl.rounds else None
-    open(os.path.join(root, "work", "director", "STOP"), "w").write("x")
-    tick(R, t0 + 100)
-    s.over()
-    tick(R, t0 + 102)
-    out["stop"] = (R.stop_reason, s.whys(), rnd and rnd.stopped_as, s.closed)
-    ok_stop = R.stop_reason == "stopped by the user" and "stop" in s.whys() and rnd and rnd.stopped_as == "user" and s.closed \
-        and not any(c.startswith("assemble") for c in pl.calls)
-    # the planner's session ends while it revises: the studio assembles the final alone
-    R, s, pl, t0 = make(critic=False)
-    s.over()
-    tick(R, t0 + 60, 2)
-    pl.rounds[-1].finish("built")
-    s.over()
-    tick(R, t0 + 300, 3)                     # assembled: now in revise
-    s._alive = False
-    s.returncode = 1
-    still = tick(R, t0 + 400, 3)
-    out["gone"] = (R.stage, pl.calls, still, R.end_reason)
-    ok_gone = R.stage == "final" and pl.calls[-1].startswith("assemble final") and not still and "planner's session ended" in R.end_reason
-    # tasks.json sends a builder back; a final that can't be assembled: the planner fixes it, then stand-ins
-    R, s, pl, t0 = make(critic=False)
-    s.over()
-    tick(R, t0 + 60, 2)
-    pl.rounds[-1].finish("built")
-    s.over()
-    tick(R, t0 + 300, 3)
-    pl.tasks = {"s1": "make the stop hold longer"}
-    s.over()
-    tick(R, t0 + 360)
-    fix_round = pl.rounds[-1] if len(pl.rounds) == 2 else None
-    if fix_round:
-        fix_round.finish("built")
-    s.over()
-    tick(R, t0 + 900, 3)                     # assembled again
-    pl.stage, pl.final_ok = "final", False
-    s.over()
-    tick(R, t0 + 1000, 3)                    # the final can't be made: the planner is asked to fix it
-    asked = "the final couldn't be assembled" in s.whys()
-    s.over()
-    tick(R, t0 + 1100, 3)                    # it says it did: assembled again, now with stand-ins
-    out["tasks"] = (s.whys(), pl.calls, fix_round and fix_round.tasks)
-    ok_tasks = bool(fix_round) and fix_round.tasks == {"s1": "make the stop hold longer"} and "tasks consumed" in pl.calls \
-        and asked and pl.calls[-1] == "assemble final stand-ins" and "the final: fix any FAIL, write report.md" in s.whys() \
-        and [x["stage"] for x in R.stages].count("build") == 2
-    # the final fails, the planner is asked to fix it and never ends its turn: the final with stand-ins when time is short;
-    # the same, but its session ends: the studio makes it at once
-    fixing = {}
-    for how in ("busy", "gone"):
-        R, s, pl, t0 = make(critic=False)
-        s.over()
-        tick(R, t0 + 60, 2)
-        pl.rounds[-1].finish("built")
-        s.over()
-        tick(R, t0 + 300, 3)
-        pl.stage, pl.final_ok = "final", False
-        s.over()
-        tick(R, t0 + 400, 3)
-        asked = R.fixing and "the final couldn't be assembled" in s.whys()
-        if how == "gone":
-            s._alive, s.returncode = False, 1
-            tick(R, t0 + 410, 2)
-        else:
-            tick(R, t0 + 500, 2)
-            waited = pl.calls[-1] == "assemble final"
-            tick(R, R.deadline - R.final_need() + 5, 2)
-        fixing[how] = (asked, pl.calls, s.whys()[-2:], how == "gone" or waited)
-    out["fixing"] = fixing
-    ok_fixing = all(a and c[-1] == "assemble final stand-ins" and w for a, c, _, w in fixing.values()) \
-        and "the final starts now" in fixing["busy"][2]
-    # the final's estimate leaves no room for the stages: a final now (before anything is built) would be the hero
-    # everywhere, so the run goes solo; and at the gate's end with no time for anyone to build the rest: solo too
-    R, s, pl, t0 = make(critic=False)
-    pl.estimate_final = lambda pdir, v=None: (2400.0, "the test")
-    s.over()
-    tick(R, t0 + 60)                         # the plan validates: the gate (inline: done at once)
-    tick(R, t0 + 100)                        # with the plan's estimate the final would have to start now: solo
-    out["no_room"] = (R.mode, s.whys()[-1:], pl.calls)
-    ok_room = R.mode == "solo" and s.whys()[-1] == "switching to solo" and "no room is left for the pipeline's stages" in s.sent[-1][1] \
-        and not any(c.startswith("assemble") for c in pl.calls)
-    # the early-finish nudge keeps the cut it delivered as a version before the studio renders another over it
-    R, s, pl, t0 = make(critic=False)
-    s.over()
-    tick(R, t0 + 60, 2)
-    pl.rounds[-1].finish("built")
-    s.over()
-    tick(R, t0 + 300, 3)
-    pl.stage = "final"
-    s.over()
-    tick(R, t0 + 400, 3)
-    open(os.path.join(root, "final", "music-video.mp4"), "wb").write(b"the delivered cut (test)")
-    s.over()
-    tick(R, t0 + 500, 2)                     # the nudge: back to stage 4, the cut kept as v1
-    kept = json.load(open(os.path.join(root, "project.json"), encoding="utf-8")).get("versions") if os.path.exists(os.path.join(root, "project.json")) else []
-    out["kept"] = (kept, s.whys()[-1:])
-    ok_kept = len(kept or []) == 1 and os.path.exists(os.path.join(root, "final", "music-video_v1.mp4")) and R.stage == "revise" \
-        and "kept as v1" in s.sent[-1][1]
-    # a review round starts at stage 4: the plan's "final" set back; nothing changed: a reminder; "final": the final
-    R, s, pl, t0 = make(revise=True, critic=False, stage="final")
-    first, set_back = R.stage, pl.stage == "planned"
-    s.over()
-    tick(R, t0 + 60)
-    reminded = s.whys()[-1:] == ["no next step"]
-    pl.stage = "final"
-    s.over()
-    tick(R, t0 + 120, 3)
-    out["revise"] = (first, set_back, s.whys(), pl.calls)
-    ok_revise = first == "revise" and set_back and reminded and R.stage == "final" and pl.calls == ["assemble final"]
-    ok_live = live_notes_machine(make, tick, root, out)
-    shutil.rmtree(root, ignore_errors=True)
-    bad = [k for k, v in (("the whole way", ok_whole), ("a review round from stage 4", ok_revise), ("never valid -> solo", ok_invalid), ("no plan by the deadline -> solo", ok_late),
-                          ("a builder fails, then the final when time is short", ok_fail_forced), ("STOP while building", ok_stop),
-                          ("the planner's session ends", ok_gone), ("tasks.json, a final that can't be made", ok_tasks),
-                          ("the planner fixing the final: busy too long, or gone", ok_fixing), ("no room for the stages -> solo", ok_room),
-                          ("the nudge keeps the delivered cut", ok_kept), ("the user's live notes", ok_live)) if not v]
-    say("FAIL" if bad else "PASS", "the pipeline's stages, every way out (in-process, stand-ins): " + ", ".join(
-        ["the whole way (and the early-finish nudge back to stage 4)", "never valid -> solo", "no plan by the deadline -> solo", "a builder fails", "the final when time is short",
-         "STOP", "the planner gone", "tasks.json", "a final that can't be made", "a review round from stage 4",
-         "the planner fixing the final too long or gone (stand-ins)", "no room for the stages (solo)", "the nudge keeps the delivered cut",
-         "the user's live notes (sent where a turn is safe, held while the studio assembles and then in its report, held "
-         "in the final stage, solo too)"]),
-        ("failed: " + "; ".join(bad) + f" {out}")[:2500] if bad else "")
-
-
-def live_notes_machine(make, tick, root, out):
-    """The user's live notes during a run (director.LiveNotes, Runner.live_step), on the simulated clock: an idle
-    planner gets them while builders work (the assemble then waits for its turn), with the command that marks them
-    done; a note from before the run, or one done already, isn't sent; one that comes while the studio assembles is
-    held and goes into the assemble report with the ones sent since; each is marked forwarded_run in review/notes.json;
-    while the final renders (the planner busy writing report.md, as the studio asked) and after, one is held for the
-    review round; a solo director gets them, a stopping run doesn't."""
-    import director
+    s.working = True                         # its turn ended; an agent of its still works
+    for k in range(5):
+        R.step(t0 + 60 + k)
+    held = (s.whys(), s.closed)
+    s.working = False
+    R.step(t0 + 70)
+    out["agents"] = (held, s.whys())
+    ok_agents = held == ([], False) and s.whys() == ["no final yet"] and not s.closed
+    # the user's live notes: a message at once; one from before the run, or done already, isn't sent; a stopping run sends none
     np = os.path.join(root, "review", "notes.json")
 
     def note(text, **kw):
-        os.makedirs(os.path.dirname(np), exist_ok=True)
         ns = json.load(open(np, encoding="utf-8")) if os.path.exists(np) else []
         ns.append(dict({"id": int(time.time() * 1000) + len(ns), "version": "live", "t": 12.5, "text": text, "done": False,
                         "scene": "work/scenes/s1/scene.js", "timeline": "plan.json"}, **kw))
         json.dump(ns, open(np, "w", encoding="utf-8"))
     marks = lambda: {n["text"]: n.get("forwarded_run") for n in json.load(open(np, encoding="utf-8"))}   # noqa: E731
-    R, s, pl, t0 = make(critic=False)
+    R, s, t0 = make()
     note("from before the run", id=int((t0 - 120) * 1000))
     note("done already", done=True)
-    s.over()
-    tick(R, t0 + 60, 2)                      # the gate (critic off) -> the builders; the planner builds its own
-    s.over()
-    tick(R, t0 + 120)                        # it ended its turn: done with its own segments
-    was_done = R.planner_done
-    note("the marks should hit harder")
-    R.live_step(t0 + 130)
-    first = s.sent[-1] if s.sent else ("", "")
-    m1 = marks()
-    R.stage, R.job = "assemble", {"kind": "assemble", "done": False}      # the studio assembles; the planner is idle
-    note("the type comes too late", t=30.0)
-    n_sent = len(s.sent)
-    R.live_step(t0 + 200)
-    held = len(s.sent) == n_sent and marks().get("the type comes too late") is None
-    R.job = None
-    R.assemble_done({"ok": True, "video": "work/previews/preview_1.mp4", "checks": {}, "placeholders": []}, t0 + 210)
-    report = s.sent[-1][1] if s.sent else ""
-    m2 = marks()
-    R.stage, R.job = "final", {"kind": "final", "done": False}            # the final renders; the planner writes report.md
-    s.busy = True
-    note("the end should land harder", t=40.0)
-    n_sent = len(s.sent)
-    R.live_step(t0 + 300)
-    R.job = None                                                          # the final is in: it fixes FAILs, writes report.md
-    R.live_step(t0 + 310)
-    s.busy = False
-    R.live_step(t0 + 320)
-    held_final = len(s.sent) == n_sent and marks().get("the end should land harder") is None
-    ok_pipe = (was_done and first[0] == "the user's live note (1)" and "playing your scenes live" in first[1]
-               and "**the marks should hit harder**" in first[1] and "they saw work/scenes/s1/scene.js" in first[1]
-               and "studio.py note-done" in first[1] and "next assemble report lists these notes again" in first[1]
-               and not R.planner_done
-               and m1 == {"from before the run": None, "done already": None, "the marks should hit harder": 1} and held
-               and s.whys()[-1].startswith("assemble report") and "The user's live notes since the last report" in report
-               and "studio.py note-done" in report
-               and "**the marks should hit harder**" in report and "**the type comes too late**" in report and "(open)" in report
-               and m2.get("the type comes too late") == 1 and held_final)
-    # solo: a message at once; a stopping run sends none
-    shutil.rmtree(root, ignore_errors=True)
-    os.makedirs(os.path.join(root, "work", "director", "run-1"), exist_ok=True)
-    s2 = FakeSession()
-    t1 = time.time()
-    st = {"run": 1, "events": s2.status["events"], "messages_sent": s2.status["messages_sent"], "critiques": [], "critic_cost_usd": 0.0}
-    R2 = director.Runner(root, 1, os.path.join(root, "work", "director", "run-1"), st, s2, 3600, t1, log=lambda x: None)
+    s.working = True                         # (its agents working doesn't hold a note back: it starts a turn)
     note("more room before the drop")
-    R2.live_step(t1 + 10)
-    solo = s2.sent[-1] if s2.sent else ("", "")
-    R2.stop_reason = "stopped by the user"
+    R.live_step(t0 + 10)
+    solo = s.sent[-1] if s.sent else ("", "")
+    R.stop_reason = "stopped by the user"
     note("never mind")
-    R2.live_step(t1 + 20)
-    ok_solo = (solo[0] == "the user's live note (1)" and "Then carry on" in solo[1] and len(s2.sent) == 1
-               and marks() == {"more room before the drop": 1, "never mind": None})
-    out["live"] = (first[0], m1, m2, held, held_final, s.whys()[-2:], solo[0], marks())
-    return ok_pipe and ok_solo
+    R.live_step(t0 + 20)
+    out["live"] = (solo[0], marks())
+    ok_live = (solo[0] == "the user's live note (1)" and "Then carry on" in solo[1] and "they saw work/scenes/s1/scene.js" in solo[1]
+               and "studio.py note-done" in solo[1] and len(s.sent) == 1
+               and marks() == {"from before the run": None, "done already": None, "more room before the drop": 1, "never mind": None})
+    # the cost cap reached: the run ends (no more messages; closed when its turn is over)
+    R, s, t0 = make(max_usd=5.0)
+    R.step(t0 + 30)
+    s.status["budget_hit"] = True
+    alive1 = R.step(t0 + 31)
+    sent_cap = list(s.whys())
+    s.over()
+    R.step(t0 + 32)
+    out["cap"] = (R.stop_reason, sent_cap, s.closed, alive1)
+    ok_cap = R.stop_reason == "the cost cap ($5) was reached" and sent_cap == [] and s.closed and R.deadline <= t0 + 31
+    # report.md's run settings
+    rs = {"run": 3, "kind": "first", "model": "opus", "model_used": "claude-opus-fake", "effort": "max", "ultracode": True,
+          "max_usd": 5.0, "budget_hit": True, "budget_s": 3600, "started": time.time(), "wall_s": 1800, "stop_reason": "the cost cap ($5) was reached",
+          "claude_version": "test", "turns": 12, "cost_usd": 4.22,
+          "model_usage": {"claude-opus-fake": {"cost_usd": 4.1}, "claude-haiku-fake": {"cost_usd": 0.12},
+                          "claude-quick-fake": {"cost_usd": 0.003}},
+          "agents": [{"description": "build s3", "model": "haiku", "state": "done", "started": 100, "ended": 340}],
+          "critic_model": "sonnet", "critic_effort": "medium", "critic_cost_usd": 0.4, "critiques": [{}, {}]}
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(root)
+    open(os.path.join(root, "report.md"), "w", encoding="utf-8").write("# Report\nThe director's own words.\n")
+    director.append_settings(root, rs, None)
+    rep = open(os.path.join(root, "report.md"), encoding="utf-8").read()
+    out["report"] = [x for x in rep.splitlines() if x.startswith("- ")]
+    ok_rep = ("The director's own words." in rep and "ultracode on; cost cap $5 (reached: the run ended there)" in rep
+              and "- Costs per model: opus-fake $4.10 (the director), haiku-fake $0.12 (agents), quick-fake <$0.01 · the critic "
+                  "sonnet $0.40 · total $4.62" in rep
+              and "- Agents: 1 (haiku 1): build s3 (haiku, done in 4 min)" in rep and "cost reported $4.22 (the director's session, its agents included)" in rep
+              and [(r["name"], r["who"]) for r in director.cost_rows(rs)] == [("opus-fake", "the director"), ("haiku-fake", "agents"),
+                                                                             ("quick-fake", "")]
+              and director.total_cost(rs) == 4.62)
+    shutil.rmtree(root, ignore_errors=True)
+    bad = [k for k, v in (("agents at work", ok_agents), ("live notes", ok_live), ("the cost cap", ok_cap), ("the run settings", ok_rep)) if not v]
+    say("FAIL" if bad else "PASS", "the runner: no reminder, nudge or closing while the director's agents work (then the reminder); "
+        "the user's live notes at once (marked forwarded; old, done ones and a stopping run's not sent); the cost cap ends the "
+        "run without more messages; report.md's run settings (costs per model, the agents, ultracode, the cap)",
+        ("failed: " + "; ".join(bad) + f" {out}")[:2500] if bad else "")
 
 
-def builder_failures_check():
-    """Real builders (pipeline.BuildRound, Builder, mv/session.py) against the stand-in going wrong: one hangs (no
-    events: stopped as hung), one never writes its scene (two reminders, then failed), one crashes mid-turn (failed);
-    at most two at once, so the third waits its turn. Then the gate on a plan that still says planning and names no
-    hero (a clear error, no crash), and the one rule for when the pipeline's stages fit (choose_mode = stage_times)."""
-    import director
-    import pipeline
-    plan_p = os.path.join(PDIR, "work", "plan.json")
-    keep_plan = open(plan_p, "rb").read()
-    good = json.loads(keep_plan)
-    segs = {x["id"]: x for x in good["segments"]}
-    s1, s2, s3 = segs["s1"], segs["s2"], segs["s3"]
-    mid = round((s1["from"] + s1["to"]) / 2, 3)
-    seg = lambda sid, a, b: dict(s1, id=sid, name=f"{sid} (goes wrong)", scene=f"work/scenes/{sid}/scene.js", owner="builder",  # noqa: E731
-                                 status="todo", **{"from": a, "to": b})
-    test = dict(good, segments=[seg("f1", 0.0, mid), seg("f2", mid, s1["to"]), s2, seg("f3", s3["from"], s3["to"])], overlays=[])
-    keep_env = {k: os.environ.get(k) for k in ("MV_CLAUDE", "FAKE_BUILDER")}
-    keep_hung = pipeline.BUILDER_HUNG_S
-    events, t0 = [], time.time()
-    try:
-        json.dump(test, open(plan_p, "w", encoding="utf-8"), indent=1)
-        os.environ.update(MV_CLAUDE=os.path.join(TESTS, "fake_claude.py"), FAKE_BUILDER="f1:hang,f2:noscene,f3:crash")
-        pipeline.BUILDER_HUNG_S = 4
-        v = pipeline.validate(PDIR, ready=True)
-        rnd = pipeline.BuildRound(PDIR, v, ["f1", "f2", "f3"], None, 2, "fake", "high", None, None, None, time.time() + 600, 91, t0,
-                                  on_event=lambda state, b, why: events.append((b.id, state, why)))
-        while not rnd.done and time.time() - t0 < 150:
-            rnd.poll()
-            time.sleep(0.5)
-        rnd.retire()
-        time.sleep(1)
-        bs = {b.id: b for b in rnd.builders}
-        first_end = min(bs["f1"].ended or 1e12, bs["f2"].ended or 1e12)
-        ok_b = rnd.done and all(b.state == "failed" for b in bs.values()) and "no sign of life" in bs["f1"].error \
-            and "wrote no scene" in bs["f2"].error and "session ended" in bs["f3"].error and len(events) == 3 \
-            and (bs["f3"].started or 0) >= first_end - 1 and not any(b.s and b.s.alive() for b in bs.values())
-        detail = f"{ {k: (b.state, b.error[:50]) for k, b in bs.items()} }; f3 started {round((bs['f3'].started or 0) - t0)} s, " \
-                 f"the first end {round(first_end - t0)} s; {time.time() - t0:.0f} s"
-        # the gate on a plan that says planning and has no hero: what to fix, not a crash
-        json.dump(dict(good, stage="planning", hero=None), open(plan_p, "w", encoding="utf-8"), indent=1)
-        loose = pipeline.validate(PDIR)
-        g = pipeline.gate(PDIR, "off", log=lambda x: None)
-        ok_g = loose["ok"] and not g["ok"] and any("hero" in e for e in g["errors"])
-    finally:
-        open(plan_p, "wb").write(keep_plan)
-        pipeline.BUILDER_HUNG_S = keep_hung
-        for k, x in keep_env.items():
-            if x is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = x
-        for sid in ("f1", "f2", "f3"):
-            shutil.rmtree(os.path.join(PDIR, "work", "pipeline", "sessions", f"b91-{sid}"), ignore_errors=True)
-            shutil.rmtree(os.path.join(PDIR, "work", "segments", sid), ignore_errors=True)
-            shutil.rmtree(os.path.join(PDIR, "work", "scenes", sid), ignore_errors=True)
-    say("PASS" if ok_b else "FAIL", "real builders that go wrong: one hangs (stopped as hung), one writes no scene (reminded, then "
-        "failed), one crashes (failed); two at once, the third waits its turn", detail)
-    # one rule for when the pipeline fits: auto picks it from the smallest budget whose stages fit, and not below
-    est = pipeline.estimate_final(PDIR)
-    b = pipeline.pipeline_from(est[0])
-    below = director.choose_mode(PDIR, "auto", b - 60, 3, False)[0]
-    at = director.choose_mode(PDIR, "auto", b, 3, False)[0]
-    sp = (json.load(open(os.path.join(STUDIO, "tools", "speeds.json"))) if os.path.exists(os.path.join(STUDIO, "tools", "speeds.json")) else {}).get("renderers") or {}
-    cyc = (sp.get("blender_cycles") or {})
-    want = (cyc.get("1080p") or {}).get("s_per_frame", 0) / (cyc.get("540p_preview") or {}).get("s_per_frame", 1) if cyc else None
-    got = pipeline.speed_row(sp, {"renderer": "blender", "render_args": ["--engine", "cycles"]})[2]
-    measured = any((x.get("preview") or {}).get("s_per_frame") for x in (json.load(open(pipeline.renders_path(PDIR), encoding="utf-8"))
-                                                                         if os.path.exists(pipeline.renders_path(PDIR)) else {}).values())
-    say("PASS" if ok_g and below == "solo" and at == "pipeline" and ("preview renders" in est[1]) == measured
-        and (want is None or abs((got or 0) - want) < 1e-6)
-        else "FAIL", "the gate on a plan that isn't ready says what's missing; one rule for when the stages fit (auto, the brief, "
-        "the web app); the final's estimate scales each preview by what a final frame costs here (Cycles ×6, not ×2.5)",
-        f"gate: {g.get('errors')}; the pipeline from {b // 60} min ({below} at {b // 60 - 1}, {at} at {b // 60}); estimate {est[0]:.0f} s "
-        f"({est[1]}); Cycles ratio {got}")
+def blender_shared_check(no_blender):
+    """A Blender scene imports shared code: its own folder, work/scenes/lib/ and work/kit/ are on its sys.path (a kit
+    module named like a studio tool, models.py, is the scene's own: the studio's tools aren't on that path); its
+    render (the plan tools' render_item: run.py, then compose encode) comes back from the cache while nothing changed,
+    and renders again from scratch when the kit, the lib or its own folder change (run.py's key; plan.current says
+    stale)."""
+    print("== 6f. Blender: shared code (work/scenes/lib/, work/kit/) and its cache", flush=True)
+    sys.path.insert(0, os.path.join(STUDIO, "tools"))
+    from blender.run import find_blender
+    if no_blender or not find_blender():
+        return say("SKIP", "Blender importing shared code", "--no-blender" if no_blender else "no Blender on this machine")
+    import plan as plans
+    files = {"work/kit/models.py": "def size():\n    return 1.2\n",
+             "work/scenes/lib/blook.py": "COLOR = (0.9, 0.35, 0.2, 1.0)\n",
+             "work/scenes/bshared/helper.py": "def height():\n    return 0.0\n",
+             "work/scenes/bshared/scene.py": (
+                 "import bpy\nimport blook                    # work/scenes/lib/\nfrom models import size        # work/kit/ (tools/models.py has the same name)\n"
+                 "from helper import height       # its own folder\n\n\ndef build(mv):\n"
+                 "    bpy.ops.mesh.primitive_cube_add(size=size(), location=(0, 0, height()))\n"
+                 "    m = bpy.data.materials.new('m')\n    m.diffuse_color = blook.COLOR\n    bpy.context.active_object.data.materials.append(m)\n"
+                 "    bpy.ops.object.light_add(type='SUN', location=(4, -4, 6))\n"
+                 "    bpy.ops.object.camera_add(location=(0, -6, 2), rotation=(1.3, 0, 0))\n    mv.scene.camera = bpy.context.active_object\n")}
+    for f, txt in files.items():
+        os.makedirs(os.path.dirname(os.path.join(PDIR, f)), exist_ok=True)
+        open(os.path.join(PDIR, f), "w", encoding="utf-8").write(txt)
+    fps = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))["format"]["fps"]
+    it = {"id": "bshared", "kind": "segment", "name": "", "renderer": "blender", "scene": "work/scenes/bshared/scene.py",
+          "scene_abs": os.path.join(PDIR, "work", "scenes", "bshared", "scene.py"), "exists": True, "a": 0, "b": 3, "t0": 0.0,
+          "t1": 3 / fps, "render_args": ["--engine", "workbench"]}
+    logf = os.path.join(PDIR, "work", "segments", "bshared", "render_preview.log")
+
+    def run():
+        r = plans.render_item(PDIR, it, "preview", log=lambda x: None)
+        txt = open(logf, encoding="utf-8").read() if os.path.exists(logf) and r["state"] != "cached" else ""
+        return r["state"], ("0 frames already there" in txt), r.get("error")
+    first = run()
+    cur0 = plans.current(PDIR, it, "preview")[0]
+    again = run()
+    steps = {}
+    for f, more in (("work/kit/models.py", "# the kit changed\n"), ("work/scenes/lib/blook.py", "# the lib changed\n"),
+                    ("work/scenes/bshared/helper.py", "# its folder changed\n")):
+        time.sleep(1.1)                        # (a newer mtime than the render's)
+        open(os.path.join(PDIR, f), "a", encoding="utf-8").write(more)
+        stale = plans.current(PDIR, it, "preview")
+        steps[f.split("/")[1] + "/" + f.split("/")[2]] = (stale[0], stale[1], run())
+    ok = (first[0] == "rendered" and first[1] and cur0 and again[0] == "cached"
+          and all(not x[0] and "shared code" in x[1] and x[2][0] == "rendered" and x[2][1] for x in steps.values()))
+    say("PASS" if ok else "FAIL", "Blender scenes import shared code (their own folder, work/scenes/lib/, work/kit/, a kit models.py over the studio's); the render "
+        "is cached while nothing changed, and made again from scratch when the kit, the lib or the scene's folder change",
+        f"first {first}; current {cur0}; again {again}; {steps}")
+    for f in files:
+        os.remove(os.path.join(PDIR, f))
+    for dd in ("work/kit", "work/scenes/bshared"):
+        shutil.rmtree(os.path.join(PDIR, dd), ignore_errors=True)
 
 
-def pipeline_run_check(env):
-    """`studio.py direct --mode pipeline` with the stand-in: the planner writes the plan and the hero, gate 1, two
-    builders (each its scene, its preview, a critic round), the assembled preview with the critic's film report, the
-    planner's "final", the final with the checks and the critic, the version delivered; then `pipeline build` for an
-    interactive planner."""
-    print("== 7b. the pipeline end to end (stand-in for Claude Code)", flush=True)
-    for sid in ("s1", "s3"):                       # the builders write these
-        p = os.path.join(PDIR, "work", "scenes", sid, "scene.js")
-        if os.path.exists(p):
-            os.remove(p)
+def agents_run_check(env):
+    """`studio.py direct` with a stand-in director that deploys an agent (FAKE_DIRECTOR=agents) and uses the plan tools,
+    with --ultracode and --max-usd: its turn ends while the agent builds s3, and the runner sends it no reminder or nudge
+    and doesn't close the session; the session's own turn assembles and delivers; the agent in status.json and the live
+    log; the cost the latest running total (not a sum), the costs per model and the agents in report.md; the critic
+    looks at the assembled preview and the final once (plan assemble's critiques; the watcher doesn't look again; the
+    version reuses the final's); a live note left while the run goes reaches the director and is marked done."""
+    print("== 7b. a director that deploys an agent (stand-in for Claude Code)", flush=True)
     import threading
     from mv.live import update_notes
+    flag = os.path.join(PDIR, "FAKE_DIRECTOR")
+    open(flag, "w").write("agents")
+    heard = os.path.join(PDIR, "work", "_fake_agent_heard.txt")
+    if os.path.exists(heard):
+        os.remove(heard)
     runs0 = (json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8")).get("runs") or [{}])[-1].get("run") or 0
-    mid = round(json.load(open(os.path.join(PDIR, "song", "song-map.json"), encoding="utf-8"))["duration"] / 2, 2)
+    bars = [b["t"] for b in json.load(open(os.path.join(PDIR, "song", "song-map.json"), encoding="utf-8"))["bars"]]
+    t_s2 = round((bars[len(bars) // 3] + bars[2 * len(bars) // 3]) / 2, 2)     # inside s2 (the stand-in's plan)
     wrote = {}
 
-    def user():                                    # the user plays the scenes live while the planner works, and leaves a note
+    def user():                                    # the user plays the scenes live while the director works, and leaves a note
         t0_ = time.time()
         while time.time() - t0_ < 600:
             cur = json.load(open(os.path.join(PDIR, "work", "director", "current.json"), encoding="utf-8")) \
                 if os.path.exists(os.path.join(PDIR, "work", "director", "current.json")) else {}
-            if (cur.get("run") or 0) > runs0 and cur.get("state") == "running":
-                time.sleep(1)
-                n = {"id": int(time.time() * 1000), "version": "live", "t": mid, "text": "the field should breathe here (live)",
-                     "done": False, "at": time.strftime("%Y-%m-%d %H:%M"), "scene": "work/scenes/s2/scene.js",
-                     "timeline": "plan.json"}
+            if (cur.get("run") or 0) > runs0 and cur.get("state") == "running" and any(a.get("state") == "running" for a in cur.get("agents") or []):
+                n = {"id": int(time.time() * 1000), "version": "live", "t": t_s2, "text": "the field should breathe here (live)",
+                     "done": False, "at": time.strftime("%Y-%m-%d %H:%M"), "scene": "work/scenes/s2/scene.js", "timeline": "plan.json"}
                 update_notes(PDIR, lambda ns: ns.append(n))
                 wrote.update(n)
                 return
@@ -1415,68 +1192,99 @@ def pipeline_run_check(env):
     th = threading.Thread(target=user, daemon=True)
     th.start()
     t0 = time.time()
-    r = studio("direct", P, "--mode", "pipeline", "--budget", "40m", "--model", "fake", "--critic-model", "fake", "--builders", "2",
-               "--no-nudge", check=False, env=env, timeout=2400)
+    try:
+        r = studio("direct", P, "--budget", "30m", "--model", "fake", "--critic-model", "fake", "--ultracode", "--max-usd", "50",
+                   "--no-nudge", check=False, env=dict(env, FAKE_AGENT_S="12"), timeout=2400)
+    finally:
+        os.remove(flag)
     th.join(5)
     pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
     last = (pj.get("runs") or [{}])[-1]
-    st = json.load(open(os.path.join(PDIR, "work", "pipeline", "state.json"), encoding="utf-8"))
-    stages = [x["stage"] for x in st.get("stages") or []]
-    ses = {x.get("name"): x for x in st.get("sessions") or []}
+    rdir = os.path.join(PDIR, "work", "director", f"run-{last.get('run')}")
+    rs = json.load(open(os.path.join(rdir, "status.json"), encoding="utf-8"))
     v = next((x for x in pj.get("versions") or [] if x.get("n") == last.get("version")), {})
     rep_md = open(os.path.join(PDIR, "report.md"), encoding="utf-8").read() if os.path.exists(os.path.join(PDIR, "report.md")) else ""
-    say("PASS" if r.returncode == 0 and last.get("mode") == "pipeline" and last.get("version") and stages[:6] ==
-        ["plan", "gate", "build", "assemble", "revise", "final"] and v.get("checks") and all(x == "PASS" for x in v["checks"].values())
-        and "pipeline's test stand-in" in rep_md and "- Pipeline: the planner" in rep_md else "FAIL",
-        "studio.py direct --mode pipeline: all five stages, the final delivered, every check passes",
-        f"run {last.get('run')}: v{last.get('version')} {v.get('checks')}; stages {stages}; {time.time() - t0:.0f} s; "
-        f"ended: {last.get('stop_reason')}" if last else (r.stdout + r.stderr)[-1500:])
-    plan = json.load(open(os.path.join(PDIR, "work", "plan.json"), encoding="utf-8"))
-    status = {x["id"]: x.get("status") for x in plan.get("segments") or []}
-    b1 = ses.get("builder s1") or {}
-    brief = open(os.path.join(PDIR, b1.get("brief") or "x"), encoding="utf-8").read() if b1.get("brief") and os.path.exists(os.path.join(PDIR, b1["brief"])) else ""
-    say("PASS" if ses.get("builder s1", {}).get("state") == "built" and ses.get("builder s3", {}).get("state") == "built"
-        and (ses["builder s1"].get("critique") or {}).get("scores") and status.get("s1") == "built" and status.get("s3") == "built"
-        and "<!-- mv:builder -->" in brief and "don't read the song folder" in brief and "Bar by bar" in brief
-        and "`work/style-frames/a.png`" in brief and "--only s1" in brief and "Nothing is revealed in a shot's last beat" in brief
-        else "FAIL", "the builders: their own sessions and narrow briefs (the song over the range as text, the style frames, "
-        "the craft rules), a critic round each, built in plan.json",
-        f"{ {k: x.get('state') for k, x in ses.items()} }; plan {status}; brief {len(brief)} chars")
-    crs = st.get("critiques") or []
-    kinds = sorted({c.get("kind") for c in crs})
-    gate = (st.get("gates") or [{}])[-1]
-    rs = json.load(open(os.path.join(PDIR, "work", "director", f"run-{last.get('run')}", "status.json"), encoding="utf-8"))
-    sent = [x["why"] for x in rs.get("messages_sent") or []]
-    say("PASS" if gate.get("scores") and {"gate", "builder", "assemble", "final"} <= set(kinds) and "gate 1: the critic on the language" in sent
-        and "builders started" in sent and any(x.startswith("assemble report") for x in sent)
-        and "the final: fix any FAIL, write report.md" in sent and (st.get("costs") or {}).get("critic", 0) > 0
-        and os.path.exists(os.path.join(PDIR, "final", f"critic_v{last.get('version')}.md")) else "FAIL",
-        "the critic at every gate (the language, each builder, the film, the final); the reports reach the planner; costs by role",
-        f"critiques {kinds}; messages {sent}; costs {st.get('costs')}")
+    ag = (rs.get("agents") or [{}])[0]
+    evs = [e["text"] for e in rs.get("events") or []]
+    during = [m["why"] for m in rs.get("messages_sent") or [] if ag.get("started") is not None and ag.get("ended") is not None
+              and ag["started"] <= m["t"] <= ag["ended"]]
+    say("PASS" if r.returncode == 0 and last.get("version") and v.get("checks") and all(x == "PASS" for x in v["checks"].values())
+        and "the test stand-in with an agent" in rep_md and ag.get("description") == "build s3" and ag.get("model") == "haiku"
+        and ag.get("state") == "done" and ag["ended"] - ag["started"] >= 10
+        and not [w for w in during if w in ("no final yet",) or w.startswith("use the time left")]
+        and any(x.startswith("🤖 agent: build s3 (haiku) started") for x in evs) and any(x.startswith("🤖 agent: build s3 (haiku) done in") for x in evs)
+        and any("↳ build s3" in x for x in evs) and any("started a turn of its own (its agent finished)" in x for x in evs) else "FAIL",
+        "a director that deploys an agent: its turn ends while the agent works, the runner waits (no reminder, no nudge, the "
+        "session open), the session's own turn delivers; the agent in status.json and the live log",
+        f"run {last.get('run')}: v{last.get('version')} {v.get('checks')}; agent {ag}; messages while it worked {during}; "
+        f"{time.time() - t0:.0f} s; ended: {last.get('stop_reason')}")
+    raw = [json.loads(x) for x in open(os.path.join(rdir, "events.jsonl"), encoding="utf-8") if x.strip()]
+    res = [e for e in raw if e.get("type") == "result"]
+    mu = rs.get("model_usage") or {}
+    cmd = json.load(open(os.path.join(rdir, "command.json"), encoding="utf-8"))["cmd"]
+    tools = cmd[cmd.index("--allowedTools") + 1:cmd.index("--disallowedTools")]
+    brief = open(os.path.join(rdir, "brief.md"), encoding="utf-8").read()
+    say("PASS" if res and rs.get("cost_usd") == res[-1]["total_cost_usd"] and len(res) >= 2
+        and rs["cost_usd"] < round(sum(x["total_cost_usd"] for x in res), 4) and rs.get("turns") == sum(x["num_turns"] for x in res)
+        and set(mu) >= {"fake-agentdirector", "claude-haiku-fake"} and "(agents)" in rep_md and "(the director)" in rep_md
+        and "- Agents: 1 (haiku 1): build s3 (haiku, done" in rep_md and "ultracode on; cost cap $50 (not reached)" in rep_md
+        and {"Agent", "TaskStop", "Workflow"} <= set(tools) and "SendMessage" not in tools and cmd[cmd.index("--max-budget-usd") + 1] == "50"
+        and cmd[cmd.index("--effort") + 1] == "max" and "Ultracode is on for this run" in brief and "## You have full reign" in brief
+        and last.get("costs") and last.get("agents") == 1 and last.get("ultracode") is True else "FAIL",
+        "the costs: the session's latest running total (not a sum of its results), the turns added up, the costs per model "
+        "(the director's, the agent's) and the agents in report.md; --ultracode (Workflow, the brief's line) and --max-usd on "
+        "the command line; effort max by default",
+        f"cost {rs.get('cost_usd')} (results {[x['total_cost_usd'] for x in res]}); turns {rs.get('turns')}; models {mu and list(mu)}; "
+        f"{next((x for x in rep_md.splitlines() if x.startswith('- Costs per model')), '-')}; tools {tools}")
+    cr = [c for c in rs.get("critiques") or [] if c.get("video", "").startswith("work/previews/")]
+    fin = [c for c in rs.get("critiques") or [] if c.get("video") == "final/music-video.mp4"]
+    log = [json.loads(x) for x in open(os.path.join(PDIR, "work", "critic", "log.jsonl"), encoding="utf-8") if x.strip()]
+    t_run = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(rs["started"]))
+    mine = [d for d in log if str(d.get("at") or "") >= t_run]
+    vc = (v.get("critic") or {})
+    say("PASS" if len(cr) == 1 and cr[0].get("used") == "the director ran it" and len(fin) == 1 and len(mine) == 2
+        and vc.get("from") == fin[0].get("file") and os.path.exists(os.path.join(PDIR, "final", f"critic_v{last.get('version')}.md"))
+        and not [m for m in rs.get("messages_sent") or [] if m["why"].startswith("critic:")]
+        and any(x.startswith("🔍 critic on work/previews/") for x in evs) else "FAIL",
+        "the critic looks once at each cut: plan assemble's critiques of the preview and the final (the watcher doesn't look "
+        "again, no second message, but they reach the run's record and live log while it runs), and the version reuses the "
+        "final's",
+        f"previews {[(c.get('video'), c.get('used')) for c in cr]}; final {[(c.get('file'), c.get('used')) for c in fin]}; "
+        f"{len(mine)} critic calls; v{last.get('version')} critic from {vc.get('from')}")
     ln = next((n for n in json.load(open(os.path.join(PDIR, "review", "notes.json"), encoding="utf-8")) if n.get("id") == wrote.get("id")), {})
-    md = os.path.join(PDIR, "work", "director", f"run-{last.get('run')}", "messages.md")
+    md = os.path.join(rdir, "messages.md")
     msgs = open(md, encoding="utf-8").read() if os.path.exists(md) else ""
-    own = "the user's live note (1)" in sent
     say("PASS" if wrote and ln.get("forwarded_run") == last.get("run") and "the field should breathe here (live)" in msgs
-        and "segment s2 (yours, the hero)" in msgs and "The user's live notes since the last report" in msgs
-        and (not own or (ln.get("done") and "test stand-in" in (ln.get("fix") or ""))) else "FAIL",
-        "a live note left while the pipeline runs reaches the planner within seconds (with the song context and the segment), "
-        "is marked forwarded, done by the planner, and listed in the next assemble report",
-        f"{'its own message' if own else 'in the assemble report'}; forwarded_run {ln.get('forwarded_run')}, done {ln.get('done')}, "
-        f"fix {ln.get('fix')!r}")
-    # an interactive planner's `pipeline build`
-    r = studio("pipeline", "build", P, "--only", "s1", "--builder-model", "fake", "--critic-model", "fake", "--budget", "6m",
-               check=False, env=env, timeout=900)
-    st = json.load(open(os.path.join(PDIR, "work", "pipeline", "state.json"), encoding="utf-8"))
-    b = [x for x in st.get("sessions") or [] if x.get("name") == "builder s1"]
-    hist = os.path.join(PDIR, "work", "pipeline", "history", f"state_run-{last.get('run')}.json")
-    run_st = json.load(open(hist, encoding="utf-8")) if os.path.exists(hist) else {}
-    say("PASS" if r.returncode == 0 and "pipeline build: done" in r.stdout and "- s1: built" in r.stdout and len(b) == 1
-        and st.get("mode") == "interactive" and st.get("state") == "done" and run_st.get("run") == last.get("run")
-        and run_st.get("mode") == "pipeline" and "the lib could export the plate colour" in r.stdout else "FAIL",
-        "pipeline build --only s1 (an interactive planner): a builder, its critic round, the summary with its requests; "
-        "its own state.json (the run's kept in history/)",
-        " | ".join(x for x in r.stdout.splitlines() if x.startswith(("pipeline build", "- s1", "  s1")))[:400] or (r.stdout + r.stderr)[-800:])
+        and "segment s2 (s2 (smoke))" in msgs and ln.get("done") and "test stand-in" in (ln.get("fix") or "") else "FAIL",
+        "a live note left while the agent works reaches the director within seconds (the song context, the plan's segment), "
+        "is marked forwarded and done", f"forwarded_run {ln.get('forwarded_run')}, done {ln.get('done')}, fix {ln.get('fix')!r}; "
+        f"heard while the agent worked: {open(heard).read().strip() if os.path.exists(heard) else '-'}")
+
+
+def flags_check():
+    """`studio.py direct --dry-run`: the command line and the brief without starting Claude: effort max and the agent
+    tools by default, no Workflow and no ultracode line without --ultracode, no cap without --max-usd."""
+    r = studio("direct", P, "--dry-run", "--model", "fake", "--budget", "20m", check=False, env={"MV_CLAUDE": os.path.join(TESTS, "fake_claude.py")})
+    pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
+    n = max(int(x.split("-")[1]) for x in os.listdir(os.path.join(PDIR, "work", "director")) if re.fullmatch(r"run-\d+", x))
+    rdir = os.path.join(PDIR, "work", "director", f"run-{n}")
+    cmd = json.load(open(os.path.join(rdir, "command.json"), encoding="utf-8"))["cmd"]
+    brief = open(os.path.join(rdir, "brief.md"), encoding="utf-8").read()
+    st = json.load(open(os.path.join(rdir, "status.json"), encoding="utf-8"))
+    tools = cmd[cmd.index("--allowedTools") + 1:cmd.index("--disallowedTools")]
+    say("PASS" if r.returncode == 0 and st.get("state") == "dry-run" and cmd[cmd.index("--effort") + 1] == "max"
+        and {"Agent", "TaskStop"} <= set(tools) and "Workflow" not in tools and "SendMessage" not in tools and "--max-budget-usd" not in cmd
+        and "## You have full reign" in brief and "Ultracode is on" not in brief and "nothing here requires agents" in brief
+        and not (pj.get("runs") or [{}])[-1].get("run") == n else "FAIL",
+        "direct --dry-run: effort max and the agent tools by default; without --ultracode no Workflow and no opt-in line; "
+        "without --max-usd no cap; the brief's 'You have full reign'", f"tools {tools}; effort {cmd[cmd.index('--effort') + 1]}")
+    r2 = studio("direct", P, "--dry-run", "--model", "fake", "--budget", "20m", "--critic-model", "off", check=False,
+                env={"MV_CLAUDE": os.path.join(TESTS, "fake_claude.py")})
+    reign = r2.stdout.split("## You have full reign", 1)[-1]
+    say("PASS" if r2.returncode == 0 and "the looking is yours" in reign and "studio.py critique" not in reign
+        and "the looking is the critic's" not in reign.lower() else "FAIL",
+        "direct --dry-run with the critic off: the brief leaves the looking to the director, not to a critic it would "
+        "have to call", reign[:300])
 
 
 def finish(a, t_start):

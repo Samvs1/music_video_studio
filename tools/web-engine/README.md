@@ -135,7 +135,7 @@ each its own slot); default the whole song. A layer the live view can't use (a s
 that isn't there) is left out with a warning in the live view; the others play.
 A `video` is a rendered pass shown in its slot from its `.mv.json` range (or `from` / `to`), muted, synced to the song.
 Also `mode` (normal, screen, add, multiply, lighten, darken, difference), `opacity`, `seed`, `id`. Without it the live view
-plays `work/plan.json` (the pipeline's segments in their slots, the overlays on top), else the newest renders in
+plays `work/plan.json` (the plan tools' segments in their slots, the overlays on top), else the newest renders in
 `work/renders/` (each web pass's scene live over its range, other passes as their video; opaque passes by range, the
 newest wins; transparent ones on top). Any scene can also be played alone over the whole song.
 

@@ -13,8 +13,8 @@ can hear (the user) gets their ears in early, mid-run. Three parts:
                      off the network (as a render is: a scene that fetches from the internet fails live too). The web
                      app starts one per project, lazily.
   state(pdir)        what the live view can play: the timelines, in order: work/live.json (the director's override);
-                     work/plan.json (the pipeline's segments in their slots, a Blender segment as its rendered preview
-                     or a labelled slate, the overlays on top); the newest renders in work/renders/ (from their .mv.json
+                     work/plan.json (the plan tools' segments in their slots, a Blender segment as its rendered
+                     preview or a labelled slate, the overlays on top); the newest renders in work/renders/ (from their .mv.json
                      sidecars: a web scene plays live, any other pass as its video; opaque passes by range, the newest
                      wins; transparent passes on top); each pitch's draft plan (work/pitches/round-K/pN/plan.json). And
                      the scenes there are, each playable alone.
@@ -30,7 +30,7 @@ video's first frame), slots: [[a, b], ...] (song frames, b excluded), transparen
 import glob, json, os, re, threading, time, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-from .common import STUDIO, FONTS_DIR, PROJECTS, delivery, jload, jsave
+from .common import STUDIO, FONTS_DIR, PROJECTS, delivery, file_lock, jload, jsave
 from . import web
 
 WEB_EXT = (".js", ".mjs", ".html", ".htm")
@@ -262,14 +262,14 @@ def plan_layers(pdir, F, plan=None, pitch_dir=None):
     """The layers of a plan (work/plan.json, or a pitch's draft): each segment in its slot (a web scene live; a
     Blender one, or one without a playable scene, as its rendered preview or a labelled slate), the overlays on top.
     (layers, warnings) or None when there is no plan."""
-    import pipeline
-    v = pipeline.validate(pdir, plan=plan)
+    import plan as plans
+    v = plans.validate(pdir, plan=plan)
     if v.get("plan") is None or not v.get("items"):
         return None
     layers, warn = [], []
     for it in v["items"]:
         if it.get("bad_range") or it["b"] <= it["a"]:
-            warn.append(f"{it['id']}: its range isn't valid (pipeline validate says why)")
+            warn.append(f"{it['id']}: its range isn't valid (plan validate says why)")
             continue
         slots = [[it["a"], it["b"]]]
         label = it["id"] + (f" · {it['name']}" if it.get("name") else "")
@@ -284,16 +284,16 @@ def plan_layers(pdir, F, plan=None, pitch_dir=None):
             layers.append(scene_layer(pdir, it["id"], label, full, slots, tr, seed_of(it.get("render_args")),
                                       it.get("mode", "normal"), it.get("opacity", 1.0)))
             continue
-        out = pipeline.outputs(pdir, it, "preview")[1] if not pitch_dir else ""
+        out = plans.outputs(pdir, it, "preview")[1] if not pitch_dir else ""
         if out.endswith(".mp4") and os.path.isfile(out):
             side = jload(out + ".mv.json", None) or {}
-            fresh = pipeline.current(pdir, it, "preview")[0] if it["renderer"] == "blender" else True
+            fresh = plans.current(pdir, it, "preview")[0] if it["renderer"] == "blender" else True
             layers.append(video_layer(pdir, it["id"], label, out, slots, side.get("t0", it["t0"]), tr, it.get("mode", "normal"),
                                       it.get("opacity", 1.0), "its preview render" + ("" if fresh else
                                       " (older than its scene: render it again to see the change)")))
             continue
         why = ("a Blender segment, not rendered yet (Blender scenes play as their preview render)" if it["renderer"] == "blender"
-               else "not built yet" + (" (a builder's)" if it["owner"] == "builder" else "") if it.get("scene") else "no scene")
+               else "not written yet" if it.get("scene") else "no scene")
         if ov:
             warn.append(f"{it['id']}: {why}: not shown")
             continue
@@ -472,7 +472,6 @@ def read_notes(pdir, tries=20):
 def update_notes(pdir, fn):
     """Change review/notes.json in place: under a lock (between threads, and a lock file between processes), re-read,
     fn(notes) changes the list (or returns a new one), an atomic replace. Returns the notes as written."""
-    from pipeline import file_lock
     p = os.path.join(pdir, NOTES)
     with _LOCK, file_lock(p):
         notes = read_notes(pdir)

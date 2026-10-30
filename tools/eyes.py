@@ -1,5 +1,5 @@
 """The director's eyes: it can't watch the video or hear the song, so these turn a rendered video into pictures and
-numbers laid against the song. Output goes to work/eyes/<video name>/ (PNG + markdown), paths printed; a pipeline
+numbers laid against the song. Output goes to work/eyes/<video name>/ (PNG + markdown), paths printed; a plan
 segment's video keeps its eyes next to it (work/segments/<id>/eyes/<name>/), a pitch's in its pitch folder
 (work/pitches/<round>/<pN>/eyes/<name>/).
 
@@ -86,7 +86,7 @@ class Video:
 
 
 def out_dir(video):
-    """Where a video's pictures go: work/eyes/<name>/. A pipeline segment's video (inside work/segments/<id>/) or a
+    """Where a video's pictures go: work/eyes/<name>/. A plan segment's video (inside work/segments/<id>/) or a
     pitch's (inside work/pitches/<round>/<pN>/) keeps them in that folder: <folder>/eyes/<name>/, next to it."""
     v = os.path.abspath(video.rstrip("/\\"))
     stem = os.path.splitext(os.path.basename(v))[0]

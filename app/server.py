@@ -4,19 +4,19 @@ Carried over from aftermovie-studio's server (jobs, range requests, project file
   python tools/studio.py serve            -> http://127.0.0.1:8765/
 
 Pages: Song & brief (upload, notes, reference pictures, delivery format, lyrics) · Analyse (ingest with progress) ·
-The song (the song viewer) · Story (draft with Claude, edit) · Direct (the autonomous run: the pipeline or solo, with
-live progress: the stages, a card per session, the critic's reports at the gates, costs by role; or the interactive
-command; "▶ play the scenes live" during a run) · Watch (each version above the song lanes, notes with N, the report,
+The song (the song viewer) · Story (draft with Claude, edit) · Direct (the autonomous run: one director with full
+reign, agents its choice, ultracode and a cost cap optional; live progress: the live log, the critic's notes; or the
+interactive command; "▶ play the scenes live" during a run) · Watch (each version above the song lanes, notes with N, the report,
 the checks and the critic's notes, "Ask the critic"; and "▶ live": the project's scenes played in the browser with the
 song, no render, from each project's own live server, with notes that reach a running director).
 
 API (JSON):
   GET  /api/projects                     GET  /api/p/<p>                GET  /api/p/<p>/job
   GET  /api/p/<p>/director               GET  /api/doctor               GET  /api/formats
-  GET  /api/p/<p>/pipeline               (work/pipeline/state.json with the files' URLs: the run's stages, sessions,
-                                          segments, gates, assembles, critiques, costs; {} when there is none)
-  GET  /api/p/<p>/session-log?log=<a session's events.jsonl>             (its last lines, readable)
-  GET  /api/p/<p>/live                   (the live view: the project's live server (base), the delivery size, the song,
+                                         (director: the last run's status: its live log, the clock, the agents
+                                          [{description, model, state, started, ended, tools, last}], the costs per
+                                          model [{model, name, cost_usd, who}], total_usd with the critic, critiques)
+  GET  /api/p/<p>/live                  (the live view: the project's live server (base), the delivery size, the song,
                                           the timelines (work/live.json, work/plan.json, the renders, the pitches' draft
                                           plans), the scenes, the live notes; mv/live.py; starts the live server)
   POST /api/projects {name, title}       PUT  /api/p/<p>/upload?filename=x.mp3 (body = the file; .lrc/.txt = lyrics;
@@ -26,16 +26,15 @@ API (JSON):
   POST /api/p/<p>/lyrics-align {lines: [{text}]}                          (Whisper places them: job "align" ->
                                                                            /p/<p>/cache/lyrics/aligned.json)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
-  POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, mode, model, effort, seed_notes,
-                                                                          revise, critic_model, planner_model, planner_effort,
-                                                                          builders, builder_model, builder_effort, nudge}
+  POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, model, effort, seed_notes,
+                                                                          revise, critic_model, ultracode, max_usd, nudge}
   POST /api/p/<p>/critique {version | video, model}                       (the critic looks at a version or a video: job "critique";
                                                                            a version's notes land in final/critic_vN.md)
-  POST /api/p/<p>/stop (the running job; else an interactive planner's builders)    POST /api/p/<p>/note {version, t, text}
+  POST /api/p/<p>/stop (the running job)                                 POST /api/p/<p>/note {version, t, text}
                                                                           (a live note: version "live", scene, timeline)
   POST /api/p/<p>/note-edit {id, done | delete | text}                  POST /api/p/<p>/deliver
 """
-import json, math, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse
+import json, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 APP = os.path.dirname(os.path.abspath(__file__))
@@ -191,8 +190,7 @@ def project_state(name):
     return {"name": name, "studio": STUDIO, "project": pj, "song": song_info(name, d), "story": story_state(d),
             "versions": versions_state(name, d, pj), "notes": jload(os.path.join(d, "review", "notes.json"), []),
             "files": files, "job": job_state(name), "director": director_state(name, brief=False), "formats": FORMATS,
-            "status": jload(os.path.join(d, "cache", "status.json"), {}), "critiques": critiques_state(name, d),
-            "auto_mode": auto_mode(d)}
+            "status": jload(os.path.join(d, "cache", "status.json"), {}), "critiques": critiques_state(name, d)}
 
 
 def director_state(name, brief=True):
@@ -204,10 +202,11 @@ def director_state(name, brief=True):
     out = {k: st.get(k, cur.get(k)) for k in ("run", "state", "kind", "model", "model_used", "effort", "budget", "budget_s",
                                                "started", "deadline", "elapsed_s", "wall_s", "cost_usd", "turns", "version",
                                                "stop_reason", "result", "final_exists", "messages_sent", "claude_version",
-                                               "critic_model", "critic_cost_usd", "version_critique",
-                                               "mode", "mode_why", "stage", "builders", "builder_model", "builder_effort",
-                                               "builders_cost_usd", "costs")}
+                                               "critic_model", "critic_cost_usd", "version_critique", "ultracode", "max_usd",
+                                               "budget_hit", "agents", "model_usage", "background", "working")}
     out["critiques"] = [dict(c, url=f"/p/{name}/{c['file']}") for c in st.get("critiques") or [] if c.get("file")]
+    import director                          # the costs per model, labelled as in report.md; the total with the critic
+    out["costs"], out["total_usd"] = director.cost_rows(out), director.total_cost(out)
     out["events"] = st.get("events", [])[-200:]
     out["now"] = time.time()
     if brief and os.path.exists(os.path.join(d, cur["dir"], "brief.md")):
@@ -217,36 +216,7 @@ def director_state(name, brief=True):
     return out
 
 
-# ------------------------------------------------------------------ the pipeline (work/pipeline/state.json)
-AUTO_CACHE = {}                      # project folder -> (the files it depends on, as mtimes; the answer)
-
-
-def auto_mode(d):
-    """What `--mode auto` would pick, for the Direct page's hint (director.choose_mode, the same rule): the pipeline
-    from `pipeline_from_min` minutes, the smallest budget whose stages fit before the final must start
-    (pipeline.stage_times with the final's estimate here; at least 45 min); a review round of a video made without a
-    valid plan runs solo. `revise_from_min` is the same for a review round (it starts at stage 4)."""
-    key = tuple(mtime(os.path.join(d, *f)) for f in (("work", "plan.json"), ("work", "pipeline", "renders.json"),
-                                                    ("song", "song-map.json"), ("project.json",)))
-    key += (mtime(os.path.join(TOOLS, "speeds.json")),)
-    hit = AUTO_CACHE.get(d)
-    if hit and hit[0] == key:
-        return hit[1]
-    out = None
-    if os.path.exists(os.path.join(d, "song", "song-map.json")):
-        try:
-            import pipeline
-            v = pipeline.validate(d)
-            est, how = pipeline.estimate_final(d, v) if v["ok"] else pipeline.estimate_rough(d)
-            out = {"plan_ok": bool(v["ok"]), "final_est_s": round(est), "final_how": how,
-                   "pipeline_from_min": math.ceil(pipeline.pipeline_from(est) / 60),
-                   "revise_from_min": math.ceil(pipeline.pipeline_from(est, revise=True) / 60)}
-        except Exception as ex:
-            out = {"error": str(ex)[:200]}
-    AUTO_CACHE[d] = (key, out)
-    return out
-
-
+# ------------------------------------------------------------------ project files by URL
 def file_url(name, d, rel_path):
     """A project file's URL (with its mtime, so a newer one isn't cached), or None when it isn't there."""
     if not rel_path or not isinstance(rel_path, str):
@@ -255,75 +225,6 @@ def file_url(name, d, rel_path):
     if not full.startswith(os.path.abspath(d) + os.sep) or not os.path.isfile(full):
         return None
     return f"/p/{name}/{urllib.parse.quote(rel_path.replace(os.sep, '/'))}?v={mtime(full)}"
-
-
-def pipeline_state(name):
-    """work/pipeline/state.json for the Direct page (the autonomous run's, or an interactive planner's `pipeline
-    build`, `gate` and `assemble`), with the URLs of what it names: each session's brief, messages and log, each
-    segment's preview, every critique and video. The segments are plan.json's, with the state's news on top."""
-    d = pdir(name)
-    st = jload(os.path.join(d, "work", "pipeline", "state.json"), None)
-    if not isinstance(st, dict) or not st:
-        return {}
-    st = with_urls(name, d, st)
-    if st.get("mode") == "interactive":      # the last autonomous run's own state, kept when this session took over
-        cur = jload(os.path.join(d, "work", "director", "current.json"), None) or {}
-        rv = jload(os.path.join(d, "work", "pipeline", "history", f"state_run-{cur.get('run')}.json"), None)
-        if isinstance(rv, dict) and rv.get("run") == cur.get("run"):
-            st["run_view"] = with_urls(name, d, rv)
-    return st
-
-
-def with_urls(name, d, st):
-    """A pipeline state with the URLs of what it names, plan.json's segments, the previews, `now`."""
-    u = lambda f: file_url(name, d, f)                                      # noqa: E731
-    ses = st.get("sessions") or []
-    if isinstance(ses, dict):
-        ses = [dict(x, name=k) for k, x in ses.items()]
-    for s in ses:
-        if not isinstance(s, dict):
-            continue
-        folder = os.path.dirname(str(s.get("log") or "")).replace("\\", "/")
-        s["files"] = {k: u(f"{folder}/{fn}") for k, fn in (("brief", "brief.md"), ("messages", "messages.md"),
-                                                          ("studio", "studio.log"), ("stderr", "stderr.log"))} if folder else {}
-        if s.get("segment"):
-            s["preview_url"] = u(f"work/segments/{s['segment']}/{s['segment']}_preview.mp4")
-        c = s.get("critique") or {}
-        if isinstance(c, dict) and c.get("file"):
-            s["critique"] = dict(c, url=u(c["file"]))
-    st["sessions"] = [s for s in ses if isinstance(s, dict)]
-    for g in st.get("gates") or []:
-        g.update(url=u(g.get("file")), video_url=u(g.get("video")), frames=[u(f) for f in g.get("style_frames") or []])
-    for a in st.get("assembles") or []:
-        c = a.get("critique") or {}
-        a.update(video_url=u(a.get("video")), url=u(c.get("file")) if isinstance(c, dict) else None)
-    for c in st.get("critiques") or []:
-        c.update(url=u(c.get("file")), video_url=u(c.get("video")))
-    plan = jload(os.path.join(d, "work", "plan.json"), {})
-    plan = plan if isinstance(plan, dict) else {}
-    segs, news = [], st.get("segments") if isinstance(st.get("segments"), dict) else {}
-    for kind, key in (("segment", "segments"), ("overlay", "overlays")):     # plan.json is the truth (its status is
-        for x in plan.get(key) or []:                                          # the studio's), the state adds the builder
-            if isinstance(x, dict) and x.get("id"):
-                mine = {"id": x["id"], "kind": kind, "name": x.get("name"), "from": x.get("from"), "to": x.get("to"),
-                        "owner": x.get("owner") or "planner", "status": x.get("status"), "renderer": x.get("renderer"),
-                        "scene": x.get("scene")}
-                segs.append(dict(news.get(x["id"]) or {}, **{k: v for k, v in mine.items() if v is not None}))
-    known = {x["id"] for x in segs}
-    segs += [dict(x, id=k) for k, x in news.items() if k not in known and isinstance(x, dict)]
-    for x in segs:
-        sid = x["id"]
-        x["preview_url"] = u(f"work/segments/{sid}/{sid}_preview.mp4")
-    st["segments"] = segs
-    st["hero"] = plan.get("hero")
-    st["plan_url"] = u("work/plan.json")
-    st["previews"] = [{"file": f"work/previews/{f}", "url": u(f"work/previews/{f}"),
-                       "at": mtime(os.path.join(d, "work", "previews", f))} for f in
-                      sorted((f for f in os.listdir(os.path.join(d, "work", "previews")) if re.fullmatch(r"preview_\d+\.mp4", f))
-                             if os.path.isdir(os.path.join(d, "work", "previews")) else [],
-                             key=lambda f: int(re.sub(r"\D", "", f)))[-12:]]
-    st["now"] = time.time()
-    return st
 
 
 # ------------------------------------------------------------------ live preview (the scenes in the browser, with the song)
@@ -359,37 +260,6 @@ def live_state(name):
     return dict(st, base=srv.url, song=f"/p/{name}/song/{urllib.parse.quote(os.path.basename(sf))}" if sf else None,
                 timeline=st["timelines"][0] if st["timelines"] else {"source": None, "label": "", "layers": [], "warnings": []},
                 notes=notes)
-
-
-LOG_RE = re.compile(r"work/(pipeline/sessions/[A-Za-z0-9_.-]+|director/run-\d+)/events\.jsonl")
-
-
-def session_log(name, log, most=240, tail_bytes=600_000):
-    """A session's log for its card on the Direct page: the last lines of its events.jsonl, one short line per event
-    (the same summary as the live log), read from the file's end (a long session's file is big)."""
-    from mv.session import summarize
-    d = pdir(name)
-    log = str(log or "").replace("\\", "/")
-    if not LOG_RE.fullmatch(log):
-        raise ValueError("not a session's log")
-    p = os.path.join(d, *log.split("/"))
-    if not os.path.isfile(p):
-        return {"lines": [], "size": 0}
-    size = os.path.getsize(p)
-    with open(p, "rb") as f:
-        f.seek(max(0, size - tail_bytes))
-        raw = f.read().decode("utf-8", errors="replace").splitlines()
-    if size > tail_bytes:
-        raw = raw[1:]                                                       # the first line may be cut
-    out = []
-    for ln in raw:
-        try:
-            s = summarize(json.loads(ln))
-        except Exception:
-            continue
-        if s:
-            out += s.split("\n")
-    return {"lines": out[-most:], "size": size, "cut": size > tail_bytes or len(out) > most}
 
 
 # ------------------------------------------------------------------ background jobs (one per project)
@@ -429,13 +299,6 @@ def job_state(name):
 def stop_job(name):
     j = JOBS.get(name)
     if not j or j["proc"].poll() is not None:
-        d = pdir(name)
-        st = jload(os.path.join(d, "work", "pipeline", "state.json"), {}) or {}
-        if st.get("mode") == "interactive" and st.get("stage") == "build" and st.get("state") == "running" \
-                and time.time() - (st.get("updated") or 0) < 120:
-            import director                  # an interactive planner's `pipeline build`: it stops on the same signal
-            director.request_stop(d)
-            return {"ok": True, "stopping": "the builders wrap up within a minute or two"}
         return {"ok": True, "running": False}
     if j["job"] == "direct":                 # the runner wraps up cleanly (archive, checks, report); force it if it hangs
         import director
@@ -457,30 +320,30 @@ def stop_job(name):
 
 # ------------------------------------------------------------------ writes
 BRIEF_KEYS = {"title", "about", "mood", "ideas", "avoid", "lyrics"}
-DIRECTOR_KEYS = ("model", "effort", "budget", "critic_model", "critic_effort", "mode", "planner_effort", "builders",
-                 "builder_model", "builder_effort")
+DIRECTOR_KEYS = ("model", "effort", "budget", "critic_model", "critic_effort", "ultracode", "max_usd")
+OLD_DIRECTOR_KEYS = ("mode", "planner_effort", "builders", "builder_model", "builder_effort")     # the removed pipeline's
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 MODEL_RE = re.compile(r"[A-Za-z0-9._\[\]-]{1,60}")
 
 
 def direct_args(name, body):
-    """The Direct page's form -> `studio.py direct`. The page sends both efforts: `effort` is solo's, `planner_effort`
-    the pipeline planner's (--mode auto decides which one runs). Anything out of range is left to the defaults."""
+    """The Direct page's form -> `studio.py direct`: one director (effort default max), the critic, ultracode (the
+    Workflow tool: more tokens), an optional cost cap in dollars. Anything out of range is left to the defaults."""
     budget = str(body.get("budget") or "90m")
     if re.fullmatch(r"\d+", budget):
         budget += "m"
-    args = ["direct", name, "--budget", budget, "--effort", body.get("effort") if body.get("effort") in EFFORTS else "high"]
-    if body.get("mode") in ("auto", "pipeline", "solo"):
-        args += ["--mode", body["mode"]]
-    for key, flag in (("model", "--model"), ("planner_model", "--planner-model"), ("builder_model", "--builder-model"),
-                      ("critic_model", "--critic-model")):
+    args = ["direct", name, "--budget", budget, "--effort", body.get("effort") if body.get("effort") in EFFORTS else "max"]
+    for key, flag in (("model", "--model"), ("critic_model", "--critic-model")):
         if MODEL_RE.fullmatch(str(body.get(key) or "")):
             args += [flag, str(body[key])]
-    for key, flag in (("planner_effort", "--planner-effort"), ("builder_effort", "--builder-effort")):
-        if body.get(key) in EFFORTS:
-            args += [flag, body[key]]
-    if str(body.get("builders", "")).strip().isdigit():
-        args += ["--builders", str(min(8, int(str(body["builders"]).strip())))]
+    if body.get("ultracode") is True or str(body.get("ultracode")).lower() in ("1", "true", "on"):
+        args.append("--ultracode")
+    try:
+        cap = float(str(body.get("max_usd") or "").strip().lstrip("$") or 0)
+    except ValueError:
+        cap = 0
+    if 0 < cap <= 10000:
+        args += ["--max-usd", f"{cap:g}"]
     if str(body.get("seed_notes") or "").strip():
         args += ["--seed-notes", str(body["seed_notes"])[:4000]]
     if body.get("revise"):
@@ -528,8 +391,8 @@ def update_brief(d, body):
         if old.get("fps") and old.get("fps") != new["fps"] and os.path.exists(os.path.join(d, "song", "frames.json")):
             pj.setdefault("status", {})["frames_stale"] = True          # frames.json is per fps: remake it
     if isinstance(body.get("director"), dict):                      # the Direct page's last choices (merged)
-        pj["director"] = dict(pj.get("director") or {}, **{k: str(v)[:40] for k, v in body["director"].items()
-                                                           if k in DIRECTOR_KEYS})
+        pj["director"] = dict({k: v for k, v in (pj.get("director") or {}).items() if k not in OLD_DIRECTOR_KEYS},
+                              **{k: v if isinstance(v, bool) else str(v)[:40] for k, v in body["director"].items() if k in DIRECTOR_KEYS})
     studio.save_project(d, pj)
     return pj
 
@@ -874,7 +737,7 @@ class H(BaseHTTPRequestHandler):
         return [urllib.parse.unquote(x) for x in u.path.strip("/").split("/") if x], urllib.parse.parse_qs(u.query)
 
     def do_GET(self):
-        parts, q = self.route()
+        parts, _ = self.route()
         try:
             if not parts:
                 return self.send_file(os.path.join(APP, "static", "index.html"))
@@ -898,10 +761,6 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json(job_state(parts[2]))
             if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "director":
                 return self.send_json(director_state(parts[2]) or {})
-            if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "pipeline":
-                return self.send_json(pipeline_state(parts[2]))
-            if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "session-log":
-                return self.send_json(session_log(parts[2], q.get("log", [""])[0]))
             if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "live":
                 return self.send_json(live_state(parts[2]))
             if parts[:2] == ["api", "doctor"]:

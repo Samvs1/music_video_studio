@@ -54,14 +54,17 @@ If it fails: it keeps `projects\_smoke` and prints the failing step's output. `b
 beat_this → send Claude the line (the tolerances were set on the fallback tracker). `check: spec FAIL` → open
 `projects\_smoke\work\checks\report.md`. A Blender failure → run with `--no-blender` to see the rest, then step 2.
 
-## 4. The director's sandbox (1 min, a few cents)
+## 4. The director's sandbox (1-2 min, a few cents)
 ```
 .venv\Scripts\python.exe tools\studio.py new sandbox-test
 .venv\Scripts\python.exe tools\studio.py permtest sandbox-test
 ```
-Expect three `[PASS]` lines: writes in the project allowed, writes into `tools\` refused, `curl` refused. This checks
-the Windows form of Claude Code's path rules (`//c/...`), which couldn't be tested in the VM. If the `tools` line FAILs:
-the director could still edit the studio's code by mistake; tell Claude (the fix is in `tools/director.py`, `rule_path`).
+Expect six `[PASS]` lines: the director's writes in the project allowed, its writes into `tools\` refused, `curl`
+refused, the director can start an agent, that agent's writes in the project allowed and its writes into `tools\`
+refused (agents share the director's sandbox). This checks the Windows form of Claude Code's path rules (`//c/...`),
+which couldn't be tested in the VM. If a `tools` line FAILs: the director (or its agents) could still edit the
+studio's code by mistake; tell Claude (the fix is in `tools/director.py`, `rule_path`). If only the agent lines FAIL,
+send Claude the agent's lines from the output (and `work\director\permtest\events.jsonl`).
 Delete the test project afterwards (`projects\sandbox-test`).
 
 ## 5. Benchmark (5-10 min)
@@ -97,16 +100,17 @@ If it fails: the log on the page says which step. No lyrics → the song isn't o
 
 ## 8. Story and a first director run (uses your Claude plan)
 - **Story** → *Draft it with Claude* (about a minute) → read it, change what's wrong, **Save the story**.
-- **Direct** → budget **30** minutes for a first try, mode `auto`: the hint under the mode should say *This budget runs
-  solo (under 45 minutes, ...)*, and the *Pipeline* box goes dim. Change the budget to 90 and back: the hint switches
-  to the pipeline, or (on a slow machine) says how long the pipeline's stages need here: the final render's estimate
-  sets the bar, never under 45 minutes. Effort (the Solo box) `high`,
-  model `opus` → **Start the director**. The run view looks as it always did for a solo run. The live
-  log should start with `session started · model claude-opus-...` and show the director reading the song folder,
-  writing scenes in `work\scenes`, rendering style frames and looking at them. Around the deadline you'll see
-  `studio → director (5 minutes)` / `(time's up)` and at the end `delivered v1`.
-- **Watch & review**: v1 plays with the song's lanes under it; the report shows what it made and the `Run settings`.
-  The checks line should read spec / flash / text / sync PASS.
+- **Direct** → the form has one director: budget **30** minutes for a first try, model `opus`, effort `max` (the
+  default), critic `sonnet`, **Ultracode** unticked (the default; its note says *more tokens*), cost cap empty →
+  **Start the director**. The live log should start with `session started · model claude-opus-...` and show the
+  director reading the song folder, writing scenes in `work\scenes`, rendering style frames and looking at them. Under
+  the log: *Agents: none so far (whether to deploy any is the director's call)*, or the agents it started (see 8d),
+  the critic's notes as they come, and the costs (they update at the end of each of the director's turns, so a long
+  first turn shows $0.00 for a while). Around the deadline you'll see `studio → director (5 minutes)` / `(time's
+  up)` and at the end `delivered v1`.
+- **Watch & review**: v1 plays with the song's lanes under it; the report shows what it made and the `Run settings`
+  (the model and its cost, `- Agents: ...`, `ultracode off`). The checks line should read spec / flash / text / sync
+  PASS.
 - If the director finishes early (`■ turn finished` with time left), the next line, `studio → director (use the time
   left...)`, should follow within a few seconds (or within 4 minutes when it says `… waiting for the critic's notes on
   the final`). Messages the studio sends while the director works (`studio → director (half)`, a critic's notes) join
@@ -137,9 +141,9 @@ If it fails: `couldn't run: Claude didn't answer` (or Claude Code's own message,
 that Claude Code doesn't know `--max-budget-usd` → update Claude Code (it ran without the $2 cap). Scores `?` → the
 critic's json block didn't parse: the report is kept; send Claude the file in `work\critic\`.
 
-## 8c. The render queue and the pipeline's commands (no Claude)
-The smoke test (step 3) already runs `studio.py pipeline validate / render / assemble / gate` on its own project and
-checks the render queue with a lock file of its own. By hand, on Windows:
+## 8c. The render queue and the plan tools (no Claude)
+The smoke test (step 3) already runs `studio.py plan validate / render / assemble` on its own project and checks the
+render queue with a lock file of its own. By hand, on Windows:
 - Open two PowerShell windows and start a render in each at the same time, e.g.
   `.venv\Scripts\python.exe tools\studio.py run <p> web-engine/render.py ..\..\tests\scenes\field.js --preview --fresh --out work/renders/q1.mp4`
   (and `q2.mp4` in the other). The second should print `waiting for the render queue: a render (<p>: ... -> work/renders/q1.mp4) since <time>`
@@ -149,62 +153,50 @@ checks the render queue with a lock file of its own. By hand, on Windows:
   waiting for a render that is gone, tell Claude (the Windows process check in `tools/mv/claude.py`, `pid_alive`), and
   delete `cache\render.lock` in the studio folder to free the queue.
 
-## 8d. The pipeline (uses your Claude plan: a real run costs more than a solo one)
-```
-.venv\Scripts\python.exe tools\studio.py permtest sandbox-test --builder
-```
-first (on a project with a valid `work/plan.json` of two segments or more, e.g. the one from step 8 after a pipeline
-run): expect four `[PASS]` lines: a builder can write in its own scene folder, and can't write into the lib, into
-another segment's folder, or a project file on its deny list. This checks the Windows form of the deny rules for
-project files. Then **Direct** with a budget the hint says runs the pipeline (it fits when the plan stage, the gate, a
-builder round and a preview all come before the final render must start: on a fast PC about an hour for a short song;
-`studio.py direct <p> --budget 60m --dry-run` prints which mode a budget gets and why), or
-`.venv\Scripts\python.exe tools\studio.py direct <p> --budget 60m --mode pipeline` (forced: if the plan's final render
-leaves no room for the stages, the live log says `switching this run to solo` with the estimate). The live log should show the
-stages: `▸ stage 1. plan`, the planner writing `work/plan.json` and rendering the hero (`pipeline render ... --only
-s3`), `▸ stage gate 1: the language` with `🔍 critic on work/segments/<hero>/..._preview.mp4 (gate)` and `studio →
-planner (gate 1: ...)`, then `▸ stage 2. build` with `studio → planner (builders started)`, the builders' lines
-(`🔨 builder s1: built`), `▸ stage 3. assemble` (a `work/previews/preview_N.mp4`), `studio → planner (assemble report
-(round 1))`, `▸ stage 4. revise`, and at the end `▸ stage 5. final` (`the planner set the stage to final`, or `time is
-short` when the studio starts it) and `delivered vN`. `work\pipeline\state.json` has every session with its cost;
-`work\pipeline\sessions\b1-s1\` a builder's brief, events and its own `settings.json`. In Task Manager while it
-builds: one `claude` per builder plus the planner's, and only one render at a time (`waiting for the render queue`
-in a builder's `render_preview.log`). Stop during the build: within ~2 minutes every `claude` process is gone and the
-run says `stopped`. The report's Run settings list the pipeline, the stages and the costs by role.
-
-On the **Direct** page during that run (start it from the page: budget 60, mode `auto` or `pipeline`; the Pipeline
-box shows the planner's effort `max`, 3 builders, builder model empty = the planner's, effort `high`):
-- the header reads `first · pipeline · planner claude-opus-... max · 3 builders opus high · critic sonnet · budget 1 h 00 min`;
-- the stage bar lights up in turn (Plan → Gate → Build → Assemble → Revise (round 1) → Final), the current stage in
-  yellow with `since HH:MM` and its deadline, the finished ones green with how long they took;
-- the coloured strip shows the plan's segments over the song (★ = the hero, `b` = a builder's; yellow while a builder
-  works on it, green when built, red when failed), with a ▶ link to each segment's preview;
-- a card per session: the planner, then each builder with its state (`working`, `rendering`, `critic`, `revising`,
-  `built`), model, effort, turns, cost, its last lines, links to its brief and messages, and **log**, which opens its
-  full log and keeps it open (and scrolled) while the page refreshes every 2 s;
-- *The critic's reports*: gate 1 (with the style frames), one per builder, one per assembled preview (with its
-  flash and text checks), the final (with every check); **read** opens the report under the row;
-- the costs: planner, builders, critic and the total, matching the report's Run settings at the end.
+## 8d. A run where the director deploys an agent, with ultracode on (uses your Claude plan)
+Agents are the director's own choice, so to see one for sure, ask for it in the run's notes. **Direct** → budget
+**60**, model `opus`, effort `max`, critic `sonnet`, tick **Ultracode**, cost cap empty, and in *Notes for this run*:
+`Deploy at least one agent (the Agent tool, model haiku, in the background) for a part you can hand off, e.g. one
+scene built from your shared code, or the re-renders.` → **Start the director**. While it runs:
+- the header reads `first · claude-opus-... · effort max · ultracode · budget 1 h 00 min · critic sonnet`, and
+  `work\director\run-N\command.json` has `Agent`, `TaskStop` and `Workflow` after `--allowedTools` (and no `SendMessage`)
+  (`brief.md` ends with the line *Ultracode is on for this run...*);
+- the live log shows `⚙ Agent: <what it's for> (haiku)`, then `🤖 agent: <what it's for> (haiku) started`, now and
+  then an indented `↳ <what it's for>: ⚙ Bash: ...` line (at most one per agent every 20 s), and `🤖 agent: ... done in
+  N min, M tool calls`. If the director had ended its turn meanwhile (`■ turn finished`), the next line is `↻ the
+  director started a turn of its own (its agent finished)`, with no `studio → director (no final yet)` or `(use the
+  time left)` in between: the studio waits while an agent works;
+- the **Agents** list under the log: one row per agent, `running` (in yellow, with how long and the tool it's on)
+  and then `done` with its duration and tool calls;
+- **Costs**: one entry per model, e.g. `opus-4-x $1.20 the director`, `haiku-4-5 $0.04 agents` (maybe a small
+  unlabelled one: Claude Code's own quick model), `the critic sonnet $0.30`, and `total` = their sum. The costs update
+  when one of the director's turns ends; the total in the header is the same. In Task Manager only one render runs at
+  a time (an agent's render prints `waiting for the render queue` while the director's runs).
+- At the end the report's Run settings list `- Costs per model: ... (the director), ... (agents) · the critic sonnet
+  ... · total ...`, `- Agents: N (haiku N): ...` and `ultracode on`; the total should match the run view's.
+- If the director uses the **Workflow** tool, the live log shows `⚙ Workflow: ...` and the Agents list has a row
+  `a workflow`: tell Claude what the log and the list showed (a workflow's own agents weren't seen on the real CLI
+  yet). Whether it uses one is its call.
+- **Stop** while an agent works: within ~2 minutes the run says `stopped`, and no `claude` process is left in Task
+  Manager.
+- The cost cap, cheaply: a second run with model `haiku`, budget 20, cost cap `0.5`: it should end early with
+  `the cost cap ($0.5) was reached` (the header says `cap $0.5 (reached)`), and the report's Run settings say
+  `cost cap $0.5 (reached: the run ended there)`.
+- The Windows file handling while the page polls every 2 s: during these runs no `⚠ the studio hit an error` line in
+  the live log and no `work\director\run-N\runner_errors.log` (a `PermissionError` there means a status file couldn't
+  be replaced while the page read it, even after the retries).
+- Close the console of a running `studio.py direct` (the hard way), wait 3 minutes, then `studio.py clock <p>`: it
+  says the run was cut off.
 The page should never jump while it refreshes, and the browser's console (F12) should show no errors.
 
-## 8e. An interactive pipeline (uses your Claude plan)
-In Claude Code in the studio folder: `/musicvideo <p>` on a fresh project, and ask it to make the video with the
-pipeline. It should write `work/plan.json` and run `pipeline validate`, render the hero with `pipeline render ...
---only <hero>`, run `pipeline gate` and read the critic's report, then start `pipeline build` **in the background**
-(it doesn't sit and wait in the foreground) and build its own segments meanwhile. The Direct page shows a *Your
-pipeline* box with the builders' cards while they work (its **Stop the builders** stops them within ~2 minutes; the
-build then prints `stopped by the user`). It should not start workflow agents to build segments (the
-skill says segments are built only by `pipeline build`). Then `pipeline assemble <p> --preview` (the critic's report
-on the whole film comes back), `pipeline assemble <p> --final` and `deliver <p> --critic`.
-- Do this one right after the autonomous pipeline run of 8d, with the Direct page open: from the first `pipeline
-  gate` on, the page shows the *Your pipeline* box (gate / build / assemble, `running`, then `done`) **and** still the
-  8d run's own view above it (its stage bar and cards: kept in `work\pipeline\history\state_run-<n>.json`).
-- The Windows file handling while the page polls every 2 s: during the whole 8d run and this one, no `⚠ the studio hit
-  an error` line in the live log and no `work\director\run-N\runner_errors.log` (a `PermissionError` there means a
-  status file couldn't be replaced while the page read it, even after the retries); `work\pipeline\state.json.lock`
-  is gone once nothing runs.
-- Close the console of a running `studio.py direct` (the hard way), wait 3 minutes, then `studio.py clock <p>`: it
-  says the run was cut off, and `pipeline build <p> --only <id>` goes on (with a note) instead of refusing.
+## 8e. An interactive run (uses your Claude plan)
+In Claude Code in the studio folder: `/musicvideo <p>` on a fresh project, and ask it to make the video. It should
+work from the skill on its own: read the song once and write `work/song-notes.md`, the concept, style frames, then
+build; run long renders, `plan assemble` and `studio.py critique` **in the background** (it doesn't sit and wait in
+the foreground, nor poll with sleep loops), read the critic's report before opening any pictures itself, and finish
+with `studio.py check` and `deliver <p> --critic`. If it deploys agents (its call; in ultracode it may run workflows),
+each should get its own `model` and a narrow brief that names `work/concept.md` and `work/song-notes.md` (not "read
+the song folder"), and the looking should go to the critic, not to reviewer agents. Tell Claude if it does otherwise.
 
 ## 8f. Live preview: the scenes in your browser with the song (Edge and Chrome on Windows)
 The live view could only be tested in a headless browser in the VM, without sound. On your PC, with a project that has
@@ -220,12 +212,12 @@ scenes (after step 8 or 8d):
   kick and its flash meet. Reload the page: the value is kept (it is per browser).
 - **Size** ¼ / ½ / full: the fps rises at ¼. A heavy scene at full size may say `slower than real time here: frames
   drop, the timing holds`: frames are skipped, but what you see is still where the song is.
-- **During a run** (step 8 or 8d): Direct → **▶ play the scenes live**. While the planner writes scenes the picker lists
-  the plan; a scene that changes reloads itself within ~5 s (a toast says so). Press **N**, write a note, save: the toast
-  says the director gets it within seconds. Within ~5 s the Direct page's live log shows `🎧 the user's live note to the
-  planner: ...` and `studio → planner (the user's live note (1))`; the note then shows `sent to the director (run N)` and,
-  once the planner has dealt with it, `fixed: ...` under it. In a pipeline run the next assemble report (the run's
-  messages) lists it again.
+- **During a run** (step 8 or 8d): Direct → **▶ play the scenes live**. While the director writes scenes the picker lists
+  its plan or its renders; a scene that changes reloads itself within ~5 s (a toast says so). Press **N**, write a note,
+  save: the toast says the director gets it within seconds. Within ~5 s the Direct page's live log shows `🎧 the user's
+  live note to the director: ...` and `✉ studio → director (the user's live note (1))` (also while one of its agents
+  works); the note then shows `sent to the director (run N)` and, once the director has dealt with it, `fixed: ...`
+  under it.
 - F12 → Console: no errors (a scene's own error shows in red on its layer's line instead). When paused, the live view
   uses little CPU (Task Manager: the browser well under one core).
 

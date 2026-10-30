@@ -15,18 +15,20 @@ final, a pitch's proof clip.
    user's notes (their avoid is a hard rule), the anti-defaults and the craft rules (inlined from the skill, so they
    stay in sync), what the eyes measured, the checks when they are about this video, the pictures to open, and the
    previous critique (what got fixed). Not report.md or work/log.md: fresh eyes judge the picture against the intent,
-   not the director's account of it. --pictures adds stills to open with the video's (the pipeline's language gate:
-   the style frames).
+   not the director's account of it. --pictures adds stills to open with the video's (e.g. the style frames).
 3. One headless print-mode call (mv/claude.py): read-only tools, cwd = the project folder, the prompt on stdin.
 4. work/critic/<name>_NN.md + .json (verdict, scores, problems, keep, safe, anti_defaults, fixed_since_last; plus the
    video, its size and mtime, model, effort, cost_usd, duration_s, at) and a line in work/critic/log.jsonl. With
    --out DIR: DIR/critic.md + DIR/critic.json instead (no log line; the pitch round uses this).
+While it works, work/critic/pending/ has a marker for the cut (its path, size and mtime, this process): the autonomous
+runner's critic watcher doesn't critique a cut twice (`plan assemble` marks its cut before its eyes and checks).
 It prints the report, then one line:  critic: ambition 7 · song fit 6 · craft 8 · readability 9 · $0.12 · work/critic/x_02.md
 Exit 0 whatever it found; 1 only when it couldn't run (no pictures of this cut, no answer, or Claude Code's own error
 text instead of a critique: a usage limit, a login): then nothing is written but a log line with the error and what it
 cost, and the last line is  critic: couldn't run: <why> ($0.0310 spent).
 """
 import argparse, glob, json, os, re, subprocess, sys, time
+from contextlib import contextmanager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STUDIO = os.path.dirname(HERE)
@@ -53,8 +55,8 @@ def mmss(t):
 # ------------------------------------------------------------------ settings and results (also used by director.py)
 def settings(pj):
     """(model, effort) of the automatic critic from project.json "director" (critic_model "off" = no critic). Inside an
-    autonomous run the run's critic wins (MV_CRITIC_MODEL / MV_CRITIC_EFFORT, set for the planner's and the builders'
-    sessions), so their own `critique` and `pipeline` commands use the critic the run was started with."""
+    autonomous run the run's critic wins (MV_CRITIC_MODEL / MV_CRITIC_EFFORT, set for the director's session and so its
+    agents), so their own `critique` and `plan assemble` use the critic the run was started with."""
     d = pj.get("director") or {}
     return (str(os.environ.get("MV_CRITIC_MODEL") or d.get("critic_model") or DEFAULT_MODEL),
             str(os.environ.get("MV_CRITIC_EFFORT") or d.get("critic_effort") or DEFAULT_EFFORT))
@@ -99,6 +101,45 @@ def find(pdir, video, size=None, mtime=None):
     hits = [d for d in critiques(pdir) if d["video"] == video and (size is None or d.get("size") == size)
             and (mtime is None or abs((d.get("mtime") or 0) - mtime) < 1)]
     return hits[-1] if hits else None
+
+
+PENDING_S = 45 * 60               # a marker older than this is left over (a critique never takes that long)
+
+
+@contextmanager
+def pending(pdir, video):
+    """While a critique of this cut is being made, or is coming (`plan assemble` marks its cut before its eyes and
+    checks): a marker in work/critic/pending/ with the cut (path, size, mtime) and this process."""
+    d = os.path.join(pdir, "work", "critic", "pending")
+    os.makedirs(d, exist_ok=True)
+    st = os.stat(video)
+    p = os.path.join(d, f"{os.getpid()}_{time.time_ns()}.json")
+    jsave(p, {"video": rel(video, pdir), "size": st.st_size, "mtime": st.st_mtime, "pid": os.getpid(), "at": time.time()})
+    try:
+        yield
+    finally:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def is_pending(pdir, video, size, mtime):
+    """A critique of this exact cut (path relative to the project, size, mtime) is being made by a process that is
+    still running. Markers of processes that are gone are removed."""
+    hit = False
+    for f in glob.glob(os.path.join(pdir, "work", "critic", "pending", "*.json")):
+        d = jload(f, None)
+        if not isinstance(d, dict):
+            continue
+        if not pid_alive(d.get("pid")) or time.time() - float(d.get("at") or 0) > PENDING_S:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+            continue
+        hit |= d.get("video") == video and d.get("size") == size and abs(float(d.get("mtime") or 0) - mtime) < 1
+    return hit
 
 
 def load(pdir, md_file):
@@ -241,8 +282,8 @@ def describe(pdir, video, song):
     elif v.startswith("work/pitches/"):
         kind = "a pitch's proof clip: one director's pitch for the whole video, shown on a short window of the song"
     elif v.startswith("work/segments/"):
-        kind = ("one segment of the film, rendered on its own (the pipeline: the planner and builder agents each build "
-                "segments in one shared visual language; the studio joins them)")
+        kind = ("one segment of the film, rendered on its own over its range (the plan tools render each segment of "
+                "work/plan.json alone and join them)")
     else:
         kind = "a render the director made while working"
     size = f"{w}×{h} (the delivery size)" if (w, h) == (d["width"], d["height"]) else \
@@ -457,7 +498,6 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
              fresh_look=True, log=print, pictures=()):
     """Look, ask, write. Returns the critique (dict, as written to the json) or raises RuntimeError when it couldn't
     run (no Claude Code, no pictures, no answer: NoAnswer, with what the call cost). pictures: stills to open too."""
-    from mv.song import Song
     pdir = os.path.abspath(pdir)
     video = os.path.abspath(video if os.path.isabs(video) else os.path.join(pdir, video))
     if not os.path.isfile(video):
@@ -466,6 +506,13 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
         concept = os.path.abspath(concept if os.path.isabs(concept) else os.path.join(pdir, concept))
         if not os.path.isfile(concept):
             raise RuntimeError(f"no such concept: {rel(concept, pdir)}")
+    with pending(pdir, video):                   # (the runner's critic watcher won't make the same critique meanwhile)
+        return made(pdir, video, model, effort, focus, concept, out, max_usd, fresh_look, log, pictures)
+
+
+def made(pdir, video, model, effort, focus, concept, out, max_usd, fresh_look, log, pictures):
+    """critique() for a video and concept that are there."""
+    from mv.song import Song
     pj = load_pj(pdir)
     m0, e0 = settings(pj)
     model = model or (m0 if m0 != "off" else DEFAULT_MODEL)
@@ -528,8 +575,8 @@ def critique(pdir, video, model=None, effort=None, focus="", concept=None, out=N
 
 def command(pdir, video, model=None, effort=None, max_usd=None, out=None, concept=None, focus="", fresh_look=True, python=None,
             pictures=()):
-    """critic.py as a command list + env, for running it in the background (the director runner, the pitch round, the
-    pipeline's gates)."""
+    """critic.py as a command list + env, for running it in the background (the director runner, `plan assemble`, the
+    pitch round)."""
     cmd = [python or sys.executable, "-W", "ignore", os.path.join(HERE, "critic.py"), video]
     for flag, v in (("--model", model), ("--effort", effort), ("--max-usd", max_usd), ("--out", out), ("--concept", concept),
                     ("--focus", focus), ("--pictures", ",".join(pictures or ()))):

@@ -1,6 +1,6 @@
 ---
 name: musicvideo
-description: Direct an original motion-graphics music video for a Music Video Studio project (a song + the song folder + the user's notes) through the studio's pipeline - read the song, the concept, the visual language in code, plan.json and the hero segment, the language gate, builder agents for the other segments, assembled previews with the critic's reports, revise, final, checks, report; or address review notes and make the next version. Use when the user runs /musicvideo <project>, asks to make, continue or revise a music video, or says they left notes.
+description: Direct an original motion-graphics music video for a Music Video Studio project (a song + the song folder + the user's notes), with full reign - read the song, the story, the concept, style frames, build the scenes yourself or with agents you choose to deploy, previews the studio's critic reports on, the user's live notes, revise, final, checks, report; or address review notes and make the next version. Use when the user runs /musicvideo <project>, asks to make, continue or revise a music video, or says they left notes.
 ---
 
 # Music video director
@@ -9,9 +9,9 @@ You make one music video per project in `projects/<p>/`: motion graphics only (n
 images or downloaded artwork; everything is made in code, 2D, 3D or both), the whole song with its audio unchanged.
 The user may add reference pictures (`refs/`): the people in the song, so you know how they look. You draw them; the
 pictures never appear in the video.
-Every video goes through the studio's pipeline (below), and you are its **planner**: the one who decides what the
-video is. The studio's autonomous runner (`studio.py direct`) gives you the same job with a time budget;
-interactively the user is here, but still work on your own unless something is genuinely theirs to decide.
+You are the director, with full reign: what the video is and how it gets made are yours. The studio's autonomous
+runner (`studio.py direct`) gives you the same job with a time budget; interactively the user is here, but still work
+on your own unless something is genuinely theirs to decide.
 
 You can't hear the song or watch the video. The song folder is your ears; the eyes tools and the critic are your
 eyes; the user, who plays your scenes live with the song while you work, is the only one who hears it. Never say you
@@ -22,98 +22,39 @@ Argument: a project name. None → `python tools/studio.py list` and ask which. 
 project folder `../../.venv/...` and `../../tools/...`). Paths you pass to tools are relative to the project folder.
 Below, `S` stands for `.venv/Scripts/python tools/studio.py` (or the `.venv/bin/python` form), run from the studio folder.
 
-## The pipeline (every run)
-One shape, every run. The studio runs it (Python, no tokens), so it is the same whether you are the headless planner
-of an autonomous run or the user's own Claude Code session (`/musicvideo`, in ultracode or not).
-
-| role | who | does |
-|---|---|---|
-| **Planner** | you: the top model, effort max | the song, story, cast, concept; the visual language in code (`work/scenes/lib/`) and 2-3 style frames; `work/plan.json`; the **hero segment**, built and rendered (the first draft); the overlays and your own segments; reads the critic's reports, decides the revisions, sends builders back, writes report.md |
-| **Builders** | one headless session per `"owner": "builder"` segment (your model by default, effort high) | a narrow brief: the concept, the lib, the style frames, the plan's `rules`, its segment and its neighbours' joins, the song over its range as text, the craft rules. Writes only `work/scenes/<id>/` and `work/segments/<id>/`, renders its segment preview, gets one critic round, revises once. Can't change the lib: it writes requests to `work/segments/<id>/requests.md` |
-| **Critic** | a cheaper model (Sonnet by default), fresh eyes | at every gate: opens the pictures itself and reports in text to whoever must act, ambition first, then craft |
-| **The studio** | Python | validates, dispatches, queues the renders (one video render at a time per machine), assembles from plan.json, runs the checks and the eyes, keeps the clock, the costs and `work/pipeline/state.json` (the web app's Direct page shows it) |
-
+## How a run works
 ```
-1 PLAN      you: the song -> story, cast, concept -> the lib + style frames -> plan.json -> the hero, rendered
-GATE 1      plan.json validated; the critic on the hero + the style frames -> you revise once -> the language is locked
-2 BUILD     builders on their segments, in parallel: render -> critic -> one revision   ||   you: your segments, the overlays
-3 ASSEMBLE  a half-size preview of the whole film, the preview checks, the critic's report on the whole film -> you
-4 REVISE    you fix things, and/or send builders back (work/pipeline/tasks.json) -> 3 again;  or "stage": "final" -> 5
-5 FINAL     full size, every check, the critic -> you fix any FAIL, write report.md -> delivered as vN
+you        the song -> story -> concept -> the look in code + style frames -> build -> previews -> revise -> final -> report
+           (all of it yours: build it yourself, or deploy agents where that makes the video better or faster)
+the critic a cheaper model with fresh eyes: every preview (work/previews/preview_N.mp4) and the final -> its notes to you
+the user   plays your scenes live with the song, and can hear -> their live notes (autonomous runs: they reach you
+           within seconds; interactive: they wait in review/notes.json)
+the studio the clock, the render queue, the checks, the versions, the costs (and in autonomous runs, its messages)
 ```
-
-Why it has this shape (work with it, not around it):
-- **You set how bold the whole video is.** Builders work inside the language you lock, and the critic can only push
-  what is there: nobody downstream can make the film bolder than your concept and your hero. Commit to the boldest
-  concept you can make well, lock it in code specifically enough that nobody can fall back on a default, and make the
-  hero the bar every segment must clear. Don't pick the concept that is easiest to split up: split up the one you want.
-- **Lock the language before fanning out.** Gate 1 is the last cheap moment to change it. After it the lib only grows
-  (add to it, don't change it: a change re-renders every segment that imports it).
-- **Parallel agents speed up thinking and code, not rendering.** Renders queue one at a time on this machine; the
-  final render is the floor no number of builders lowers (`S pipeline status <p>` prints its estimate here).
-- **The cheap model checks; it never builds.** The scene code is the video. Builders get small contexts (no song
-  folder, no images but the style frames); all the looking at frames goes to the critic.
-- **Solo** (`--mode solo`, `--builders 0`, a plan that never validated, or a budget the pipeline's stages don't fit:
-  never under 45 min, and on a slow machine much more, since the plan, the gate, a builder round and a preview must
-  all come before the final render has to start: `S direct <p> --budget 90m --dry-run` says which mode a budget gets
-  and why): you are the whole team in one session. The same steps, without builders or gates; the studio's critic looks at each
-  `work/previews/*.mp4` and the final.
-
-### work/plan.json, the lib, the hero
-The full rules are in `tools/README.md` ("pipeline.py"); `S pipeline validate <p>` says what to change, with the numbers.
-- **Segments** in song order, following on with no gap, the first `from` 0, the last `to` the song's end, cut on
-  downbeats (boundaries become frames: `round(t × fps)`). Each scene in its **own folder** `work/scenes/<id>/`
-  (the render cache follows a scene's folder and its imports; a builder writes only there). Builder segments are
-  ones a strong brief can carry on its own: a section or two, 15-40 s. Keep for yourself what the arc turns on: the
-  hero, the rupture, the ending if you can.
-- **The hero** (`"hero"`, `"owner": "planner"`): the segment where the language shows what it can do, not the easiest
-  one. Build it fully: it is the first draft of the video and every builder's bar.
-- **Briefs** (`brief`, `enter`, `exit`, `moments`): what happens on which bars, what changes at its ★★★ moments, the
-  lyric plan, how bold, what it must not settle for; the picture's state at its first and last frame (the joins).
-  A brief that describes something safe gets something safe back.
-- **`rules`**: one paragraph every segment keeps (builders get it word for word). **`lib`**: `work/scenes/lib/`:
-  the palette, the type, the motifs as functions, the motion rules on the beat grid, the helpers the segments share
-  (`import { ... } from "../lib/look.js"`). Everything a segment needs to look like this film, nothing that makes
-  every segment look the same.
-- **`status`**: todo → drafted (you rendered a draft) → built. You set your own; the studio sets the builders'.
-  **`stage`**: planning → planned (your hero is done) → final (you want the final). **Overlays** (the type, a grain):
-  transparent passes layered over the joined segments.
-
-### Autonomous runs (`studio.py direct`, the web app)
-The studio runs the stages. You work, then **end your turn**: it validates and gates the plan, starts the builders,
-assembles, renders the final, and messages you (the brief lists each stage's deadline; its messages may join a turn
-you are in). Don't run `pipeline build`, `pipeline gate` or `pipeline assemble` yourself there: the studio does, and
-each costs a critique. `pipeline validate`, `pipeline render --only <id>`, `pipeline status`, `clock` and a second
-look with `S critique <p> <video> --focus "..."` are yours. Solo runs: mux full previews into
-`work/previews/preview_N.mp4` (the runner's critic looks at each); `pipeline assemble --preview --no-critic` is fine
-too (without `--no-critic` it would be critiqued twice).
-
-### Interactive runs: you run the stages
-The same commands the runner uses; the web app's Direct page shows the same state (the builders' cards, the critic's
-reports, the costs). Run anything over about two minutes **in the background** (Bash `run_in_background`) and keep
-working: you're told when it ends. Don't poll it with sleep loops.
-
-| stage | command | takes | what comes back |
-|---|---|---|---|
-| 1 | `S pipeline validate <p>` | seconds | the plan's table, or errors that say what to change (with the numbers to set); exit 1 |
-| 1 | `S pipeline render <p> --preview --only <hero>` | a few min (it waits for the render queue) | per segment rendered / unchanged (from the cache) / failed, with its log; `work/segments/<id>/<id>_preview.mp4` |
-| gate 1 | `S pipeline gate <p>` | 2-5 min | the critic's report on the hero and the style frames, with scores: revise the language now if it's right, then lock it |
-| 2 | `S pipeline build <p> [--builders 3] [--budget 30m]` | 10-40 min: **background** | blocks until every builder and its critic round is done, then one line per segment (state, scores, cost) and the builders' requests for the lib; build your own segments meanwhile |
-| any | `S pipeline status <p>` | seconds | the plan, each segment's renders (current or stale), sessions, gates, costs, the final's estimate, the render queue |
-| 3 | `S pipeline assemble <p> --preview` | what changed + 3-6 min | `work/previews/preview_N.mp4`, the preview checks, the critic's report on the whole film (read it first) |
-| 4 | `work/pipeline/tasks.json`, then `S pipeline build <p>` | like build | builders on those segments, each with your note, its scene as it is and its last critique |
-| 5 | `"stage": "final"`, then `S pipeline assemble <p> --final` | the final's estimate + ~5 min | `final/music-video.mp4`, every check, the critic on the final |
-| 5 | `S deliver <p> --critic` | a minute | the cut archived as vN with its checks and the critic's notes |
-
-`pipeline build --only s1,s3` builds those (any owner); `--builder-model sonnet` is an option, but the scene code is
-the video. `S stop <p>` stops a running build (the builders wrap up). `pipeline build` refuses while an autonomous run
-is going on in the project.
+- **You, with full reign.** One director makes the whole film, from the concept to the report. Nothing here requires
+  agents, and nothing holds you back from them (after the steps: "Agents (optional)" and "The plan tools
+  (optional)"). Nobody downstream can make the film bolder than your concept: commit to the boldest one you can make
+  well, and build it so it can't fall back on a default.
+- **The critic looks; you decide** (step 6). Looking at frames is image-heavy, so a cheaper model does most of it and
+  reports back in text, ambition first, then craft.
+- **The user's ears** (step 5): the web app plays your scenes in their browser with the song, no render, while you
+  work. Their live notes come to you mid-run (autonomous runs: as a message; interactive: open `"version": "live"`
+  notes in `review/notes.json`).
+- **Autonomous runs** (`studio.py direct`, the web app): the brief has the budget and the deadline; the studio
+  messages you as time runs down (half way, the final-render time, 5 minutes, time's up), passes on the critic's
+  notes and the user's live notes (they may join a turn you are in), reminds you if there's no final yet, and nudges
+  you to use the time left if you finish early. While your agents work it waits (no reminder, no nudge); when they
+  finish you get a turn of your own. At the deadline plus a grace it ends the session, archives the cut as the next
+  version, runs the checks and appends the run settings (models and their costs, agents, ultracode) to report.md.
+  `S clock <p>` prints the time left.
+- **Interactive runs** (`/musicvideo`): the same steps. Run anything over about two minutes **in the background**
+  (Bash `run_in_background`) and keep working: you're told when it ends. Don't poll it with sleep loops. The critic
+  is yours to call (`S critique`), and `S deliver <p> --critic` archives the cut.
 
 ## 0. Where are we? (read little)
 - `project.json` (the user's notes: `about`, `mood`, `ideas`, `avoid`, `format`; `refs`: their reference pictures in
   `refs/`, each with who it is and a note; `versions`), `work/log.md` (your own log, if any), `review/notes.json` (the
-  user's notes per version), `ls final/`, and `S pipeline status <p>` (the plan, the segments' renders, the last run's
-  stages, gates and costs).
+  user's notes per version), `ls final/`, and `S plan status <p>` if there is a `work/plan.json`.
 - No `song/song-map.json` → `studio.py ingest <p>` first (a few minutes; progress in `cache/status.json`).
 - Open notes (`done: false`) on the newest version → **Review round** (below).
 - Otherwise continue from the first unfinished step; say in one line where you pick up.
@@ -121,7 +62,7 @@ is going on in the project.
 **Efficiency (usage is the user's money):** read each big file once, in order, and write your own digest
 (`work/song-notes.md`); afterwards use the digest and `songq.py` (`summary`, `at 83.2`, `section "chorus 2"`,
 `moments`, `bars 16 24`, `hits kick 30 40`, `lines`) instead of re-reading. Never print whole JSON files or frames.json.
-Let the critic look at full previews; you open only the pictures you need. Render segments, not the whole song, while
+Let the critic look at full previews; you open only the pictures you need. Render sections, not the whole song, while
 iterating. Keep notes short.
 
 ## 1. Read the song (once)
@@ -131,8 +72,8 @@ estimated stems, a fallback beat tracker or estimated word times change what you
 `song/song-story.md`. Open `song/pages/bars_*.png` only for a stretch you will time tightly.
 Write `work/song-notes.md` (≤ 60 lines): tempo/meter/key, length and where the music really starts and ends, the
 section table (name, bars, times, energy), the ★★★ moments with bar:beat, the hook lines with times, stops and
-tempo changes, what the confidence says, and anything you doubt. The critic reads it, and the builders never read the
-song folder: your digest and plan.json are what they know of the song (the studio gives each its range as text).
+tempo changes, what the confidence says, and anything you doubt. The critic reads it, and it is all your agents know
+of the song: they never read the song folder.
 
 ## 2. The story
 If `song/song-story.md` is still the skeleton (it has "_2–4 sentences_"), write it now from the lyric's meaning, the
@@ -144,7 +85,7 @@ user edited or drafted it, it is their brief: build on it, don't rewrite it.
 **Freedom**: the user's notes (and the story) are a starting point, not a spec. They want the director to have a lot
 of freedom whether they wrote much or little, and the less they wrote, the more is yours. Of their notes only `avoid`
 is a hard rule (the craft rules below never bend either). Pick the boldest concept you can make well in the time, not
-the safest: you set how bold the whole video is, and the pipeline only carries it out.
+the safest, and not the one that is easiest to split up among agents.
 
 **The cast first**, if there are reference pictures (`refs`): look at each one once (Read shows images) and write
 `work/cast.md`: per person (or thing), what makes them recognisable at the level of detail your video draws (hair
@@ -153,156 +94,191 @@ fix who is who, not the style: likeness comes from a few of those features, draw
 picks (a few lines, a silhouette, a colour pair, a puppet). Never put the pictures, or images made from their pixels
 (filtered, cut out, auto-traced), in the video. Afterwards use `work/cast.md`, not the pictures.
 
-Think of three genuinely different concepts (one from the story, one from the song's structure or sound, one wild),
-then commit to one. Write `work/concept.md` (every builder reads it word for word, the critic judges against it):
+Think of three genuinely different concepts (one from the story, one from the song's structure or sound, one wild;
+agents can each take an angle), then commit to one. Write `work/concept.md` (the critic judges against it, every agent
+reads it word for word):
 - the idea in two sentences, and why it belongs to *this* song
 - the visual language: marks / shapes / figures, palette, typography (fonts in `assets/fonts`, all OFL / Apache, licences
   there), motion rules, camera (or none); one deliberate rupture
 - "dance or story": who or what moves with intent, and how (choreography on the beat grid, a character arc per section);
   the people from `work/cast.md`, if any, and how this visual language draws them
 - 3-5 **signature moments** on the song's ★★★ moments, each with bar:beat and what changes there
-- a section plan: | time | bars | music | picture | (and, in the pipeline, which segment and who builds it)
+- a section plan: | time | bars | music | picture | (and what you hand off, if anything)
 - renderers and a time plan: frames = duration × fps; per-frame cost from `tools/speeds.json` (× 1.5 safety) for
   previews and the final; choose heavy 3D only if the final render fits in a third of the time left (renders queue one
-  at a time: builders don't make the final faster)
+  at a time: agents don't make the final faster)
 - what the user asked to avoid, and the lyric text plan (which lines appear, how, or none)
 
-## 4. The language in code, and style frames
-- **The lib** `work/scenes/lib/`: the concept as code the segments import (palette, type, the motifs as functions, how
-  things move on this song's beats, the camera or its absence). Specific enough that a builder can't fall back on a
-  default; open enough that each segment can still surprise.
+## 4. The look in code, and style frames
+- **Shared code** when the film has more than one scene: the concept as code the scenes import (`work/scenes/lib/`:
+  the palette, the type, the motifs as functions, how things move on this song's beats, the camera or its absence;
+  `work/kit/` for characters, rigs, engines, models). Specific enough that no scene can fall back on a default; open
+  enough that each can still surprise. Add to it rather than change it once scenes use it (a change renders them
+  all again).
 - **Style frames**: 2-4 stills at the signature moments at full size (`web-engine/render.py <scene> --still
-  61.2,83.0 --out work/style-frames/a.png` or `blender/run.py <scene> --still ...`), into `work/style-frames/`
-  (listed in plan.json `style_frames`: the builders' only pictures). Look at each. Ask: is this a default? would any
-  song have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at 1080p)? Redo weak ones before building.
+  61.2,83.0 --out work/style-frames/a.png` or `blender/run.py <scene> --still ...`), into `work/style-frames/`. Look
+  at each. Ask: is this a default? would any song have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at
+  1080p)? Redo weak ones before building. (They are also the best reference to give an agent: two or three, not more.)
 
-## 5. The plan and the hero
-Write `work/plan.json` (above) and `S pipeline validate <p>` until it is valid. Build the hero in
-`work/scenes/<hero>/`, render it (`S pipeline render <p> --preview --only <hero>`, only its frames), look at what you
-need (one `eyes.py strip` or `beats` on `work/segments/<hero>/<hero>_preview.mp4`), make it as strong as you can, set
-`"stage": "planned"`. Then **gate 1**: autonomous runs: end your turn; interactive: `S pipeline gate <p>` (background).
-Take what's right in the critic's report on the language, push harder where it says you played safe, and change the
-lib and the style frames now if you're going to: after this they are what every builder copies.
-
-**The user plays your scenes live.** The web app's Watch page (▶ live) plays the project's scenes in their browser
-with the song, no render, while you work: the scenes as they are on disk, in `work/plan.json`'s slots (a Blender
-segment as its preview render, a segment not built yet as a slate, the overlays on top). They are the only one who can
-hear, so this is where the film first meets ears. So:
-- **Keep plan.json current**: it is the timeline they play (a solo run without a plan: your renders in `work/renders/`,
-  each scene by its `.mv.json`). Write `work/live.json` only to override it, when what should play isn't what the plan
-  or the renders say (the format: `tools/web-engine/README.md`, "Live preview"); delete it when it's stale.
-- **Scenes should run near real time at half size** in a browser where they can: heavy work in `setup()`, drawing in
-  `render(f)`, `preroll` (a few seconds) rather than a full history for a stateful scene. A scene too slow for that
-  still renders the same; it just plays live with dropped frames (a stateful one then only close to its render; say
-  so in work/log.md).
-- **Their live notes may arrive mid-run**, as a message with the song context (time, bar:beat, section, the sung line,
-  the segment, the scene they saw). Treat each like a review note: fix the film, not the frame; mark it done with a
-  one-line fix: `S note-done <p> <id> "what changed"` (not by editing `review/notes.json`: the web app writes it
-  too, and a note the user adds meanwhile would be lost). In the pipeline the next assemble report lists them again
-  with what you marked. Interactive runs: look in `review/notes.json` for open `"version": "live"` notes now and then.
-
-## 6. Build
-- Builders: autonomous runs: the studio starts them when you end your turn after gate 1; interactive:
-  `S pipeline build <p>` in the background. Meanwhile build your own segments and the overlays. A builder that fails
-  (crashed, out of time) isn't redone by the studio: take it over, give its time to a neighbour, or send a builder
-  again. Read `work/segments/<id>/requests.md`: add what's right to the lib (add, don't change).
-- Scenes (yours and theirs): the web engine (`tools/web-engine/README.md`) gives every scene the song: `f.t`, `f.bar`,
-  `f.beat`, `f.beatPhase`, `f.c.<curve>` (frames.json), `MV.t(bar, beat)`, `MV.pulse('kick', t)`, `MV.hits('snare')`,
-  `MV.lineAt(t)`, `MV.wordAt(t)`, `MV.cue(t)`, seeded `MV.rand(key)` and `MV.noise(x, y, z)`. Blender scenes get the
-  same through `mv.song` (`tools/blender/README.md`). A segment's scene renders only its own frames, in song time.
+## 5. Build
+- Scenes live in `work/scenes/` (one per section, or one scene with acts; with a plan, each in its own folder). The
+  web engine (`tools/web-engine/README.md`) gives every scene the song: `f.t`, `f.bar`, `f.beat`, `f.beatPhase`,
+  `f.c.<curve>` (frames.json), `MV.t(bar, beat)`, `MV.pulse('kick', t)`, `MV.hits('snare')`, `MV.lineAt(t)`,
+  `MV.wordAt(t)`, `MV.cue(t)`, seeded `MV.rand(key)` and `MV.noise(x, y, z)`. Blender scenes get the same through
+  `mv.song`, and import shared code from their own folder, `work/scenes/lib/` and `work/kit/` (`tools/blender/README.md`).
 - **Deterministic**: render(f) depends only on f. Simulations set `stateful: true` (pre-rolled). No wall-clock time.
   Fast enough to play near real time at half size where it can (the user plays your scenes live): heavy work in setup.
 - Text: mark DOM text `data-mv-text="lyric|lyric-word|title|credit|label|deco"`; canvas/WebGL text calls
   `MV.text(str, {x, y, w, h, color, size, role})` every frame it shows. Black or frozen on purpose: `MV.intent('black',
   t0, t1, 'why')` (or `work/intent.json`). Otherwise the checks flag them.
-- Layers: a 3D pass and a transparent 2D/type pass are separate items (an overlay in plan.json, or `--transparent`
-  and `compose.py layer` by hand); `pipeline assemble` joins the segments frame-exact and adds the song. Solo without a
-  plan: `compose.py concat`, `compose.py layer`, `compose.py mux` yourself.
-- Render only what changed: `pipeline render` skips a segment whose scene, lib imports and settings are unchanged.
+- Layers: render a 3D pass and a transparent 2D/type pass separately (`--transparent`) and composite with
+  `compose.py layer`. Join sections with `compose.py concat` (frame-exact). Add the song with `compose.py mux`. With a
+  plan, `S plan assemble` does all three ("The plan tools (optional)", below).
+- Render only what changed: chunks of an unchanged web scene are reused (its folder and what it imports are its key);
+  `S plan render` skips a segment whose scene, shared code and settings are unchanged; Blender renders follow the
+  scene's folder and the shared folders too.
 
-## 7. Assemble → look → revise (most of the time goes here)
-- Previews: the whole film at half size (same fps: sync checks still hold): `S pipeline assemble <p> --preview`
-  (autonomous pipeline runs: the studio assembles whenever you end your turn in stage 4) → `work/previews/preview_N.mp4`.
-  Solo without a plan: render at `--preview`, then `compose.py mux <picture> -o work/previews/preview_N.mp4` (that
-  folder and name: the studio's critic looks for them).
-- **The critic does the looking** (cheap model, fresh eyes, 2-4 min): the assemble runs it on the whole film (the arc,
-  the joins, the language held, the signature moments, the ending) and prints its report; elsewhere `S critique <p>
-  <video>` (add `--focus "the chorus 2 type"` to aim it). It runs the eyes, opens the pictures itself, judges them
-  against `work/concept.md`, the song and the user's notes, ambition first, then the craft rules, and prints ≤ 60
-  lines: scores, the worst problems with times and a direction to push, what works, what it can't tell, and the
-  pictures it opened. It never knows your reasoning, so it can be wrong: take what's right, push harder where it says
-  you played safe, ignore what's wrong, and log what you took. In autonomous runs every report comes to you as a
-  message: don't run it twice.
+**The user plays your scenes live.** The web app's Watch page (▶ live) plays the project's scenes in their browser
+with the song, no render, while you work: the scenes as they are on disk, in `work/plan.json`'s slots when there is a
+plan (a Blender segment as its preview render, a segment not built yet as a slate, the overlays on top), else your
+renders in `work/renders/`, each scene by its `.mv.json`. They are the only one who can hear, so this is where the film
+first meets ears. So:
+- **Keep the timeline current** (plan.json, or your renders). Write `work/live.json` only to override it, when what
+  should play isn't what the plan or the renders say (the format: `tools/web-engine/README.md`, "Live preview");
+  delete it when it's stale.
+- **Scenes should run near real time at half size** in a browser where they can: heavy work in `setup()`, drawing in
+  `render(f)`, `preroll` (a few seconds) rather than a full history for a stateful scene. A scene too slow for that
+  still renders the same; it just plays live with dropped frames (a stateful one then only close to its render; say
+  so in work/log.md).
+- **Their live notes may arrive mid-run**, as a message with the song context (time, bar:beat, section, the sung line,
+  the plan's segment, the scene they saw). Treat each like a review note: fix the film, not the frame; mark it done
+  with a one-line fix: `S note-done <p> <id> "what changed"` (not by editing `review/notes.json`: the web app writes it
+  too, and a note the user adds meanwhile would be lost). Interactive runs: look in `review/notes.json` for open
+  `"version": "live"` notes now and then.
+
+## 6. Preview → the critic → revise (most of the time goes here)
+- Previews: the whole film at half size (same fps: sync checks still hold): `S plan assemble <p> --preview`, or
+  render at `--preview` and `compose.py mux <picture> -o work/previews/preview_N.mp4` (that folder and name: the
+  studio's critic looks for them). A section at a time while building, then the whole song.
+- **The critic does the looking** (cheap model, fresh eyes, 2-4 min). Autonomous runs: it looks at every new
+  `work/previews/*.mp4` and the final by itself and its notes arrive as a message: don't run it twice. Interactive:
+  `S critique <p> work/previews/preview_N.mp4` in the background after each full preview, and build on while it looks
+  (`plan assemble` runs it for you). `--focus "the chorus 2 type"` aims it. It runs the eyes, opens the pictures
+  itself, judges them against `work/concept.md`, the song and the user's notes, ambition first, then the craft rules,
+  and prints ≤ 60 lines: scores, the worst problems with times and a direction to push, what works, what it can't
+  tell, and the pictures it opened. It never knows your reasoning, so it can be wrong: take what's right, push harder
+  where it says you played safe, ignore what's wrong, and log what you took.
 - **Your own looking is targeted, not a second full pass**: after a full preview, don't run `eyes.py look` on it or
   open its sheets yourself (the critic did; its pictures are in the video's eyes folder: `work/eyes/<name>/`, a
   segment's in `work/segments/<id>/eyes/<name>/`). Open only the pictures its report names that you need to judge
   yourself, and ask the eyes one question at a time: `eyes.py beats <video> --section "chorus 2"` (does each downbeat
   land?), `eyes.py strip <video> --at 61.2` (a signature moment frame by frame), `eyes.py sheet <video> --section
   ...`, `eyes.py motion` (does the picture's energy follow the song's?), `eyes.py sync` (text: cuts and hits within
-  one frame of the music, drift per section). `checks.py text` and `checks.py flash` work on previews too. Segment
+  one frame of the music, drift per section). `checks.py text` and `checks.py flash` work on previews too. Section
   renders while building: one strip or beat sheet on what you changed. Without the critic (it's off, or can't run):
   `eyes.py look <video>` → read its `index.md`, open its pictures.
-- **Revise the film, not the segment**: fix what you own yourself (re-render only what you change: `S pipeline render
-  <p> --preview --only <id>`), and send builders back with `work/pipeline/tasks.json` `[{"segment": "s3", "what":
-  "the note, and what you want"}]` (autonomous: end your turn; interactive: `S pipeline build <p>`). A join that
-  doesn't hold may mean moving a boundary in plan.json. Then assemble again. Log every pass in `work/log.md`: what you
-  rendered, what the critic said, what you took and why.
+- **Revise the film, not the scene**: against the craft rules below and the concept. A join that doesn't hold may
+  mean moving a boundary. An agent can take a revision (its note, the critic's lines on what it changes, the files it
+  may change); the decision stays yours. Log every pass in `work/log.md`: what you rendered, what the critic said, what you
+  took and why.
 
-## 8. Final, checks, report
-- Leave the final its time: its estimated render time (`S pipeline status <p>`) plus the checks and a fix. In
-  autonomous runs set `"stage": "final"` and end your turn (the studio also starts the final by itself when the time
-  left is what it needs); interactive: `S pipeline assemble <p> --final` (background) → `final/music-video.mp4`
-  (every segment at full size, joined, layered, the song muxed). Solo without a plan: full-size passes, compose,
-  `compose.py mux <picture>` → `final/music-video.mp4`.
-- The checks (`studio.py check <p>`; the final assemble runs them): spec (size, fps, H.264 yuv420p + AAC, the song's
-  length to the frame, plays to the end, the audio identical to the song file and in sync, no undeclared black/frozen
-  stretches), photosensitivity, text, sync. Fix every FAIL (re-render only the segment you change). Look at
-  `work/checks/report.md`.
-- The critic on the final (the final assemble and the runner do it; else `S critique <p> final/music-video.mp4`). If
-  it finds a high-severity problem you can fix in the time left, fix it and render again.
-- `report.md` (project folder): what you made and the idea behind it; how you made it (renderers, segments and who
-  built each, passes); what you checked (the numbers); what you're unsure about, with **the timestamps a human should
-  check by ear** (QA can't hear: phrase-level musical awkwardness, a moment that may land a beat late in feel, the
-  ending, the joins between segments). The studio appends the run settings (models, efforts, budget, the stages, wall
-  time, costs by role) itself. Improving a cut within the same run: rewrite the report so it describes the cut you
-  deliver (a short "Changes since the first cut" list is fine); "Round N" sections are only for the user's review
-  rounds.
+## 7. Final, checks, report
+- Leave the final its time: its estimated render time (`S plan status <p>`, or `tools/speeds.json`) plus the checks
+  and a fix; at least a third of the remaining time when the final is heavy. Full-size render of every pass, compose,
+  then `compose.py mux <picture>` → `final/music-video.mp4`; or `S plan assemble <p> --final` (background).
+- `studio.py check <p>`: spec (size, fps, H.264 yuv420p + AAC, the song's length to the frame, plays to the end,
+  the audio identical to the song file and in sync, no undeclared black/frozen stretches), photosensitivity, text,
+  sync. Fix every FAIL (re-render only what you change). Look at `work/checks/report.md`.
+- The critic on the final (the runner and `plan assemble --final` do it; else `S critique <p> final/music-video.mp4`).
+  If it finds a high-severity problem you can fix in the time left, fix it and render again.
+- `report.md` (project folder): what you made and the idea behind it; how you made it (renderers, scenes, passes,
+  and what any agents built); what you checked (the numbers); what you're unsure about, with **the timestamps a human
+  should check by ear** (QA can't hear: phrase-level musical awkwardness, a moment that may land a beat late in feel,
+  the ending, the joins between scenes). The studio appends the run settings (models with their costs, the agents,
+  ultracode, the budget, wall time) itself. Improving a cut within the same run: rewrite the report so it describes
+  the cut you deliver (a short "Changes since the first cut" list is fine); "Round N" sections are only for the
+  user's review rounds.
 - Interactive runs: `S deliver <p> --critic` archives the cut as `final/music-video_vN.mp4`, records it and keeps the
   critic's notes on it as `final/critic_vN.md` (reused when it already looked at this exact cut; the autonomous runner
   does all this for you).
 
 ## Review round
 `review/notes.json`: `[{id, version: "v2", t, text, done, fix}]`. For each open note on the newest version:
-`songq.py at <t>` (what happens there), the segment at that time in plan.json, look at `eyes.py strip
-final/music-video.mp4 --at <t>`, find the root cause. **Fix the film, not the frame**: a timing change moves
-everything after it against the music; re-think the downstream sections as a whole instead of squeezing the fix in
-(a note can move a boundary in plan.json). A video made with a plan starts at stage 4: fix it yourself, or send a
-builder back with `work/pipeline/tasks.json`; assemble, then the final. Keep what the user liked. Then render, check,
-mark each note done with a one-line fix (`S note-done <p> <id> "what changed"`), add a "Round N" section at the top
-of report.md, deliver (the new cut becomes vN+1; earlier versions stay in final/).
+`songq.py at <t>` (what happens there), the scene at that time (the plan's segment, if there's a plan), look at
+`eyes.py strip final/music-video.mp4 --at <t>`, find the root cause. **Fix the film, not the frame**: a timing change
+moves everything after it against the music; re-think the downstream sections as a whole instead of squeezing the fix
+in (a note can move a boundary). Fix it yourself, or give a fix to an agent with a narrow brief. Keep what the user
+liked. Then render, check, mark each note done with a one-line fix (`S note-done <p> <id> "what changed"`), add a
+"Round N" section at the top of report.md, deliver (the new cut becomes vN+1; earlier versions stay in final/).
 
-## Working with workflows (ultracode)
-Ambition without the token burn. **The pipeline is the fan-out**: builders are the parallel agents that build, each
-with a narrow brief, its own folders, a critic round and a cost the studio counts and shows. So:
-- **Never build segments with workflow agents or subagents**: segments are built by `S pipeline build` (in the
-  background), which gives each builder exactly what it needs, keeps it out of the lib and the other segments, queues
-  its renders and runs its critic round. An agent you start yourself gets none of that.
-- **Use workflows only for your own thinking**, where ideas multiply, not tokens: three to five genuinely different
-  concepts from different angles before you commit, variants of a signature moment, alternative style frames or lib
-  motifs before gate 1. Not: several agents reading the same song folder, looking at the same render, or babysitting
-  the same command.
-- **Every subagent gets `work/song-notes.md` + its task**, never "read the song folder": write the digest (section 1)
-  first. Concept agents also get the user's notes and their own angle (that's where they must differ); once you've
-  committed, every agent also gets `work/concept.md`. A subagent that needs a fact asks `songq.py`.
-- **Looking at renders → the studio's critic** (the gates do it; `S critique <p> <video> [--focus "..."]` for a
-  second look at one part), not reviewer agents on the top model: it opens the pictures itself on a cheaper model and
-  returns text. One critique per cut is enough.
+## Agents (optional)
+Deploy them where they make the video better or faster; build it all yourself where one hand is what the concept
+needs. Fan out where ideas multiply, not where tokens multiply:
+- **Good uses**: three to five genuinely different concepts from different angles before you commit; variants of a
+  signature moment, alternative style frames or motifs; once the look is in shared code, a rig, a model, an engine or
+  a scene built to a clear spec; a chore that needs some judgment (a timing table from your song notes). **Not**:
+  several agents reading the same song folder, looking at the same render, or babysitting the same command; anything
+  that needs your judgment of the whole film.
 - **Mechanical stages are commands, not thinking**: rendering, assembling, the checks and the eyes run as plain Bash
-  in the background. If a workflow agent must drive one, give it `model: 'sonnet'` (or `'haiku'`) and `effort: 'low'`.
-- **Keep the top model for** the concept, the lib, the hero and your own segments, the builders' briefs, and deciding
-  what to do with the critic's reports.
+  in the background (they queue anyway), not through an agent.
+- **How**: the Agent tool, in the background with `run_in_background: true` (you're told when it finishes; work on,
+  or end your turn: an autonomous run waits while your agents work). `TaskStop` stops one (to change an agent's
+  course, stop it and start another with a sharper brief; in autonomous runs `SendMessage` isn't available). In
+  autonomous runs each agent's lines show in the user's live log.
+- **Give each its `model`**: the top model (yours) for creative scene code; `sonnet` or `haiku` for a mechanical task
+  that needs some judgment. Without a model it runs on yours.
+- **Brief it narrowly**: `work/concept.md`, `work/song-notes.md`, the shared code it builds on, its task (a rig, a
+  model, an engine, a scene, to a clear spec; where it meets the song: the times and bar:beat, what must happen at a
+  ★★★ moment it touches; how bold, and what it must not settle for), the files it may write, and what to report back
+  (a few lines). Never "read the song folder": your digest is its song, and a fact it needs comes from
+  `songq.py`. Concept agents also get the user's notes and their own angle (that's where they must differ).
+- **One look.** If agents build parts, first put the look, the characters, the rigs and the models in shared code you
+  own (`work/scenes/lib/`, `work/kit/`; web scenes import from them, Blender scenes too) and have them use it, not
+  copy it. A rig engine or a set of models used across the whole video is exactly the kind of thing to build once and
+  share. They add to it only when you say so: a change there renders again every scene that uses it.
+- **The looking is the critic's** (yours when it's off): agents don't open frames to judge them. A second look at one
+  part: `S critique <p> <video> --focus "..."` (one critique per cut is enough). Never reviewer agents on the top
+  model.
+- **Renders queue one at a time on this machine**, the agents' too: agents speed up thinking and code, not rendering,
+  and the final render is the floor no number of them lowers. An agent's render may wait in the queue (`waiting for
+  the render queue`): it runs it in the background or with the longest timeout.
+- **They share your sandbox** in autonomous runs (the studio's folders read-only, no network). Interactively nothing
+  enforces it: name in each brief the only files it may write, never the studio's folders. **Their cost is part of
+  the run's** (report.md lists it per model; the web app's run view shows each agent and the costs).
+- **Ultracode** (autonomous runs with `--ultracode` or the web form's checkbox; interactively, the user's own
+  setting): the Workflow tool for larger orchestrations, by the same rules. It multiplies tokens: worth it where
+  ideas multiply.
 - The point of fanning out is a bolder video, not a safer consensus: never let agents average an idea down. When
   variants compete, pick the most ambitious one that can be made well in the time, and graft the best of the others.
+  Keep for yourself the concept, the shared look, the scenes the arc turns on, and what to do with the critic's notes.
+
+## The plan tools (optional)
+A scene list helps when the film is several scenes in sequence (web and Blender passes, a part an agent builds):
+write `work/plan.json` and the studio renders it segment by segment, with a cache, and assembles previews and the
+final in one command. Without a plan, render and compose by hand (step 5); both are fine. The rules are in
+`tools/README.md` ("plan.py"); `S plan validate <p>` says what to change, with the numbers.
+```json
+{"segments": [{"id": "s1", "name": "intro: the lantern wakes", "from": 0.0, "to": 24.24, "renderer": "web",
+               "scene": "work/scenes/s1/scene.js"}, ...],
+ "overlays": [{"id": "type", "scene": "work/scenes/type/type.html", "transparent": true}]}
+```
+Segments in song order, following on with no gap, the first `from` 0, the last `to` the song's end, cut on downbeats
+(boundaries become frames: `round(t × fps)`); each scene in its **own folder** `work/scenes/<id>/` (the render cache
+follows a scene's folder and its imports, so a change in one segment doesn't render another); shared code in
+`work/scenes/lib/` (and `work/kit/`). Overlays (the type, a grain) are transparent passes layered over the joined
+segments. Other fields are your own notes. plan.json is also the timeline the user plays live: keep it current.
+
+| command | takes | what comes back |
+|---|---|---|
+| `S plan validate <p>` | seconds | the plan's table, or errors that say what to change (with the numbers to set); exit 1 |
+| `S plan render <p> --preview --only s3` | a segment's render (it may wait for the render queue) | per item rendered / unchanged (from the cache) / failed, with its log; `work/segments/<id>/<id>_preview.mp4` |
+| `S plan status <p>` | seconds | each item's renders (current or stale), the previews with the critic's scores, the final's estimated render time here, the render queue |
+| `S plan assemble <p> --preview` | what changed + 3-6 min: **background** | `work/previews/preview_N.mp4` (half size; a segment without a scene is a labelled slate), the eyes, the flash and text checks, then the critic's report on the whole film (read it first) |
+| `S plan assemble <p> --final` | the final's estimate + ~5 min: **background** | `final/music-video.mp4` (every scene needed), every check, the critic on the final |
+
+`plan assemble` runs the critic on its own cut, and an autonomous run's critic doesn't look at that cut again: don't
+critique it twice. `--no-critic` skips that critique interactively; in an autonomous run the studio's critic then looks
+at the cut by itself and its notes come as a message.
 
 ## Craft rules (from real review rounds; they never bend, the look always can)
 1. **Everything lands on a musical event**: every cut, flash, hit, reveal, camera move start and type entrance on a beat,

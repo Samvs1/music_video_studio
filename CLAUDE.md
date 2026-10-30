@@ -10,36 +10,39 @@ what it can't hear; Claude Code directs the video, interactively (`/musicvideo <
 - `projects/<p>/`: `project.json` (the user's notes: `about`, `mood`, `ideas`, `avoid`, `format`, `lyrics`, `refs`;
   `versions`, `runs`), `song/` (the song file + the song folder: start at `song/README.md`), `refs/` (the user's
   reference pictures: who's in the song, so the director can draw them), `work/` (the director's workspace and log;
-  `work/plan.json` the pipeline's plan, `work/scenes/lib/` the locked visual language, `work/scenes/<id>/` one
-  segment's scene, `work/segments/<id>/` its renders, log and eyes, `work/pipeline/` the run's state.json, renders.json,
-  tasks.json and sessions/; `work/previews/preview_N.mp4` are the full previews the critic looks at, `work/critic/`
-  its critiques + `log.jsonl`),
+  optional `work/plan.json` a scene list the plan tools render segment by segment and assemble (also the live
+  timeline); `work/scenes/lib/` and `work/kit/` shared code, characters, rigs and models that web and Blender scenes
+  import (the render caches follow them); `work/segments/<id>/` a plan segment's renders, log and eyes; `work/plan/`
+  the plan tools' render times and assemble logs; `work/previews/preview_N.mp4` the full previews the critic looks at,
+  `work/critic/` its critiques + `log.jsonl` + `pending/`; `work/director/run-N/` a run's brief, events, messages and
+  status.json with its agents and costs per model),
   `final/` (`music-video.mp4` + `music-video_vN.mp4`, never overwritten; `critic_vN.md/.json`: the critic's notes on
   each version, rewritten by "Ask the critic"), `report.md`, `review/notes.json`.
 - `tools/README.md`: every tool. `tools/installed.md`: what this machine has. `tools/speeds.json`: render speeds here.
   `tools/critic.py` (`studio.py critique`): the critic, a cheaper model with fresh eyes that does the image-heavy
   looking and reports back in text (ambition first, then craft); the director decides what to do with its notes.
-  `tools/pipeline.py` (`studio.py pipeline validate|status|render|gate|assemble|build`): the pipeline every run
-  follows; `tools/mv/session.py` one stream-json Claude Code session (busy from a message to an idle session until
-  its result; messages sent while busy join the running turn); `tools/mv/renderlock.py` the render queue (one video
+  `tools/plan.py` (`studio.py plan validate|status|render|assemble`): the optional plan tools;
+  `tools/mv/session.py` one stream-json Claude Code session (busy from a message to an idle session until its
+  result; messages sent while busy join the running turn; working while its agents run, then a turn of its own; its
+  cost is the latest result's running total, not a sum); `tools/mv/renderlock.py` the render queue (one video
   render at a time per machine, `<studio>/cache/render.lock`, `MV_RENDER_LOCK=0` off). `tools/mv/live.py`: the live
   preview (the web app plays the scenes in the browser with the song, no render, from a live server per project on
   127.0.0.1 in the renderer's URL space; timelines from `work/live.json` (optional override), `work/plan.json`, the
   renders). The user's live notes reach a running director; directors mark notes done with `studio.py note-done <p>
   <id> "<fix>"` (the web app writes `review/notes.json` too).
-- `.claude/skills/musicvideo/SKILL.md`: the pipeline, the director's workflow and craft rules (+ `anti-defaults.md`).
-- `templates/`: the director, planner, builder and revise briefs, the story prompt, the critic's prompt. `app/`: the
-  web app. `tests/`: smoke + server tests.
+- `.claude/skills/musicvideo/SKILL.md`: how a run works (full reign, the critic, live notes; optional agents and plan
+  tools), the director's workflow and craft rules (+ `anti-defaults.md`).
+- `templates/`: the director brief, the revise brief, the story prompt, the critic's prompt. `app/`: the web app.
+  `tests/`: smoke + server tests.
 
-## The pipeline (every run, autonomous or interactive)
-Plan (the top model, max effort: concept, the language in code, the hero segment as the first draft, `plan.json`) →
-gate 1 (the critic on the hero; the language locks) → build (builder sessions in parallel, one per segment, narrow
-briefs, one critic round each) → assemble (the studio joins a preview; the critic on the whole film) → revise (the
-planner fixes or sends builders back) → final (the studio renders and checks; the critic on it). The cheap critic does
-the image-heavy looking and reports back in text; it never builds. `studio.py direct <p> --budget 90m [--mode
-auto|pipeline|solo]`: auto runs the pipeline when its stages fit before the final render must start (else one solo
-director with the critic; `--dry-run` says which and why). In an interactive session you are the planner: run
-`pipeline gate`, `pipeline build` (in the background) and `pipeline assemble` yourself.
+## A run (autonomous or interactive)
+One director (the top model, effort max by default) with full reign: it builds the video itself, or deploys agents
+where it wants to (the Agent tool, in the background, each with its own model and a narrow brief; `--ultracode` adds
+the Workflow tool; nothing forces agents). If agents build parts, the look, characters, rigs and models live in shared
+code the director owns (`work/scenes/lib/`, `work/kit/`). Agents share the director's sandbox and its cost
+(`--max-usd` caps the session). The cheap critic looks at every preview and the final and reports back in text
+(ambition first); the user's live notes reach the director mid-run. `studio.py direct <p> --budget 90m [--ultracode]
+[--max-usd N]`.
 
 ## Running things
 Always through the studio's venv: `.venv\Scripts\python.exe tools\studio.py ...` (Windows; prefix
@@ -71,6 +74,6 @@ venv. Bash heredocs mangle quotes: for non-trivial patches write a small script 
   paths via `os.path`, subprocess lists (no shell strings).
 - Tests: `python tests/smoke_test.py` (synthetic song → ingest → web engine + Blender → compose → every check →
   the director runner with a stand-in for Claude) and `python tests/test_server.py` (the web app's API + each page in
-  headless Chromium). Both must pass. `studio.py permtest <p> [--builder]` checks the director's (or a builder's)
-  sandbox with the real Claude Code.
+  headless Chromium). Both must pass. `studio.py permtest <p>` checks the director's sandbox, and an agent's, with
+  the real Claude Code.
 - The song kit came from aftermovie-studio; keep its behaviour (and its warnings) honest when changing it.

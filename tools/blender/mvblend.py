@@ -9,8 +9,13 @@ A scene script defines:
 `mv` gives: mv.song (tools/mv/song.py Song: t(bar, beat), pos(t), at(t), cue(t), hits(kind), pulse(kind, t), ...),
 mv.fps, mv.width, mv.height, mv.f0, mv.f1 (the frames being rendered), mv.seed, mv.preview,
 mv.curve(name) (one value per frame), mv.value(name, f), mv.t(f) (song time of frame f: the end of its slot), mv.frame(t),
-mv.random(f, key) (stable per frame), mv.text(...) (declare on-screen text for the checks), mv.scene (bpy scene).
+mv.random(f, key) (stable per frame), mv.text(...) (declare on-screen text for the checks), mv.scene (bpy scene),
+mv.project (the project folder: assets by path, e.g. a .blend in work/kit/).
 Blender frame numbers ARE song frames (frame 0 = song time 0).
+Shared code: the scene's own folder, work/scenes/lib/ and work/kit/ are on sys.path (after Python's and Blender's own
+modules; the studio's tools are not, so a work/kit/models.py is the scene's own), so a scene imports its siblings and
+the models, rigs and helpers the whole video shares (`import shapes`, `from city import build`); run.py's cache key
+follows all three folders.
 """
 import importlib.util, json, os, random, sys, time
 
@@ -20,6 +25,7 @@ argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 A = json.loads(argv[0])
 sys.path.insert(0, A["tools"])
 from mv.song import Song  # noqa: E402
+sys.path.remove(A["tools"])       # mv is loaded; the studio's own tools (models.py, eyes.py, ...) mustn't shadow a scene's
 
 
 class MV:
@@ -134,6 +140,9 @@ def main():
     mv = MV()
     mv.scene = scene
     random.seed(A["seed"])
+    for d in (os.path.dirname(A["scene"]), os.path.join(A["project"], "work", "scenes", "lib"), os.path.join(A["project"], "work", "kit")):
+        if os.path.isdir(d) and d not in sys.path:
+            sys.path.append(d)
     spec = importlib.util.spec_from_file_location("mv_scene", A["scene"])
     mod = importlib.util.module_from_spec(spec)
     sys.modules["mv_scene"] = mod

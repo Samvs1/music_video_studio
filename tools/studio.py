@@ -8,20 +8,20 @@
   python tools/studio.py story <project> [--model M]                 Claude drafts song/song-story.md (headless, read-only)
   python tools/studio.py align-lyrics <project> [--in lines.json]    the lyric lines placed where Whisper hears them
                                                                      (cache/lyrics/aligned.json; the web app's timing editor)
-  python tools/studio.py direct <project> --budget 90m [--mode auto|pipeline|solo] [--model opus] [--effort E] [--seed-notes "..."]
-                         [--revise] [--planner-model M] [--planner-effort max] [--builders 3] [--builder-model M]
-                         [--builder-effort high] [--critic-model sonnet|haiku|opus|off] [--critic-effort medium] [--critic-max 6]
+  python tools/studio.py direct <project> --budget 90m [--model opus] [--effort max] [--seed-notes "..."] [--revise]
+                         [--ultracode] [--max-usd N] [--critic-model sonnet|haiku|opus|off] [--critic-effort medium]
+                         [--critic-max 6]
                                                                      the autonomous run (Claude Code headless) -> final/music-video.mp4:
-                                                                     the pipeline (a planner, builders, the critic at the gates)
-                                                                     or solo (one session; auto: when the stages don't fit, never under 45 min)
+                                                                     one director with full reign (agents if it wants them;
+                                                                     --ultracode: multi-agent workflows too; --max-usd: a cap)
+                                                                     and the critic on its previews and the final
   python tools/studio.py critique <project> <video | vN> [--model sonnet] [--focus "..."] [--max-usd 2] [--pictures a.png]
                                                                      the critic: a cheaper model with fresh eyes looks at a video
                                                                      and reports back (work/critic/; vN also final/critic_vN.md)
-  python tools/studio.py pipeline validate|status|render|assemble|gate|build <project> [...]
-                                                                     the pipeline's studio side (tools/pipeline.py): check
-                                                                     work/plan.json, render the segments, assemble previews and
-                                                                     the final, the language gate (the critic on the hero), the
-                                                                     builders (an interactive planner's `pipeline build`)
+  python tools/studio.py plan validate|status|render|assemble <project> [...]
+                                                                     the plan tools (tools/plan.py), optional: a scene list in
+                                                                     work/plan.json rendered segment by segment (cached), the
+                                                                     previews and the final assembled in one command
   python tools/studio.py clock <project>                             time left in the running director's budget
   python tools/studio.py check <project> [video]                     every check on the final (spec, flashes, text, sync, audio)
   python tools/studio.py versions <project>                          the delivered versions (final/music-video_vN.mp4)
@@ -31,7 +31,7 @@
   python tools/studio.py note-done <project> <id> ["what changed"] [--undo]
                                                                      mark the user's note done with a one-line fix
                                                                      (review/notes.json, safely: the web app writes it too)
-  python tools/studio.py permtest <project> [--builder]              check the director's (or a builder's) sandbox with the real Claude Code (cents)
+  python tools/studio.py permtest <project>                          check the director's sandbox (and an agent's) with the real Claude Code (cents)
   python tools/studio.py run <project> <tool.py> [args]              run any tool inside a project (eyes.py, songq.py, compose.py, ...)
   python tools/studio.py serve [--port 8765] [--no-browser]          the local web app
   python tools/studio.py doctor                                      check the install and say how to fix what's missing
@@ -331,9 +331,7 @@ def cmd_direct(a):
     import director
     director.direct(project_dir(a.project), budget=a.budget, effort=a.effort, model=a.model, seed_notes=a.seed_notes,
                     revise=a.revise, nudge=not a.no_nudge, dry_run=a.dry_run, critic_model=a.critic_model,
-                    critic_effort=a.critic_effort, critic_max=a.critic_max, mode=a.mode, planner_model=a.planner_model,
-                    planner_effort=a.planner_effort, builders=a.builders, builder_model=a.builder_model,
-                    builder_effort=a.builder_effort)
+                    critic_effort=a.critic_effort, critic_max=a.critic_max, ultracode=a.ultracode, max_usd=a.max_usd)
 
 
 def cmd_critique(a):
@@ -365,9 +363,9 @@ def cmd_critique(a):
     sys.exit(0 if ok else 1)
 
 
-def cmd_pipeline(a):
-    import pipeline
-    sys.exit(pipeline.main([a.sub] + a.args, project_dir(a.project)))
+def cmd_plan(a):
+    import plan
+    sys.exit(plan.main([a.sub] + a.args, project_dir(a.project)))
 
 
 def cmd_clock(a):
@@ -407,7 +405,7 @@ def cmd_note_done(a):
 
 def cmd_permtest(a):
     import director
-    sys.exit(0 if director.permission_test(project_dir(a.project), model=a.model, builder=a.builder) else 1)
+    sys.exit(0 if director.permission_test(project_dir(a.project), model=a.model) else 1)
 
 
 def cmd_versions(a):
@@ -460,14 +458,11 @@ def main():
     p = sp.add_parser("align-lyrics"); p.add_argument("project"); p.add_argument("--in", dest="inp")
     efforts = ["low", "medium", "high", "xhigh", "max"]
     p = sp.add_parser("direct"); p.add_argument("project"); p.add_argument("--budget", default="90m")
-    p.add_argument("--mode", default="auto", choices=["auto", "pipeline", "solo"],
-                   help="the pipeline (planner + builders + the critic) or one session; auto: the pipeline when its stages fit "
-                        "the budget on this machine (never under 45 min; --dry-run says), else solo")
-    p.add_argument("--effort", default=None, choices=efforts, help="solo: the director's (default high); pipeline: the planner's")
-    p.add_argument("--model", default=None, help="the director's / the planner's (default: project.json director.model, else opus)")
-    p.add_argument("--planner-model"); p.add_argument("--planner-effort", choices=efforts, help="default max")
-    p.add_argument("--builders", type=int, default=3, help="builders at once (pipeline; 0 = solo in auto mode)")
-    p.add_argument("--builder-model", help="default: the planner's model"); p.add_argument("--builder-effort", choices=efforts, help="default high")
+    p.add_argument("--effort", default=None, choices=efforts, help="the director's (default max)")
+    p.add_argument("--model", default=None, help="the director's (default: project.json director.model, else opus)")
+    p.add_argument("--ultracode", action="store_true",
+                   help="the director may orchestrate multi-agent workflows (the Workflow tool): more tokens")
+    p.add_argument("--max-usd", type=float, help="a hard cap on the director's session, its agents included (--max-budget-usd)")
     p.add_argument("--seed-notes", default="")
     p.add_argument("--revise", action="store_true", help="address the review notes and make the next version")
     p.add_argument("--no-nudge", action="store_true", help="don't ask an early finisher to use the time left")
@@ -479,7 +474,7 @@ def main():
     p.add_argument("--model"); p.add_argument("--effort"); p.add_argument("--focus", default="")
     p.add_argument("--concept"); p.add_argument("--out"); p.add_argument("--max-usd", type=float)
     p.add_argument("--no-look", action="store_true"); p.add_argument("--pictures", help="more stills to open, comma-separated")
-    p = sp.add_parser("pipeline"); p.add_argument("sub", choices=["validate", "status", "render", "assemble", "gate", "build"])
+    p = sp.add_parser("plan"); p.add_argument("sub", choices=["validate", "status", "render", "assemble"])
     p.add_argument("project"); p.add_argument("args", nargs=argparse.REMAINDER)
     p = sp.add_parser("clock"); p.add_argument("project")
     p = sp.add_parser("check"); p.add_argument("project"); p.add_argument("video", nargs="?"); p.add_argument("extra", nargs=argparse.REMAINDER)
@@ -487,7 +482,6 @@ def main():
     p = sp.add_parser("deliver"); p.add_argument("project"); p.add_argument("--critic", action="store_true")
     p.add_argument("--critic-model")
     p = sp.add_parser("permtest"); p.add_argument("project"); p.add_argument("--model", default="haiku")
-    p.add_argument("--builder", action="store_true", help="a pipeline builder's sandbox (needs a valid work/plan.json)")
     p = sp.add_parser("stop"); p.add_argument("project")
     p = sp.add_parser("note-done"); p.add_argument("project"); p.add_argument("id"); p.add_argument("fix", nargs="?", default="")
     p.add_argument("--undo", action="store_true", help="open the note again")

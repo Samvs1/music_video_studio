@@ -11,7 +11,7 @@ Options: `--from/--to`, `--frames a:b`, `--section NAME` (default: the whole son
 `--still t1,t2` · `--fresh`.
 
 Output: a folder of `frame_000123.png` numbered by song frame (Blender frame = song frame), or `.mp4`. Resume is built
-in: Blender skips frames that exist; when the scene file or the settings change, old frames are cleared. Eevee and
+in: Blender skips frames that exist; when the scene's inputs (below) or the settings change, old frames are cleared. Eevee and
 Workbench need OpenGL: on Linux without a display the runner wraps Blender in `xvfb-run`. Cycles uses OptiX / CUDA /
 HIP / Metal when Blender finds a GPU, else the CPU; it denoises with OpenImageDenoise when the build has it.
 Writes `<out>.mv.json` (range, engine, Blender version, timings, declared text).
@@ -34,6 +34,29 @@ def frame(mv, f):           # optional: before every frame f; must depend only o
 `mv.height`, `mv.f0`, `mv.f1`, `mv.seed`, `mv.preview`, `mv.scene`, `mv.t(f)`, `mv.frame(t)`, `mv.curve(name)`,
 `mv.value(name, f)`, `mv.random(f, key)`, and `mv.text(text, t0, t1, box=[x, y, w, h], role, color, size)` to declare
 text this pass shows (for the text checks; type is usually better in a web-engine pass on top).
+
+## Shared code and models
+A scene script can import what the whole video shares. Three folders are on `sys.path`:
+- the scene's own folder (`work/scenes/stage/` for `work/scenes/stage/scene.py`): its own helpers;
+- `work/scenes/lib/`: the film's shared code (the palette, the motifs, the motion rules);
+- `work/kit/`: the assets built once and used across the video: a character rig, a set of procedural models, an
+  environment (`work/kit/city/__init__.py` -> `from city import build_city`). Procedural models in Python are the
+  first choice (code: deterministic, cached by content); a `.blend` there is appended or linked by its path
+  (`os.path.join(mv.project, "work", "kit", "city", "city.blend")`).
+They come after Python's and Blender's own modules: a module named like one of those (`random.py`, `math.py`, `bpy`,
+`mathutils`, `bmesh`, an add-on such as `rigify`) or like the studio's `mv` package loses to it, so give yours names of
+their own. The studio's tools are not on the path: a `work/kit/models.py` or `eyes.py` is the scene's own.
+```python
+from city import build_city          # work/kit/city/__init__.py
+import look                          # work/scenes/lib/look.py
+
+def build(mv):
+    build_city(mv, palette=look.PALETTE)
+```
+The cache follows them: the frames of a render are kept while the scene's own folder (only the file itself when it lies
+loose in `work/scenes/`, `work/` or the project), `work/scenes/lib/` and `work/kit/` are what they were and the
+settings are the same; any change there renders it again (`mv.common.scene_inputs`; `studio.py plan` uses the same
+rule to tell a Blender segment's render is stale).
 
 Determinism: no `time.time()`, seed every random source (`mv.random(f, key)`), keep `frame()` a pure function of f.
 Example (mechanics, not a look): `examples/kick_rings.py`.

@@ -6,7 +6,9 @@
         [--preview | --scale 0.5] [--transparent] [--workers N] [--still 12.5,40] [--fresh]
 
 --out: a folder (PNG frames frame_000123.png, numbered by song frame; the default) or a .mp4 (frames, then H.264).
-Re-running continues where it stopped: Blender skips frames that already exist (--fresh starts over).
+Re-running continues where it stopped: Blender skips frames that already exist (--fresh starts over). The frames there
+are kept while the scene's inputs (its own folder, work/scenes/lib/, work/kit/: mv.common.scene_inputs) and the settings
+are the same; a change in any of them starts over.
 Eevee and Workbench need OpenGL: on a Linux box without a display they run under xvfb-run automatically.
 Writes <out>.mv.json (frame range, engine, timings, the text the scene declared with mv.text()).
 Video renders wait their turn in the machine's render queue (mv/renderlock.py: one render at a time; MV_RENDER_WHO
@@ -17,7 +19,7 @@ import argparse, glob, json, os, platform, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 sys.path.insert(0, TOOLS)
-from mv.common import ROOT, delivery, jload, jsave, need_project, ffmpeg, h264_args  # noqa: E402
+from mv.common import ROOT, delivery, jload, jsave, need_project, ffmpeg, h264_args, scene_inputs  # noqa: E402
 from mv.renderlock import render_queue  # noqa: E402
 
 
@@ -78,6 +80,23 @@ def run_blender(exe, scene, args, engine, log=print):
         raise RuntimeError("blender failed:\n" + "\n".join(tail[-25:]))
 
 
+def scene_key(scene, project, out_dir, settings):
+    """What decides the frames: the scene's inputs (its folder, the shared code: their files, a big one by its size
+    and time), the settings, mvblend.py."""
+    import hashlib
+    h = hashlib.sha1()
+    for f in scene_inputs(scene, project, skip=(out_dir,)):
+        try:
+            size = os.path.getsize(f)
+            h.update(os.path.relpath(f, project).replace("\\", "/").encode("utf-8", "replace"))
+            h.update(open(f, "rb").read() if size < 20e6 else f"{size}:{os.path.getmtime(f)}".encode())
+        except (OSError, ValueError):            # (ValueError: another drive on Windows has no relative path)
+            pass
+    h.update(json.dumps(settings, sort_keys=True).encode())
+    h.update(open(os.path.join(HERE, "mvblend.py"), "rb").read())
+    return h.hexdigest()[:16]
+
+
 def render(scene, out, project=None, frames=None, engine="auto", samples=None, scale=1.0, preview=False, transparent=False,
            workers=1, stills=None, fresh=False, seed=1, log=print):
     project = os.path.abspath(project or ROOT)
@@ -104,11 +123,9 @@ def render(scene, out, project=None, frames=None, engine="auto", samples=None, s
     os.makedirs(out_dir, exist_ok=True)
     base = {"tools": TOOLS, "project": project, "scene": os.path.abspath(scene), "w": w, "h": h, "fps": fps, "seed": seed,
             "engine": engine, "samples": samples, "transparent": transparent, "out_dir": out_dir, "preview": preview}
-    import hashlib
-    key = hashlib.sha1(open(scene, "rb").read() + json.dumps({k: v for k, v in base.items() if k != "out_dir"}, sort_keys=True).encode()
-                       + open(os.path.join(HERE, "mvblend.py"), "rb").read()).hexdigest()[:16]
+    key = scene_key(scene, project, out_dir, {k: v for k, v in base.items() if k != "out_dir"})
     kp = os.path.join(out_dir, "_scene_key.txt")
-    if os.path.exists(kp) and open(kp).read().strip() != key:     # the scene or the settings changed: old frames are stale
+    if os.path.exists(kp) and open(kp).read().strip() != key:     # the scene, its shared code or the settings changed: stale
         for f in glob.glob(os.path.join(out_dir, "frame_*.png")) + glob.glob(os.path.join(out_dir, "_meta_*.json")):
             os.remove(f)
     open(kp, "w").write(key)
