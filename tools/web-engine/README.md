@@ -60,7 +60,8 @@ chord, line, lineProgress, word, c}`:
   `MV.intent("black"|"frozen", t0, t1, "why")` declares a deliberate black or frozen stretch. `MV.log(...)`.
 
 ## Determinism
-`Date`, `performance.now`, `requestAnimationFrame`, `setTimeout`/`setInterval` run on the frame clock; CSS animations,
+`Date`, `performance.now`, `requestAnimationFrame`, `setTimeout`/`setInterval` run on the frame clock (in the live
+preview too: the live loop uses the browser's own `requestAnimationFrame`, saved before the runtime replaces it); CSS animations,
 transitions and `element.animate()` are paused and set to the frame's time; `Math.random` is re-seeded every frame.
 anime.js: create timelines with `autoplay: false` and `.seek(f.t * 1000)` in render (or let them run: they follow the
 frame clock). Don't fetch anything from the network: the page can only load the studio's runtime, vendor files, fonts,
@@ -81,6 +82,62 @@ the song folder and the project folder.
   PNG for transparent passes and `--lossless`. Speeds on this machine: `tools/speeds.json`.
 - GPU: with `--gpu auto` the engine checks the WebGL renderer and falls back to SwiftShader (software) when there is no
   GPU. Browser: `MV_CHROME`, Playwright's Chromium, Chrome, Edge.
+
+## Live preview (the web app plays scenes with the song, no render)
+The Watch page's **▶ live** view plays a project's scenes in the user's browser with the song, so the one person who
+can hear gets their ears in early, while the director still works. It is the same runtime in **live mode**
+(`__MV_CONFIG.live`, set only by the live shell; a render never has it, and without it nothing in `mv.js` behaves any
+differently: the smoke test renders frames with and without the live block and compares them pixel for pixel):
+- The page the live server sends is the renderer's own (`/_mv/live.html?scene=<path from the project>&scale=0.5`: the
+  same shell, fonts, import map and URL space; an HTML scene is served at its own URL with the same head), at the
+  delivery size × the size the user picks (¼, ½, full; default ½).
+- The web app owns the clock (the song's `<audio>`): it posts `{type: "mv-clock", t, playing, rate, seek}` on every
+  frame while it plays and on a seek, a pause or a rate change. The page shows frame `round(t × fps)` of that clock as it
+  is now, on the browser's real `requestAnimationFrame`, and renders only when that frame changed and the last render
+  is done: **a scene slower than real time drops frames, the timing stays true** (what you see is where the song is).
+- Stateful scenes step on one frame at a time; a jump pre-rolls exactly as a render does (from 0, or `preroll` seconds
+  before), in slices that let the browser breathe ("catching up 40%"), and a new seek cancels a catch-up under way. A
+  jump *back* in a stateful scene without `preroll` reloads the page first (its state must start from `setup()` again).
+  So a live frame is the renderer's frame, pixel for pixel (checked by the smoke test, stateful scenes included). A step
+  back that isn't a seek (the clock correcting itself: a pause, a play, a new sound delay, a switch of stems) holds the
+  frame until the clock passes it, so pausing never restarts a simulation.
+- While it plays, a stateful scene that can't render every frame as fast as the clock runs (a catch-up that doesn't
+  gain on the clock) skips to the clock's frame instead, like a stateless one: it stays on time, and its state is then
+  close to the render's, not exact (`approx`, said in the live view), until a jump back starts it again. Paused, a
+  catch-up is always exact.
+- The page posts `{type: "mv-live", frame, fps (achieved), ms (per render), need, ready, catching_up, approx, errors}`
+  to the web app ~4 times a second (errors at once); the live view shows it per layer: "24 of 30 fps · slower than real
+  time here", "catching up 40%", "skipping frames to keep time", the scene's error.
+- The per-frame text list is cleared every frame (no leak); texts aren't collected live (the checks read renders).
+
+**What plays live**: web scenes (JS modules and HTML pages) as they are on disk (the live server sends `no-store`: a
+scene that changed reloads within 5 s, its imports and the lib included), stateful ones too; transparent overlays over
+them, with the plan's blend mode (`mix-blend-mode`) and opacity; rendered passes as muted videos in their slots (a
+Blender segment's preview render, a `{"video": ...}` layer). **What doesn't**: a Blender scene itself (its preview render
+plays, or a labelled slate), a transparent PNG-folder pass (a Blender overlay), compose's own work (the joins are the
+slots; the blend is the browser's), anything not in a scene. The final render stays the reference; the live view is
+there to hear the picture early.
+
+**Make scenes that play near real time at half size**, so the user can judge them with the music: do the heavy work in
+`setup()` (geometry, layouts, text measurement, textures, precomputed curves), keep `render(f)` to drawing, prefer
+`preroll` (a few seconds) over a full history for simulations, and say in `work/log.md` when a scene can't (the live
+view will show it slower than real time anyway; the render is unaffected).
+
+**work/live.json** (optional: the director's say over what plays, an override of the plan or the renders):
+```json
+{"layers": [{"scene": "work/scenes/world.js", "from": 0, "to": 61.2},
+            {"scene": "work/scenes/stage.js", "section": "chorus 2"},
+            {"video": "work/renders/stage.mp4"},
+            {"scene": "work/scenes/type.html", "transparent": true}]}
+```
+In order, bottom to top; `from` / `to` in song seconds, or `section` (a name or a list of names: those sections only,
+each its own slot); default the whole song. A layer the live view can't use (a section that isn't in the song, a scene
+that isn't there) is left out with a warning in the live view; the others play.
+A `video` is a rendered pass shown in its slot from its `.mv.json` range (or `from` / `to`), muted, synced to the song.
+Also `mode` (normal, screen, add, multiply, lighten, darken, difference), `opacity`, `seed`, `id`. Without it the live view
+plays `work/plan.json` (the pipeline's segments in their slots, the overlays on top), else the newest renders in
+`work/renders/` (each web pass's scene live over its range, other passes as their video; opaque passes by range, the
+newest wins; transparent ones on top). Any scene can also be played alone over the whole song.
 
 ## Vendored (no network at render time; licences in vendor/LICENSES)
 three.js 0.186.1 (+ addons: postprocessing, geometries, lines, loaders for fonts / SVG / TTF, ...), anime.js 4.5.0,

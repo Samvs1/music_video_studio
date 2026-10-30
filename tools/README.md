@@ -119,6 +119,9 @@ plan is `planned`, every scene once it is `final` or its status is `drafted`/`bu
 `opacity` 0-1) are layered over the joined segments in order. A segment importing another segment's folder is a
 warning: share code through the lib.
 
+`work/plan.json` is also the live preview's timeline (below): the user plays its segments in their slots, with the
+song, while the pipeline works.
+
 **work/pipeline/tasks.json** (the planner's fix tasks for builders, stage 4): `[{"segment": "s3", "what": "the note, and what you want"}]`;
 each builder gets the task, its segment's last critique and its scene as it is.
 
@@ -160,6 +163,45 @@ held for 6 h (a hung render), or that shows no sign of life for 10 min (the hold
 a dead render's pid can soon belong to another process) is taken over. `MV_RENDER_WHO` names the render
 (the pipeline sets `<who>: <id> <quality>`), `MV_RENDER_LOCK=0` turns the queue off, `MV_RENDER_LOCK_FILE` moves it
 (the tests do).
+
+## Live preview: the scenes in the browser, with the song (`mv/live.py`, the web app's Watch page "▶ live")
+The user is the only one who can hear. The live view plays the project's scenes in their browser with the song, no
+render, while the director (or the planner and its builders) works, and their notes from there reach a running
+director within seconds. The pieces:
+- **The runtime in live mode** (`web-engine/runtime/mv.js`, `web-engine/README.md` "Live preview"): the renderer's own
+  page on a clock the web app owns; frames drop when a scene is slower than real time, the timing stays true; stateful
+  scenes catch up as a render pre-rolls (one too slow to keep time skips frames, and says its state is then only close
+  to the render's); a pause or a play never restarts one; a live frame is the renderer's frame, pixel for pixel.
+- **A live server per project** (`mv/live.py` `LiveServer`, started by the web app on the first `GET
+  /api/p/<p>/live`, kept for its life): 127.0.0.1, its own port, GET only, `no-store` (an edited scene shows on
+  reload), exactly the renderer's URL space (`Router.file_for`: `/_mv/runtime`, `/_mv/vendor`, `/_mv/fonts`,
+  `/_mv/song`, the project at `/`) plus the live shell `/_mv/live.html?scene=<path from the project>&scale=0.5&transparent=0|1&seed=1`.
+  Nothing outside the project, the runtime, the vendored libraries and the fonts; `/_mv/abs/` only under the studio's
+  `tools/`, `tests/` and `assets/` (the examples, the tests' scenes), never another project, the studio's `.git`, cache
+  or private notes; `..`, a `\\host\share` path (checked by name before anything is opened) and another Host header are
+  refused. Every response carries a Content-Security-Policy that keeps the page off the network, as a render is (a scene
+  that imports from the internet fails live too, not only in its render), and lets only a page on 127.0.0.1 / localhost
+  frame it. A separate origin, so the renderer's URLs work as they are, with no rewriting.
+- **The timelines** (`live.state`): `work/live.json` when there is one (the director's override: `web-engine/README.md`
+  has its format), then `work/plan.json` (each segment in its slot: a web scene live, a Blender one as its rendered
+  preview `work/segments/<id>/<id>_preview.mp4` or a labelled slate; the overlays on top with their blend mode and
+  opacity), then the newest renders in `work/renders/` (from their `.mv.json`: a web pass's scene live over its range,
+  any other opaque pass as its video, the newest wins where they overlap, transparent passes on top; compose's
+  concat / layer / mux outputs left out), then each pitch's draft plan (`work/pitches/round-K/pN/plan.json`). Every scene
+  (`work/scenes/**` but the lib, a pitch's scenes, any scene a timeline names) also plays alone.
+- **Live notes**: a note made in the live view (N) is `{"version": "live", "t", "text", "scene" (what was on top),
+  "timeline" (its source: live.json, plan.json, renders, pitch:round-K/pN or scene:<path>)}` in `review/notes.json`. During an autonomous run the runner (`director.py` `LiveNotes`) looks every ~5 s
+  for live notes made since the run started, not done and not forwarded, and sends them to the director (solo) or the
+  planner as one message with the song context (time, bar:beat, section, the sung line, the plan's segment there, the
+  scene seen) and "treat it like a review note; mark it done with a one-line fix" (`studio.py note-done <p> <id>
+  "<fix>"`); then marks them `"forwarded_run": n`.
+  A busy planner gets them in its running turn; an idle one at once while it plans, revises or waits for builders (the
+  assemble then waits for its turn), and otherwise in the next assemble report, which lists the run's live notes again
+  with what was marked. While the studio gates or assembles they wait for that report (a busy planner too: a fix then
+  would race the renders), and in the final stage for the review round. Open live notes also go into the next run's
+  brief (a review round's with the other notes; a first run's, e.g. after a stopped one, as notes on the scenes as they
+  were). `review/notes.json` is written through `live.update_notes` (a lock file, a re-read, the change by id, an atomic
+  replace): the web app, the runner and the director's `studio.py note-done` all write it.
 
 ## checks.py (`studio.py check <p>` runs `all` on final/music-video.mp4)
 | check | what |
@@ -211,4 +253,4 @@ ffmpeg, encoders), `mv/claude.py` (the claude command and one
 headless print-mode call: the story step, the critic; `kill_tree` stops a process with what it started,
 `pid_alive` is Windows-safe), `mv/renderlock.py` (the render queue), `mv/device.py` (GPU or CPU, one model at a time),
 `mv/listen.py` (the song kit's ears), `mv/songdoc.py` (its writers), `mv/curves.py` (frame curves, hits), `mv/web.py`
-(the web engine's driver).
+(the web engine's driver), `mv/live.py` (the live preview: the live server, the timelines, the notes file).

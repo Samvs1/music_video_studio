@@ -10,7 +10,8 @@ My notes on v{{version}} (song time · bar:beat · section · what is sung there
 - You have about {{budget}}; check the clock. {{time_note}}
 - Work on your own; don't stop to ask me. Keep all your work inside this project folder. You can't hear the audio or watch the video: when you say something is right, it's because you looked at frames.
 - No rapid bright flashing. {{finish}}
-- In review/notes.json mark each note you addressed: "done": true and "fix": "what changed" (one line, I read it under my note).
+- I may play your scenes live in the web app while you work; my notes from there come to you as messages: treat them like these.
+- Mark each note you addressed done with a one-line fix, what changed (I read it under my note): `{{note_done}}` (each note above has its id). Not by editing review/notes.json: I may add notes to it while you work.
 - Update report.md: add a section "Round {{round}}" at the top: each note, what you changed, and the timestamps I should check (by ear too).
 
 ---

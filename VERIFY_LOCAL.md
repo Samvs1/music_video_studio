@@ -206,6 +206,29 @@ on the whole film comes back), `pipeline assemble <p> --final` and `deliver <p> 
 - Close the console of a running `studio.py direct` (the hard way), wait 3 minutes, then `studio.py clock <p>`: it
   says the run was cut off, and `pipeline build <p> --only <id>` goes on (with a note) instead of refusing.
 
+## 8f. Live preview: the scenes in your browser with the song (Edge and Chrome on Windows)
+The live view could only be tested in a headless browser in the VM, without sound. On your PC, with a project that has
+scenes (after step 8 or 8d):
+- **Watch & review → ▶ live** (the default while a project has no video yet). Press **Space**: the song plays and the
+  picture moves with it. Under the picture there is a line per layer, e.g. `s2 · work/scenes/s2/scene.js ·
+  0:24.2–0:48.5 · 30 of 30 fps · 6 ms a frame`. Check **by ear** (K for the beat click): a hit you see lands on the beat
+  you hear, the lyric type comes in on its word. Click the lanes to jump, ← → for a bar: the picture follows at once (a
+  stateful scene first says `catching up N%`). Pause holds the frame (a stateful scene doesn't start again: no `starting
+  again from its setup`), and so do N and a switch of stems (V / D / B / O / M); 0.75× still matches. Do this in
+  **Edge** and in **Chrome**. If the picture is ahead of or behind the speakers' sound, tell Claude by how much.
+- **Bluetooth headphones** play the sound late, so the picture runs ahead: raise **sound delay** (try 200 ms) until a
+  kick and its flash meet. Reload the page: the value is kept (it is per browser).
+- **Size** ¼ / ½ / full: the fps rises at ¼. A heavy scene at full size may say `slower than real time here: frames
+  drop, the timing holds`: frames are skipped, but what you see is still where the song is.
+- **During a run** (step 8 or 8d): Direct → **▶ play the scenes live**. While the planner writes scenes the picker lists
+  the plan; a scene that changes reloads itself within ~5 s (a toast says so). Press **N**, write a note, save: the toast
+  says the director gets it within seconds. Within ~5 s the Direct page's live log shows `🎧 the user's live note to the
+  planner: ...` and `studio → planner (the user's live note (1))`; the note then shows `sent to the director (run N)` and,
+  once the planner has dealt with it, `fixed: ...` under it. In a pipeline run the next assemble report (the run's
+  messages) lists it again.
+- F12 → Console: no errors (a scene's own error shows in red on its layer's line instead). When paused, the live view
+  uses little CPU (Task Manager: the browser well under one core).
+
 ## 9. A review round
 On **Watch & review**, play, press **N** at a moment and write a note (e.g. "the chorus should hit harder") → **Direct**
 → the "Review round" box is ticked → budget 20 min → Start. Expect `v2` next to `v1` (both play), your note ticked with

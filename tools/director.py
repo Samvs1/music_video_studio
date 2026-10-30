@@ -21,6 +21,8 @@ The autonomous run (checked against `claude --help` of Claude Code 2.1.x):
   The critic (tools/critic.py, a cheaper model with fresh eyes) looks at every new preview in work/previews/ and the
   final while the director works; its notes go to the director as messages, the early-finish nudge carries its notes
   on the final, and the archived version gets its critique (final/critic_vN.md).
+  The user's live notes (the web app's live view: they play the scenes with the song, and can hear) reach the
+  director within seconds, as a message with the song context, and are marked forwarded in review/notes.json.
   The session plumbing is mv/session.py: a session is busy from a message to an idle session until its next result;
   messages sent while it is busy join the running turn (verified on the real CLI), so the studio decides only when a
   turn has ended.
@@ -323,14 +325,17 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
         vn = vs[-1]["n"] if vs else 1
         rows = []
         for nt in sorted([n for n in jload(os.path.join(pdir, "review", "notes.json"), []) or []
-                          if not n.get("done") and str(n.get("version", "")).lstrip("v") == str(vn)], key=lambda n: n["t"]):
+                          if not n.get("done") and (str(n.get("version", "")).lstrip("v") == str(vn) or n.get("version") == "live")],
+                         key=lambda n: (n.get("version") == "live", n["t"])):
             a = S.at(float(nt["t"]))
             m, s_ = divmod(float(nt["t"]), 60)
+            live = (f" · (in the live view, on {nt['scene']})" if nt.get("scene") else " · (in the live view)") \
+                if nt.get("version") == "live" else ""         # left while playing the scenes, and still open
             rows.append(f"- {int(m)}:{s_:05.2f} · {a['bar']}:{a['beat'] if a['beat'] is not None else '-'} · {a['section'] or '-'} · "
-                        f"{('“' + a['line'] + '”') if a['line'] else '(no singing)'} · **{nt['text'].strip()}**")
+                        f"{('“' + a['line'] + '”') if a['line'] else '(no singing)'}{live} · **{nt['text'].strip()}** (id {nt.get('id')})")
         if not rows:
             raise SystemExit(f"no open notes on v{vn}: leave notes on the Watch page (press N) first")
-        vals.update(version=vn, notes="\n".join(rows), round=vn + 1, pipeline=pipeline,
+        vals.update(version=vn, notes="\n".join(rows), round=vn + 1, pipeline=pipeline, note_done=note_done_cmd(pdir),
                     direction=("\nMy notes on the song (as before):\n" + notes) if notes else "")
         fmt_ = f"{d['width']}×{d['height']}, {d['fps']} fps, H.264 yuv420p with AAC audio, the same length as the song file"
         if pipeline:                           # the studio renders, checks and delivers the final (the note below)
@@ -347,10 +352,17 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
                         when_done=f" When done: `{vals['python']} {tools}/studio.py check {name}` must pass.")
         text = fill(open(os.path.join(TEMPLATES, "revise-brief.md"), encoding="utf-8").read(), vals)
     else:
-        vals["direction"] = ("\n" + notes + "\n") if notes else ""
+        vals["direction"] = (("\n" + notes + "\n") if notes else "") + live_brief(pdir)
         vals["revise_note"] = ""
         text = fill(open(os.path.join(TEMPLATES, "director-brief.md"), encoding="utf-8").read(), vals)
     return text
+
+
+def live_brief(pdir):
+    """A first run's brief: the user's live notes still open (left while no run was going, e.g. after a stopped one),
+    with the song context and their ids; "" when there are none. A review round lists them with the other notes."""
+    open_ = open_live_notes(pdir)
+    return LIVE_BRIEF.format(done=note_done_cmd(pdir), rows="\n".join(live_rows(pdir, open_))) if open_ else ""
 
 
 def rule_path(p):
@@ -684,6 +696,117 @@ def logged_critiques(pdir, since):
     return out
 
 
+# ------------------------------------------------------------------ the user's live notes during a run
+LIVE_MSG = ("The user is playing your scenes live in the web app, with the song (they can hear; you can't), and left "
+            "{what} (song time · bar:beat · section · what is sung there{seg} · the scene they saw · the note):\n{rows}\n"
+            "Treat {them}: find the root cause and fix the film, not the frame{plan}. Where a note asks for "
+            "more, go further than it asks; never answer one by making the film safer. Mark each one done with a "
+            "one-line fix, what you changed: `{done}` (not by editing review/notes.json: the user may be adding notes "
+            "to it right now). {tail}")
+LIVE_TAIL_SOLO = ("Then carry on. The live view plays your scenes as they are on disk: they see a change as soon as you save "
+                  "it (no render needed); the previews and the final still need their renders.")
+LIVE_TAIL_PIPE = ("This joins what you are doing: carry on with your stage and end your turn when its work is done, as "
+                  "always. The live view plays the scenes as they are on disk (they see a change as soon as you save it); "
+                  "the next assemble report lists these notes again, with what you marked.")
+LIVE_REPORT_HEAD = ("The user's live notes since the last report (they play your scenes live in the web app, with the song: "
+                    "they can hear). Treat each open one like a review note, and mark it done with a one-line fix: `{done}`:")
+LIVE_BRIEF = ("\nMy notes from playing the scenes live in the web app since the last run (on the scenes as they were then, "
+              "still open: take them where they still apply; mark each one done with `{done}`):\n{rows}\n")
+
+
+def note_done_cmd(pdir):
+    """The command a director marks a note done with (studio.py note-done: the web app writes review/notes.json too)."""
+    return (f"{venv_python(pdir)} {rel(os.path.join(STUDIO, 'tools'), pdir)}/studio.py note-done {os.path.basename(pdir)} "
+            f"<id> \"<what you changed>\"")
+
+
+def open_live_notes(pdir):
+    """The user's live notes that are still open (not done), for a run's brief: [] when there are none (or the file
+    can't be read)."""
+    from mv.live import live_notes
+    try:
+        return [x for x in live_notes(pdir) if not x.get("done") and str(x.get("text") or "").strip()]
+    except Exception:
+        return []
+
+
+def live_rows(pdir, notes, status=False):
+    """The user's live notes as lines with the song context: song time · bar:beat · section · what is sung there ·
+    the plan's segment at that time · the scene they saw · the note (and, with status, whether it is done)."""
+    try:
+        from mv.song import Song
+        S = Song(pdir)
+    except Exception:                            # no song folder: the times alone
+        S = None
+    plan = jload(os.path.join(pdir, "work", "plan.json"), None)
+    plan = plan if isinstance(plan, dict) else {}
+    segs = [x for x in plan.get("segments") or [] if isinstance(x, dict) and isinstance(x.get("from"), (int, float))
+            and isinstance(x.get("to"), (int, float))]
+    rows = []
+    for nt in sorted(notes, key=lambda x: float(x.get("t") or 0)):
+        t = float(nt.get("t") or 0)
+        m, s_ = divmod(t, 60)
+        parts = [f"{int(m)}:{s_:05.2f}"]
+        a = S.at(t) if S else None
+        if a:
+            parts += [f"{a['bar']}:{a['beat']}" if a["bar"] is not None else "-", a["section"] or "-",
+                      f"“{a['line']}”" if a["line"] else "(no singing)"]
+        seg = next((x for x in segs if x["from"] <= t < x["to"]), None)
+        if seg:
+            parts.append(f"segment {seg.get('id')} (" + ("a builder's" if seg.get("owner") == "builder" else "yours")
+                         + (", the hero" if seg.get("id") == plan.get("hero") else "") + ")")
+        if nt.get("scene"):
+            parts.append(f"they saw {nt['scene']}")
+        st = ""
+        if status:
+            st = f" (done: {nt['fix']})" if nt.get("done") and nt.get("fix") else " (done)" if nt.get("done") else " (open)"
+        rows.append("- " + " · ".join(parts) + f" · **{str(nt.get('text') or '').strip()}** (id {nt.get('id')}){st}")
+    return rows
+
+
+class LiveNotes:
+    """The user's notes from the web app's live view during a run (review/notes.json, "version": "live"): the ones made
+    after the run started, not done and not forwarded yet. Every ~5 s the runner sends them to the director (solo) or
+    the planner when a message can go (Runner.live_step), with the song context, and marks them "forwarded_run": n
+    (mv/live.py update_notes: a lock, a re-read, the change by id, an atomic replace; the web app writes the file
+    too). In the pipeline the next assemble report lists them again, with what the planner marked."""
+
+    def __init__(self, pdir, n, started):
+        self.pdir, self.n, self.started = pdir, n, started
+        self.t = 0.0
+        self.sent, self.reported = [], set()
+
+    def made_in_run(self, x):
+        try:
+            return float(x.get("id") or 0) / 1000 >= self.started - 1          # (its id is when it was made, in ms)
+        except (TypeError, ValueError):
+            return False
+
+    def pending(self):
+        from mv.live import read_notes
+        try:
+            notes = read_notes(self.pdir)
+        except RuntimeError:                     # being written, or broken: next time
+            return []
+        return [x for x in notes if isinstance(x, dict) and x.get("version") == "live" and not x.get("done")
+                and not x.get("forwarded_run") and self.made_in_run(x)]
+
+    def mark(self, notes, undo=False):
+        from mv.live import update_notes
+        ids, at = {x.get("id") for x in notes}, time.strftime("%Y-%m-%d %H:%M:%S")
+
+        def fn(ns):
+            for x in ns:
+                if isinstance(x, dict) and x.get("id") in ids:
+                    if undo:
+                        x.pop("forwarded_run", None)
+                        x.pop("forwarded_at", None)
+                    else:
+                        x.update(forwarded_run=self.n, forwarded_at=at)
+        update_notes(self.pdir, fn)
+        self.sent = [i for i in self.sent if i not in ids] if undo else self.sent + [i for i in ids if i not in self.sent]
+
+
 HUNG_S = 25 * 60                 # busy with no events this long: said in the live log (a long command makes none either)
 STAGE_NAMES = {"plan": "1. plan", "gate": "gate 1: the language", "build": "2. build", "assemble": "3. assemble",
                "revise": "4. revise", "final": "5. final", "solo": "solo (the rest of the run)", "done": "done"}
@@ -720,6 +843,7 @@ class Runner:
         self.hung_said = False
         self.mode = "solo"
         self.end_reason = "the director ended the session"
+        self.live = LiveNotes(pdir, n, started)
 
     # ------------------------------------------------------------------ bookkeeping
     def save(self):
@@ -767,6 +891,10 @@ class Runner:
             except Exception as ex:              # e.g. Windows: the web app had the file open just then
                 self.trouble("saving the run's status", ex)
             try:
+                self.live_step(now)
+            except Exception as ex:
+                self.trouble("passing on the user's live notes", ex)
+            try:
                 if not self.step(now):
                     break
             except Exception as ex:              # a bug or a file in the way: noted, and the run goes on
@@ -791,6 +919,43 @@ class Runner:
 
     def step(self, now):
         return self.solo_step(now)
+
+    # ------------------------------------------------------------------ the user's live notes
+    def live_step(self, now):
+        """Every ~5 s: the user's live notes (the web app's live view: they play the scenes with the song, and can
+        hear) go to the director as one message, when one can go (live_may_send); then they are marked forwarded."""
+        L = self.live
+        if now - L.t < 5:
+            return
+        L.t = now
+        notes = L.pending()
+        if not notes or not self.live_may_send(now):
+            return
+        many = len(notes) > 1
+        L.mark(notes)                            # first: the director may read the file as soon as the message is in
+        if not self.send(self.live_message(notes), f"the user's live note{'s' if many else ''} ({len(notes)})"):
+            L.mark(notes, undo=True)
+        else:
+            self.note(f"🎧 the user's live note{'s' if many else ''} to the {self.s.name}: " + "; ".join(
+                f"{int(float(x.get('t') or 0) // 60)}:{float(x.get('t') or 0) % 60:04.1f} {str(x.get('text') or '')[:70]}" for x in notes))
+            self.live_sent(now)
+
+    def live_may_send(self, now):
+        """A message can go: the session is there and open, the run isn't stopping, and there's time to act on it."""
+        s = self.s
+        return s.alive() and not s.closed and self.stop_reason is None and self.deadline - now > 120
+
+    def live_sent(self, now):
+        """After live notes went out (the pipeline: the assemble waits for the planner's turn)."""
+
+    def live_message(self, notes):
+        pipe = self.mode == "pipeline"
+        n = len(notes)
+        return LIVE_MSG.format(what="a note" if n == 1 else f"{n} notes", seg=" · the plan's segment there" if pipe else "",
+                               rows="\n".join(live_rows(self.pdir, notes)), them="it like a review note" if n == 1 else "them like review notes",
+                               plan=(" (a note can move a boundary in plan.json; one on a builder's segment can go to "
+                                     "work/pipeline/tasks.json in stage 4)") if pipe else "",
+                               done=note_done_cmd(self.pdir), tail=LIVE_TAIL_PIPE if pipe else LIVE_TAIL_SOLO)
 
     def check_stop(self, now):
         if self.stop_reason is None and os.path.exists(os.path.join(self.ddir, "STOP")):
@@ -1659,6 +1824,7 @@ class PipelineRun(Runner):
             self.record_c(c, "assemble", "planner", "sent to the planner")
         self.set_stage("revise")
         self.reminded = 0
+        self.extra_notes += self.live_report(now)
         self.ask(self.assemble_message(res, c, now), f"assemble report (round {self.round})")
         self.builder_lines, self.requests = [], []
         return True
@@ -1707,6 +1873,45 @@ class PipelineRun(Runner):
         return ASSEMBLE_MSG.format(k=self.round, video=res.get("video") or "(none)", slates=slates, checks=checks,
                                    segments="\n".join(lines), requests=req, notes=notes, tasks=tasks, render=render,
                                    critic_head=ch_, report=rep, **t)
+
+    # ------------------------------------------------------------------ the user's live notes, in the pipeline
+    def live_may_send(self, now):
+        """A live note joins the planner's running turn; an idle planner gets one at once only where a turn of its own
+        is safe (planning, revising, or while builders work: the assemble then waits for that turn). While the studio
+        gates or assembles, it waits for the planner's next turn (the assemble report has it), busy planner or not
+        (a fix then would race the scenes the studio is rendering); in the final stage it waits for the review round
+        (or a nudge back to stage 4): the planner is told not to touch the scenes while the final renders."""
+        if not super().live_may_send(now) or self.studio_only:
+            return False
+        if self.mode == "solo":
+            return True
+        if self.stage == "final" or (self.job and not self.job["done"]):
+            return False
+        return self.s.busy or self.stage in ("plan", "build", "revise")
+
+    def live_sent(self, now):
+        if self.mode == "pipeline" and self.stage == "build":
+            self.planner_done = False            # it works on them: the assemble waits for its turn to end
+
+    def live_report(self, now):
+        """The user's live notes for the assemble report: the ones that came in while the studio assembled (they go
+        in the report, marked forwarded now) and the ones sent since the last report, with what the planner marked."""
+        L = self.live
+        try:
+            held = L.pending()
+            if held:
+                L.mark(held)
+                self.note(f"🎧 the user's live note{'s' * (len(held) > 1)} ({len(held)}) go{'es' * (len(held) == 1)} in the assemble report")
+            ids = [i for i in L.sent if i not in L.reported]
+            if not ids:
+                return []
+            from mv.live import read_notes
+            notes = [x for x in read_notes(self.pdir) if isinstance(x, dict) and x.get("id") in ids]
+        except Exception as ex:
+            self.note(f"(couldn't read the user's live notes for the report: {ex})")
+            return []
+        L.reported.update(ids)
+        return [LIVE_REPORT_HEAD.format(done=note_done_cmd(self.pdir))] + live_rows(self.pdir, notes, status=True)
 
     # ------------------------------------------------------------------ 4. revise
     def on_revise(self, now):
@@ -2067,7 +2272,7 @@ def plan_brief(pdir, budget_s, seed_notes, started, deadline, critic, builders, 
             "height": d["height"], "fps": d["fps"], "budget": fmt_dur(budget_s), "tools": tools, "project": name, "python": py,
             "started": hm(started), "deadline": hm(deadline) + f" (in {fmt_dur(budget_s)})", "skill": rel(SKILL, pdir),
             "anti": rel(os.path.join(os.path.dirname(SKILL), "anti-defaults.md"), pdir), "refs": refs_brief(pdir, pj),
-            "direction": ("\n" + notes + "\n") if notes else "", "plan_by": hm(plan_by),
+            "direction": (("\n" + notes + "\n") if notes else "") + live_brief(pdir), "plan_by": hm(plan_by),
             "build_by": hm(build_by) if t["ok"] else f"{hm(build_by)} (tight: the final render takes most of this budget)",
             "final_by": hm(final_by), "final_est": fmt_dur(est[0]), "final_how": est[1], "builders": builders,
             "builder_model": builder_model, "builder_effort": builder_effort, "preview_size": f"{pw}×{ph}",

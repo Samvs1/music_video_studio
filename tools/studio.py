@@ -28,6 +28,9 @@
   python tools/studio.py deliver <project> [--critic]                archive final/music-video.mp4 as the next version + checks
                                                                      (--critic: and the critic's notes on it)
   python tools/studio.py stop <project>                              ask a running autonomous director to stop cleanly
+  python tools/studio.py note-done <project> <id> ["what changed"] [--undo]
+                                                                     mark the user's note done with a one-line fix
+                                                                     (review/notes.json, safely: the web app writes it too)
   python tools/studio.py permtest <project> [--builder]              check the director's (or a builder's) sandbox with the real Claude Code (cents)
   python tools/studio.py run <project> <tool.py> [args]              run any tool inside a project (eyes.py, songq.py, compose.py, ...)
   python tools/studio.py serve [--port 8765] [--no-browser]          the local web app
@@ -392,6 +395,16 @@ def cmd_stop(a):
     print("asked the running director to stop (it wraps up within a minute or two)")
 
 
+def cmd_note_done(a):
+    from mv.live import note_done
+    n = note_done(project_dir(a.project), a.id, a.fix, a.undo)
+    if not n:
+        sys.exit(f"no note with id {a.id} in review/notes.json")
+    t = float(n.get("t") or 0)
+    print(f"note {n.get('id')} at {int(t // 60)}:{t % 60:04.1f} ({str(n.get('text') or '')[:60]}): "
+          + ("open again" if a.undo else "done" + (f": {n['fix']}" if n.get("fix") else "")))
+
+
 def cmd_permtest(a):
     import director
     sys.exit(0 if director.permission_test(project_dir(a.project), model=a.model, builder=a.builder) else 1)
@@ -476,6 +489,8 @@ def main():
     p = sp.add_parser("permtest"); p.add_argument("project"); p.add_argument("--model", default="haiku")
     p.add_argument("--builder", action="store_true", help="a pipeline builder's sandbox (needs a valid work/plan.json)")
     p = sp.add_parser("stop"); p.add_argument("project")
+    p = sp.add_parser("note-done"); p.add_argument("project"); p.add_argument("id"); p.add_argument("fix", nargs="?", default="")
+    p.add_argument("--undo", action="store_true", help="open the note again")
     p = sp.add_parser("run"); p.add_argument("project"); p.add_argument("tool"); p.add_argument("args", nargs=argparse.REMAINDER)
     p = sp.add_parser("serve"); p.add_argument("--port", type=int, default=8765); p.add_argument("--no-browser", action="store_true")
     sp.add_parser("doctor")

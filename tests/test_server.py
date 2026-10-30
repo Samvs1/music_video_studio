@@ -12,7 +12,9 @@ critic's notes on v1) -> the video (range request) -> "Ask the critic" (a critiq
 (add, done, delete) -> a review round -> stopping a running director cleanly -> a pipeline run started from the
 Direct page's form in headless Chromium (the settings it sends and keeps; GET pipeline and session-log; the pipeline
 view while builders work and after the run: the stage bar, a card per session with its log, the critic's reports, the
-costs by role) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
+costs by role; '▶ play the scenes live' offered) -> live preview (GET live, the live server's URL space and what it
+refuses, a live note round-trip; the Watch page's live view playing the plan's scenes with the song in headless Chromium,
+the size picker, the sound delay, a stateful scene caught up after a seek, N for a live note) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
 tests/out/ui/; on the brief page a picture is added and named, on the song page the lyric timing editor opens, taps,
 undoes and closes, and aligns with Whisper; the Direct page has the critic select and the last run's pipeline, the
 Watch page the critic's box with its scores.
@@ -181,6 +183,7 @@ def main():
         say(d.get("state") == "stopped" and time.time() - t0 < 300, "the run stopped cleanly", f"{d.get('stop_reason')} after {time.time() - t0:.0f} s")
         os.remove(os.path.join(STUDIO, "projects", name, "FAKE_CLAUDE_SLOW"))
         pipeline_check(B, name, out, browser=not a.no_browser)
+        live_check(B, name, out, browser=not a.no_browser)
         r = requests.get(B + "/api/doctor").json()
         say("Music Video Studio" in r.get("text", ""), "GET /api/doctor")
         if not a.no_browser:
@@ -301,6 +304,7 @@ def pipeline_check(B, name, out, browser=True):
                     page.wait_for_timeout(4500)                               # the view is drawn again every 2 s
                     kept = page.evaluate("k => [...document.querySelectorAll('.xp-b')].some(e => e.dataset.xp === k && e.style.display !== 'none' && /session started/.test(e.innerText))", key)
                     page.screenshot(path=os.path.join(shots, "direct-pipeline-live.png"), full_page=True)
+                    say(page.locator("#dir-live a.lv-go").count() == 1, "UI: the Direct page offers '▶ play the scenes live' during a run")
                     live_ok = bool(bar) and "Plan" in bar and "Final" in bar and bool(now) and cards >= 3 and kept
                     say(live_ok, "UI: the pipeline's run view while builders work (the stage bar, a card per session, a builder's log kept open)",
                         f"now: {now.splitlines()[0] if now else '-'}; {cards} cards; log kept open: {kept}")
@@ -371,6 +375,149 @@ def pipeline_check(B, name, out, browser=True):
         if pw:
             pw.stop()
 
+
+def live_check(B, name, out, browser=True):
+    """Live preview: GET live (the project's live server on its own port, the plan's timeline, the scenes, the sizes);
+    what the live server serves (the shell, fonts.css, mv.js, a scene, the song; no-store) and refuses (/_mv/abs/
+    outside the studio, .., another host, a POST); a live note round-trips (version live, the scene, the timeline). In
+    headless Chromium (autoplay allowed) the Watch page's live view plays the plan's scenes with the song: the frames
+    report rendered frames, nothing goes wrong, a screenshot; the size picker renders them smaller; the sound delay is
+    kept; a stateful scene from work/live.json is caught up after a seek; N saves a live note with its scene."""
+    import http.client
+    from urllib.parse import urlparse, quote
+    pdir = os.path.join(STUDIO, "projects", name)
+    L = requests.get(f"{B}/api/p/{name}/live").json()
+    base, tl = L.get("base") or "", L.get("timeline") or {}
+    port = urlparse(base).port
+    scenes = {x["path"] for x in L.get("scenes") or []}
+    say(bool(port) and urlparse(base).hostname == "127.0.0.1" and tl.get("source") == "plan.json"
+        and [x["id"] for x in tl.get("layers") or []] == ["s1", "s2", "s3", "type"] and tl["layers"][-1]["transparent"]
+        and {"work/scenes/s2/scene.js", "work/scenes/type/type.html", "../../tests/scenes/field.js"} <= scenes
+        and bool(L.get("song")) and L.get("sizes", {}).get("0.5") == [240, 136]
+        and requests.get(f"{B}/api/p/{name}/live").json().get("base") == base,
+        "GET live: the project's live server (127.0.0.1, its own port, the same one again), the plan's timeline (s1-s3, the "
+        "type on top), the scenes (the plan's and the renders')", f"{base}; {[x['id'] for x in tl.get('layers') or []]}; {len(scenes)} scenes")
+
+    def get(path, host=None, method="GET"):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        c.request(method, path, headers={"Host": host} if host else {})
+        r = c.getresponse()
+        csp.append(r.getheader("Content-Security-Policy") or "")
+        return r.status, r.getheader("Content-Type") or "", r.getheader("Cache-Control"), r.read()
+    csp = []
+    outside = os.path.join(os.path.dirname(STUDIO), "x.txt").replace("\\", "/").lstrip("/")
+    p = {"shell": get("/_mv/live.html?scene=work/scenes/s2/scene.js&scale=0.5"), "fonts.css": get("/_mv/fonts.css"),
+         "mv.js": get("/_mv/runtime/mv.js"), "scene": get("/work/scenes/s2/scene.js"), "song": get("/_mv/song/frames.json"),
+         "abs outside": get("/_mv/abs/" + quote(outside)), "..": get("/../../tools/studio.py"),
+         "abs studio notes": get("/_mv/abs/" + quote(os.path.join(STUDIO, "CLAUDE.md").replace("\\", "/").lstrip("/"))),
+         "another host": get("/project.json", host="example.com"), "POST": get("/project.json", method="POST")}
+    say(p["shell"][0] == 200 and b'"live": true' in p["shell"][3] and b'"w": 240' in p["shell"][3] and p["fonts.css"][1].startswith("text/css")
+        and p["mv.js"][0] == 200 and b"mv:live" in p["mv.js"][3] and p["scene"][0] == 200 and p["scene"][2] == "no-store"
+        and p["song"][0] == 200 and p["abs outside"][0] == 403 and p[".."][0] == 403 and p["another host"][0] == 403
+        and p["abs studio notes"][0] == 403 and "default-src 'self'" in csp[0]
+        and p["POST"][0] in (405, 501), "the live server: the shell (live config, a CSP that keeps it off the network), fonts.css, "
+        "mv.js, a scene (no-store), the song; /_mv/abs/ outside the studio or to its own notes, .., another host and a POST refused",
+        "; ".join(f"{k} {v[0]}" for k, v in p.items()) + f"; CSP {csp[0][:60]}")
+    n0 = len(requests.get(f"{B}/api/p/{name}").json()["notes"])
+    notes = requests.post(f"{B}/api/p/{name}/note", json={"version": "live", "t": 21.5, "text": "the type comes in late (live)",
+                                                         "scene": "work/scenes/s2/scene.js", "timeline": "plan.json"}).json()
+    nt = next((n for n in notes if n.get("text") == "the type comes in late (live)"), {})
+    back = next((n for n in requests.get(f"{B}/api/p/{name}/live").json().get("notes") or [] if n.get("id") == nt.get("id")), {})
+    done = next((n for n in requests.post(f"{B}/api/p/{name}/note-edit", json={"id": nt.get("id"), "done": True}).json()
+                 if n.get("id") == nt.get("id")), {})
+    say(len(notes) == n0 + 1 and nt.get("version") == "live" and back.get("scene") == "work/scenes/s2/scene.js"
+        and back.get("timeline") == "plan.json" and done.get("done") is True,
+        "a live note round-trips (POST note: version live, the scene, the timeline; GET live lists it; note-edit done)", str(back)[:160])
+    if not browser:
+        return
+    sys.path.insert(0, os.path.join(STUDIO, "tools"))
+    from mv.web import launch
+    from playwright.sync_api import sync_playwright
+    shots = os.path.join(out, "ui")
+    os.makedirs(shots, exist_ok=True)
+    errs = []
+    lj = os.path.join(pdir, "work", "live.json")
+    with sync_playwright() as pw:
+        b, _ = launch(pw, "off", extra=["--autoplay-policy=no-user-gesture-required"])
+        try:
+            page = b.new_page(viewport={"width": 1280, "height": 1000})
+            page.on("pageerror", lambda e: errs.append(str(e)))
+            page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
+            page.goto(f"{B}/#{name}/watch")
+            page.wait_for_selector(".vtabs .chip", timeout=15000)
+            page.click(".vtabs .chip:has-text('live')")
+            page.wait_for_selector("#lv-player iframe", timeout=15000)
+            page.wait_for_function("() => LVS.player && LVS.player.layers.filter(l => l.el && l.kind === 'scene').every(l => l.st && l.st.ready)", timeout=60000)
+            page.evaluate("document.activeElement && document.activeElement.blur()")
+            page.keyboard.press("Space")
+            page.wait_for_timeout(6000)
+            st = page.evaluate("LVS.player.layers.map(l => ({id: l.id, on: l.on, el: !!l.el, frame: l.st && l.st.frame, fps: l.st && l.st.fps, "
+                               "ready: l.st && l.st.ready, nerr: l.st ? l.st.nerr : null}))")
+            t_au = page.evaluate("$('#sv-au').currentTime")
+            text = page.inner_text("#lv-st")
+            page.screenshot(path=os.path.join(shots, "watch-live.png"), full_page=True)
+            page.keyboard.press("Space")
+            by = {x["id"]: x for x in st}
+            s1, ty = by.get("s1") or {}, by.get("type") or {}
+            say(t_au > 3 and s1.get("on") and (s1.get("frame") or 0) > 60 and (s1.get("fps") or 0) > 0 and s1.get("nerr") == 0
+                and ty.get("on") and ty.get("ready") and ty.get("nerr") == 0 and "fps" in text,
+                "UI: the Watch page's live view plays the plan's scenes with the song (headless Chromium, autoplay allowed): "
+                "the frames report rendered frames", f"song at {t_au:.1f} s; {st}")
+            page.click(".lv-bar [data-scale='0.25']")
+            page.wait_for_function("() => LVS.player && LVS.player.layers.some(l => l.st && l.st.ready && l.st.w === 120)", timeout=60000)
+            page.fill("#lv-off", "200")
+            page.keyboard.press("Tab")
+            page.evaluate("svSeek(10, false)")
+            page.wait_for_timeout(600)
+            off = page.evaluate("[lvOffset(), localStorage.getItem('mv-live-offset'), LVS.player.P.t, $('#sv-au').currentTime]")
+            say(off[0] == 200 and off[1] == "200" and abs(off[3] - off[2] - 0.2) < 0.02,
+                "UI: the size picker (the scenes at a quarter size) and the sound delay (the picture 200 ms behind the audio, kept)", str(off))
+            page.fill("#lv-off", "0")
+            page.keyboard.press("Tab")
+            json.dump({"layers": [{"scene": "../../tests/scenes/trail.js"}, {"scene": "work/scenes/type/type.html", "transparent": True}]},
+                      open(lj, "w", encoding="utf-8"))
+            page.wait_for_function("() => [...document.querySelectorAll('#lv-pick option')].some(o => o.value === 'live.json')", timeout=15000)
+            page.focus("#lv-pick")
+            page.select_option("#lv-pick", "live.json")
+            off_pick = page.evaluate("document.activeElement.tagName !== 'SELECT'")      # (picked: Space and N work at once)
+            page.wait_for_function("() => LVS.player && LVS.player.layers[0].st && LVS.player.layers[0].st.ready", timeout=60000)
+            page.evaluate("svSeek(20, false)")
+            page.wait_for_function("() => { const s = LVS.player.layers[0].st; return s && s.ready && s.stateful && s.frame === 600 && !s.catching_up; }", timeout=90000)
+            page.keyboard.press("n")
+            page.fill("#ntx", "the trail should thin out here (live)")
+            page.click("#nsave")
+            page.wait_for_function("() => /thin out/.test($('#lv-notes').innerText)", timeout=10000)
+            ns = requests.get(f"{B}/api/p/{name}").json()["notes"]
+            mine = next((n for n in ns if n.get("text") == "the trail should thin out here (live)"), {})
+            say(mine.get("version") == "live" and mine.get("scene") == "../../tests/scenes/trail.js" and abs(mine.get("t", 0) - 20) < 0.1
+                and mine.get("timeline") == "live.json" and off_pick,
+                "UI: a stateful scene from work/live.json caught up after a seek (frame 600); N saves a live note with the scene and the "
+                "timeline (right after picking the timeline: the picker lets go of the keys)", str(mine)[:200] + f"; off the picker {off_pick}")
+            # play and pause it, switch the song's source, change the sound delay: the stateful scene never starts again
+            # from its setup (its page isn't reloaded: the clock correcting itself is no jump)
+            page.evaluate("window.scrollTo(0, 0)")          # (the note box scrolled the player away: Chrome doesn't run an offscreen frame)
+            page.evaluate("window.__loads = 0; LVS.player.layers[0].el.addEventListener('load', () => window.__loads++)")
+            for k in range(4):
+                page.evaluate("$('#sv-au').play()")
+                page.wait_for_timeout(900 + 150 * k)
+                page.evaluate("$('#sv-au').pause()")
+                page.wait_for_timeout(400)
+            page.evaluate("$('#sv-au').play()")
+            page.wait_for_timeout(700)
+            page.evaluate("svSource('mix')")                                                  # the source loaded again (a stem switch)
+            page.wait_for_timeout(1500)
+            page.evaluate("lsSet('mv-live-offset', '120')")
+            page.wait_for_timeout(800)
+            page.evaluate("lsSet('mv-live-offset', '0'); $('#sv-au').pause()")
+            page.wait_for_timeout(600)
+            kept = page.evaluate("[window.__loads, LVS.player.layers[0].st.reloading, LVS.player.layers[0].st.frame, $('#sv-au').currentTime]")
+            say(kept[0] == 0 and not kept[1] and kept[2] > 600, "UI: playing, pausing, a switch of the song's source and a new sound "
+                "delay don't restart a stateful scene (its page isn't reloaded)", str(kept))
+        finally:
+            b.close()
+            if os.path.exists(lj):
+                os.remove(lj)
+    say(not errs, "UI: the live view (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
 
 def lyric_timing_check(B, name):
     """The lyric timing editor's save: LRC in project.json, marked as timed on this song file, so the analysis uses the

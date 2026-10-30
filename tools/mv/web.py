@@ -5,7 +5,8 @@ Used by tools/web-engine/render.py (the CLI) and the benchmark. Pieces:
   launch()        GPU when there is one (WebGL renderer checked), SwiftShader (software WebGL) otherwise
   Router          every request goes to local files: /_mv/* = the runtime, the vendored libraries and the fonts;
                   /_mv/song/* = the project's song folder; everything else = the project folder. Nothing is fetched
-                  from the network at render time.
+                  from the network at render time. The live preview (mv/live.py) serves the same URL space over HTTP,
+                  with the live shell (live_shell_html: the runtime in live mode, on a clock the web app owns).
   render()        chunks on a global grid (default 2 s), workers in parallel (one browser each), resume after a crash
                   (finished chunks are kept per scene version), H.264 chunks joined frame-exact, or PNG sequences
                   with alpha; a sidecar <out>.mv.json with the frame range and every text that was on screen.
@@ -59,19 +60,33 @@ IMPORTMAP = {"imports": {
     "animejs": "/_mv/vendor/anime.esm.js", "simplex-noise": "/_mv/vendor/simplex-noise.js"}}
 
 
-def head_inject(w, h, transparent):
+def head_inject(w, h, transparent, config=""):
+    """What every scene page gets in its <head>. config: an inline script that sets window.__MV_CONFIG before the
+    runtime (the live shell's; a render sets it with an init script instead, and passes nothing here)."""
     bg = "transparent" if transparent else "#000"
     return (f'<meta charset="utf-8"><link rel="stylesheet" href="/_mv/fonts.css">'
             f'<style>:root{{--mv-w:{w}px;--mv-h:{h}px;--mv-s:{min(w, h) / 1080:.6f}}}'
             f'html,body{{margin:0;padding:0;width:{w}px;height:{h}px;overflow:hidden;background:{bg}}}'
             f'#stage{{position:relative;width:{w}px;height:{h}px;overflow:hidden}}</style>'
-            f'<script type="importmap">{json.dumps(IMPORTMAP)}</script>'
+            f'<script type="importmap">{json.dumps(IMPORTMAP)}</script>' + config +
             '<script src="/_mv/runtime/mv.js"></script><script src="/_mv/vendor/d3.min.js"></script>')
 
 
-def shell_html(scene_url, w, h, transparent):
-    return (f"<!doctype html><html><head>{head_inject(w, h, transparent)}</head><body><div id=\"stage\"></div>"
+def shell_html(scene_url, w, h, transparent, config=""):
+    return (f"<!doctype html><html><head>{head_inject(w, h, transparent, config)}</head><body><div id=\"stage\"></div>"
             f"<script type=\"module\">import scene from {json.dumps(scene_url)}; MV.scene(scene);</script></body></html>")
+
+
+def live_config(w, h, fps, seed, transparent):
+    """The live shell's config (the runtime in live mode: mv.js "live preview"), as an inline script."""
+    return "<script>window.__MV_CONFIG = " + json.dumps({"w": w, "h": h, "fps": fps, "seed": seed, "transparent": bool(transparent),
+                                                         "live": True}) + ";</script>"
+
+
+def live_shell_html(scene_url, w, h, fps, seed, transparent):
+    """The renderer's shell for a JS scene with the live config before the runtime (an HTML scene gets the same head
+    injection, config included, into its own page)."""
+    return shell_html(scene_url, w, h, transparent, live_config(w, h, fps, seed, transparent))
 
 
 class Router:
@@ -190,14 +205,15 @@ def software(renderer):
     return not renderer or any(k in renderer.lower() for k in ("swiftshader", "llvmpipe", "software", "basic render"))
 
 
-def launch(pw, gpu="auto", path=None):
-    """(browser, info). gpu: auto (GPU if a real one renders WebGL, else SwiftShader) | on | off."""
+def launch(pw, gpu="auto", path=None, extra=()):
+    """(browser, info). gpu: auto (GPU if a real one renders WebGL, else SwiftShader) | on | off. extra: more Chromium
+    flags (the tests' live preview: --autoplay-policy=no-user-gesture-required)."""
     errs = []
     cands = [(path, "given")] if path else find_browser()
     for exe, label in cands:
         modes = {"on": ["gpu"], "off": ["cpu"], "auto": ["gpu", "cpu"]}[gpu]
         for mode in modes:
-            args = COMMON_ARGS + (GPU_ARGS if mode == "gpu" else CPU_ARGS)
+            args = COMMON_ARGS + (GPU_ARGS if mode == "gpu" else CPU_ARGS) + list(extra)
             try:
                 b = pw.chromium.launch(headless=True, executable_path=exe, args=args)
             except Exception as ex:
@@ -541,7 +557,7 @@ def render(scene, out, project=None, frames=None, width=None, height=None, fps=N
             per_frame[int(k)] = v
         intents += j.get("intents") or []
     side = {"scene": os.path.relpath(scene, project).replace("\\", "/"), "range": [a, b], "fps": fps, "w": w, "h": h,
-            "t0": round(a / fps, 4), "t1": round(b / fps, 4), "transparent": transparent, "format": "png" if mode == "png" and not out.endswith(".mov") else os.path.splitext(out)[1][1:],
+            "t0": round(a / fps, 4), "t1": round(b / fps, 4), "transparent": transparent, "seed": seed, "format": "png" if mode == "png" and not out.endswith(".mov") else os.path.splitext(out)[1][1:],
             "browser": info, "texts": merge_texts(per_frame, fps, (w, h)), "intents": [dict(x) for x in {json.dumps(i, sort_keys=True): i for i in intents}.values()],
             "logs": sorted(set(logs))[:50], "rendered_at": time.strftime("%Y-%m-%d %H:%M:%S"), "key": key}
     jsave(out.rstrip("/\\") + ".mv.json", side)

@@ -7,6 +7,8 @@
  *   - Math.random is re-seeded for every frame (same frame = same numbers); MV.rand(key) is stable across frames
  *   - render(f) must depend only on f (and on what setup built). Scenes that simulate (state carried from frame to
  *     frame) set `stateful: true`: the engine then pre-rolls every frame from 0 before a chunk it renders.
+ * With __MV_CONFIG.live (the web app's live preview, never a render) the page also plays on a clock its parent page
+ * owns: see "live preview" at the end. Without it nothing below behaves any differently.
  *
  * A scene module (scene.js) exports default {setup?, render, seed?, stateful?, transparent?}:
  *     export default {
@@ -22,7 +24,8 @@
   const CFG = window.__MV_CONFIG || {};
   const W = CFG.w || 1920, H = CFG.h || 1080, FPS = CFG.fps || 30;
   const SEED = (CFG.seed == null ? 1 : CFG.seed) >>> 0;
-  const real = {setTimeout: window.setTimeout.bind(window), Date: window.Date, now: performance.now.bind(performance)};
+  const real = {setTimeout: window.setTimeout.bind(window), Date: window.Date, now: performance.now.bind(performance),
+                raf: window.requestAnimationFrame.bind(window)};          // (the browser's own: the live preview's loop)
   const errors = [];
   window.addEventListener("error", e => errors.push(String(e.message || e.error) + (e.filename ? ` (${e.filename}:${e.lineno})` : "")));
   window.addEventListener("unhandledrejection", e => errors.push("unhandled promise rejection: " + String(e.reason && (e.reason.stack || e.reason))));
@@ -302,5 +305,129 @@
     return {w: W, h: H, fps: FPS, frames: MV.nFrames, stateful: !!SCENE.stateful, transparent: !!SCENE.transparent,
             preroll: SCENE.preroll ?? null};
   };
+
+  // ------------------------------------------------------------------ live preview (mv:live)
+  // The web app plays a scene in the browser with the song, no render (tools/mv/live.py serves this page in the
+  // renderer's own URL space). The parent page owns the clock: it posts {type: "mv-clock", t, playing, rate, seek}
+  // (every frame while it plays, and on a seek, a pause or a rate change). This page shows frame round(t × fps) of that
+  // clock as it is now, on the browser's real requestAnimationFrame, and renders only when that frame changed and the
+  // last render is done: a scene slower than real time drops frames, and the timing stays true. A stateful scene steps
+  // on one frame at a time; a jump pre-rolls the way a render does (from 0, or `preroll` seconds before the frame), in
+  // slices that let the browser breathe, and a new seek cancels a catch-up still running; a jump back in a stateful
+  // scene without `preroll` reloads the page first (its state has to start from setup again, as in a render). A step
+  // back that isn't a jump (the clock correcting itself: a pause, a play, a new sound delay) holds the frame until the
+  // clock passes it. While it plays, a stateful scene that can't render every frame as fast as the clock runs (a
+  // catch-up that doesn't gain on the clock) skips to the clock's frame instead (it stays on time; its state is then
+  // close to the render's, not exact: `approx`, until a jump back starts it again; paused, a catch-up is always exact).
+  // The page posts {type: "mv-live", frame, fps (achieved), ms (per render), need, ready, catching_up (0-1),
+  // approx, errors} to the parent ~4 times a second, and at once when something goes wrong.
+  if (CFG.live) {
+    const L = {t: 0, at: real.now(), playing: false, rate: 1, gen: 0, last: -1, busy: false, ready: false, meta: null,
+               catching: 0, shown: [], ms: [], posted: 0, lastErr: null, reloading: false,
+               jump: false,                                   // a seek, or a jump of > 0.5 s, since the last frame shown
+               behind: false,                                 // (stateful) a catch-up while playing didn't gain on the clock
+               approx: false};                                // (stateful) frames were skipped: its state isn't the render's
+    const nF = () => Math.max(1, Math.round(MV.duration * FPS));
+    const clockT = () => L.t + (L.playing ? (real.now() - L.at) / 1000 * L.rate : 0);
+    const breathe = () => new Promise(r => real.setTimeout(r, 0));
+    const fail = (where, e) => errors.push(`${where}: ${(e && (e.stack || e.message)) || e}`);
+    window.addEventListener("error", e => {          // a script or a module that couldn't load (that doesn't bubble)
+      const el = e.target;
+      if (el && el !== window && el.tagName) errors.push(`couldn't load ${el.src || el.href || "the scene's modules (a file it imports is missing?)"}`);
+    }, true);
+    const post = force => {
+      const now = real.now(), err = errors[errors.length - 1];
+      if (!force && now - L.posted < 250 && err === L.lastErr) return;
+      L.posted = now; L.lastErr = err;
+      while (L.shown.length && L.shown[0] < now - 1000) L.shown.shift();
+      if (errors.length > 200) errors.splice(0, errors.length - 50);      // a scene that throws every frame: no leak
+      if (logs.length > 500) logs.splice(0, logs.length - 100);
+      if (intents.length > 500) intents.splice(0, intents.length - 100);
+      const ms = L.ms.length ? L.ms.reduce((a, b) => a + b, 0) / L.ms.length : null;
+      try {
+        window.parent.postMessage({type: "mv-live", frame: L.last, fps: L.shown.length, ms: ms == null ? null : Math.round(ms * 10) / 10,
+                                   need: L.playing ? FPS * L.rate : 0, playing: L.playing, ready: L.ready, reloading: L.reloading,
+                                   catching_up: L.catching, stateful: !!(L.meta && L.meta.stateful), approx: L.approx, w: W, h: H,
+                                   errors: errors.slice(-3), nerr: errors.length}, "*");
+      } catch (e) { /* the parent is gone */ }
+    };
+    window.addEventListener("message", e => {
+      const d = e.data;
+      if (e.source !== window.parent || !d || d.type !== "mv-clock") return;
+      const t = +d.t || 0;
+      if (d.seek || Math.abs(t - clockT()) > 0.5) { L.gen++; L.jump = true; }   // a catch-up still running is for an old place
+      L.t = t; L.at = real.now(); L.playing = !!d.playing; L.rate = +d.rate || 1;
+      post();
+    });
+    const once = async i => {                                      // frame i, as a render makes it (no texts collected)
+      try { await step(i, false); } finally { frameTexts.length = 0; L.last = i; }
+    };
+    const catchUp = async (a, b) => {          // pre-roll frames a..b-1; false: a new seek came; "slow": it gave up
+      const gen = L.gen, t0 = real.now();
+      let s0 = t0;
+      for (let k = a; k < b; k++) {
+        if (gen !== L.gen) { L.catching = 0; return false; }
+        await once(k);
+        L.catching = Math.max(0.001, (k + 1 - a) / (b - a));
+        const el = real.now() - t0;
+        if (L.playing && el > 500 && k + 1 - a < el / 1000 * FPS * L.rate) { L.catching = 0; L.behind = true; return "slow"; }  // losing on the clock
+        if (real.now() - s0 > 40) { post(); await breathe(); s0 = real.now(); }
+      }
+      L.catching = 0;
+      return true;
+    };
+    const show = async i => {
+      const m = L.meta, jump = L.jump, gap = i - L.last;
+      let on = L.playing && !jump && L.last >= 0 && gap > 1;
+      L.jump = false;
+      if (jump || !L.playing) L.behind = false;
+      if (m.stateful && i !== L.last + 1) {
+        if (m.preroll == null && L.last >= 0 && i < L.last) {     // back in time: its state starts from setup again
+          L.reloading = true; post(true); location.reload(); return;
+        }
+        if (on && L.behind) L.approx = true;                      // too slow to render every frame and keep time: skip
+        else {
+          let a = m.preroll == null ? 0 : Math.max(0, i - Math.floor(m.preroll * FPS));
+          if (L.last + 1 > a && L.last + 1 <= i && !(jump && L.approx && m.preroll != null)) a = L.last + 1;  // the render's rule (mv/web.py, _worker)
+          else if (m.preroll != null) L.approx = false;          // a fresh pre-roll window: as a render starts a chunk
+          const r = a < i ? await catchUp(a, i) : true;
+          if (!r) return;
+          if (r === "slow") { L.approx = true; on = false; i = Math.max(L.last + 1, clamp(Math.round(clockT() * FPS), 0, nF() - 1)); }   // the clock's frame now
+        }
+      }
+      const t0 = real.now();
+      await once(i);
+      L.ms.push(real.now() - t0); if (L.ms.length > 30) L.ms.shift();
+      L.shown.push(real.now());
+      if (m.stateful && on && !L.behind) L.behind = Math.round(clockT() * FPS) - i >= gap;   // it didn't gain on the clock
+    };
+    // a step back that isn't a jump (the clock correcting itself: a pause, a play, a new sound delay) holds the frame
+    // until the clock passes it (paused: a few frames, the pause's own correction); so does a seek of a few frames back
+    // in a stateful scene without `preroll` (a switch of stems puts the time back where it was): only a real jump back
+    // starts its state from setup again
+    const hold = i => {
+      const few = L.last - i <= 3, kept = L.meta.stateful && L.meta.preroll == null;
+      return L.jump ? kept && few : L.playing || few || kept;
+    };
+    const tick = async () => {
+      real.raf(tick);
+      if (!L.ready || L.busy || L.reloading) return post();
+      const i = clamp(Math.round(clockT() * FPS), 0, nF() - 1);
+      if (i === L.last) { L.jump = false; return post(); }
+      if (i < L.last && hold(i)) return post();
+      L.busy = true;
+      try { await show(i); } catch (e) { fail(`frame ${i}`, e); L.last = i; L.catching = 0; }
+      L.busy = false;
+      post();
+    };
+    window.addEventListener("load", () => {
+      MV._start().then(meta => { L.meta = meta; L.ready = true; post(true); },
+                       e => { const msg = String((e && e.message) || e); if (!errors.some(x => x.includes(msg))) fail("the scene couldn't start", e); post(true); });
+      real.raf(tick);
+    });
+    MV._liveState = () => ({t: clockT(), playing: L.playing, last: L.last, ready: L.ready, busy: L.busy, catching: L.catching, approx: L.approx,
+                            texts: frameTexts.length, logs: logs.length, intents: intents.length, errors: errors.length});
+  }
+  // ------------------------------------------------------------------ live preview: end (mv:live-end)
   window.MV = MV;
 })();

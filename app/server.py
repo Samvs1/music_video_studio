@@ -6,8 +6,9 @@ Carried over from aftermovie-studio's server (jobs, range requests, project file
 Pages: Song & brief (upload, notes, reference pictures, delivery format, lyrics) · Analyse (ingest with progress) ·
 The song (the song viewer) · Story (draft with Claude, edit) · Direct (the autonomous run: the pipeline or solo, with
 live progress: the stages, a card per session, the critic's reports at the gates, costs by role; or the interactive
-command) · Watch (each version above the song lanes, notes with N, the report, the checks and the critic's notes,
-"Ask the critic").
+command; "▶ play the scenes live" during a run) · Watch (each version above the song lanes, notes with N, the report,
+the checks and the critic's notes, "Ask the critic"; and "▶ live": the project's scenes played in the browser with the
+song, no render, from each project's own live server, with notes that reach a running director).
 
 API (JSON):
   GET  /api/projects                     GET  /api/p/<p>                GET  /api/p/<p>/job
@@ -15,6 +16,9 @@ API (JSON):
   GET  /api/p/<p>/pipeline               (work/pipeline/state.json with the files' URLs: the run's stages, sessions,
                                           segments, gates, assembles, critiques, costs; {} when there is none)
   GET  /api/p/<p>/session-log?log=<a session's events.jsonl>             (its last lines, readable)
+  GET  /api/p/<p>/live                   (the live view: the project's live server (base), the delivery size, the song,
+                                          the timelines (work/live.json, work/plan.json, the renders, the pitches' draft
+                                          plans), the scenes, the live notes; mv/live.py; starts the live server)
   POST /api/projects {name, title}       PUT  /api/p/<p>/upload?filename=x.mp3 (body = the file; .lrc/.txt = lyrics;
                                                                                  .jpg/.png/.webp = a reference picture)
   POST /api/p/<p>/ref {id, name | note | delete}                         (a reference picture: who it is, a note)
@@ -28,6 +32,7 @@ API (JSON):
   POST /api/p/<p>/critique {version | video, model}                       (the critic looks at a version or a video: job "critique";
                                                                            a version's notes land in final/critic_vN.md)
   POST /api/p/<p>/stop (the running job; else an interactive planner's builders)    POST /api/p/<p>/note {version, t, text}
+                                                                          (a live note: version "live", scene, timeline)
   POST /api/p/<p>/note-edit {id, done | delete | text}                  POST /api/p/<p>/deliver
 """
 import json, math, mimetypes, os, re, shutil, subprocess, sys, threading, time, urllib.parse
@@ -43,6 +48,8 @@ from mv.common import FORMATS, AUDIO_EXT  # noqa: E402
 PY = sys.executable
 JOBS = {}            # project -> {"proc", "job", "log", "started"}
 LOCK = threading.Lock()
+LIVE = {}            # project -> its live server (mv/live.py: 127.0.0.1, its own port), started by the first GET live
+LIVE_LOCK = threading.Lock()
 PJ_LOCK = threading.Lock()          # project.json: one writer at a time (the brief, uploads, reference pictures)
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp")
 MAX_REFS, MAX_REF_BYTES, REF_SIDE = 24, 40 << 20, 1600      # Claude sees images at ~1568 px on the long side at most
@@ -319,6 +326,41 @@ def with_urls(name, d, st):
     return st
 
 
+# ------------------------------------------------------------------ live preview (the scenes in the browser, with the song)
+def live_server(name, d):
+    """The project's live server: started on the first GET live, kept for the web app's life (a thread)."""
+    from mv import live
+    with LIVE_LOCK:
+        s = LIVE.get(name)
+        if s is None or not s.alive() or s.pdir != os.path.abspath(d):
+            s = LIVE[name] = live.LiveServer(d).start()
+        return s
+
+
+def live_state(name):
+    """GET /api/p/<p>/live: what the Watch page's live view plays (mv/live.py state: the timelines, the scenes, the
+    sizes) with the project's live server (`base`: the scenes' pages come from there, a separate origin with the
+    renderer's URL space), the song and the rendered passes' URLs on this server, and the live notes."""
+    from mv import live
+    d = pdir(name)
+    srv = live_server(name, d)
+    st = live.state(d)
+    for tl in st["timelines"]:
+        for k, x in enumerate(tl["layers"]):
+            if x["kind"] == "video":
+                x["video_url"] = file_url(name, d, x.get("video"))
+                if not x["video_url"]:                   # outside the project: not served here
+                    tl["layers"][k] = live.slate(x["id"], x["label"], x["slots"], "a video outside the project")
+    sf = song_file(d)
+    try:
+        notes = live.live_notes(d)
+    except RuntimeError:
+        notes = []
+    return dict(st, base=srv.url, song=f"/p/{name}/song/{urllib.parse.quote(os.path.basename(sf))}" if sf else None,
+                timeline=st["timelines"][0] if st["timelines"] else {"source": None, "label": "", "layers": [], "warnings": []},
+                notes=notes)
+
+
 LOG_RE = re.compile(r"work/(pipeline/sessions/[A-Za-z0-9_.-]+|director/run-\d+)/events\.jsonl")
 
 
@@ -531,34 +573,41 @@ def save_story(name, body):
 
 
 def add_note(name, body):
+    """A note at a moment of a version (or, from the live view, version "live" with the scene the user saw on top
+    and the timeline it was in: a running director gets it within seconds). review/notes.json is written atomically
+    under a lock (mv/live.py update_notes): the director's runner marks notes in it too."""
+    from mv.live import update_notes
     d = pdir(name)
-    p = os.path.join(d, "review", "notes.json")
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    notes = jload(p, [])
     text = str(body.get("text", "")).strip()[:2000]
     if not text:
         raise ValueError("empty note")
-    notes.append({"id": int(time.time() * 1000), "version": str(body.get("version", ""))[:20], "t": round(float(body.get("t", 0)), 2),
-                  "text": text, "done": False, "at": time.strftime("%Y-%m-%d %H:%M")})
-    json.dump(notes, open(p, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
-    return notes
+    note = {"id": int(time.time() * 1000), "version": str(body.get("version", ""))[:20], "t": round(float(body.get("t", 0)), 2),
+            "text": text, "done": False, "at": time.strftime("%Y-%m-%d %H:%M")}
+    if note["version"] == "live":
+        for k, most in (("scene", 300), ("timeline", 120), ("layer", 40)):
+            if body.get(k):
+                note[k] = str(body[k])[:most]
+
+    def fn(notes):
+        note["id"] = max([note["id"]] + [n["id"] + 1 for n in notes if isinstance(n, dict) and isinstance(n.get("id"), int)])
+        notes.append(note)
+    return update_notes(d, fn)
 
 
 def edit_note(name, body):
+    from mv.live import update_notes
     d = pdir(name)
-    p = os.path.join(d, "review", "notes.json")
-    notes = jload(p, [])
-    if body.get("delete"):
-        notes = [n for n in notes if n["id"] != body.get("id")]
-    else:
+
+    def fn(notes):
+        if body.get("delete"):
+            return [n for n in notes if n.get("id") != body.get("id")]
         for n in notes:
-            if n["id"] == body.get("id"):
+            if n.get("id") == body.get("id"):
                 if "done" in body:
                     n["done"] = bool(body["done"])
                 if "text" in body:
                     n["text"] = str(body["text"])[:2000]
-    json.dump(notes, open(p, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
-    return notes
+    return update_notes(d, fn)
 
 
 def receive(rfile, n, dst):
@@ -853,6 +902,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json(pipeline_state(parts[2]))
             if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "session-log":
                 return self.send_json(session_log(parts[2], q.get("log", [""])[0]))
+            if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "live":
+                return self.send_json(live_state(parts[2]))
             if parts[:2] == ["api", "doctor"]:
                 r = subprocess.run([PY, os.path.join(TOOLS, "studio.py"), "doctor"], capture_output=True, text=True, encoding="utf-8",
                                    errors="replace", cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"))

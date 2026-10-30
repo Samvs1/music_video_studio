@@ -14,7 +14,8 @@ video is. The studio's autonomous runner (`studio.py direct`) gives you the same
 interactively the user is here, but still work on your own unless something is genuinely theirs to decide.
 
 You can't hear the song or watch the video. The song folder is your ears; the eyes tools and the critic are your
-eyes. Never say you listened to or watched something. "It looks right" means you (or the critic) looked at frames.
+eyes; the user, who plays your scenes live with the song while you work, is the only one who hears it. Never say you
+listened to or watched something. "It looks right" means you (or the critic) looked at frames.
 
 Argument: a project name. None → `python tools/studio.py list` and ask which. Every tool runs inside the project:
 `.venv/Scripts/python tools/studio.py run <p> <tool> ...` (Windows; Linux/macOS `.venv/bin/python`; from inside the
@@ -183,6 +184,23 @@ need (one `eyes.py strip` or `beats` on `work/segments/<hero>/<hero>_preview.mp4
 Take what's right in the critic's report on the language, push harder where it says you played safe, and change the
 lib and the style frames now if you're going to: after this they are what every builder copies.
 
+**The user plays your scenes live.** The web app's Watch page (▶ live) plays the project's scenes in their browser
+with the song, no render, while you work: the scenes as they are on disk, in `work/plan.json`'s slots (a Blender
+segment as its preview render, a segment not built yet as a slate, the overlays on top). They are the only one who can
+hear, so this is where the film first meets ears. So:
+- **Keep plan.json current**: it is the timeline they play (a solo run without a plan: your renders in `work/renders/`,
+  each scene by its `.mv.json`). Write `work/live.json` only to override it, when what should play isn't what the plan
+  or the renders say (the format: `tools/web-engine/README.md`, "Live preview"); delete it when it's stale.
+- **Scenes should run near real time at half size** in a browser where they can: heavy work in `setup()`, drawing in
+  `render(f)`, `preroll` (a few seconds) rather than a full history for a stateful scene. A scene too slow for that
+  still renders the same; it just plays live with dropped frames (a stateful one then only close to its render; say
+  so in work/log.md).
+- **Their live notes may arrive mid-run**, as a message with the song context (time, bar:beat, section, the sung line,
+  the segment, the scene they saw). Treat each like a review note: fix the film, not the frame; mark it done with a
+  one-line fix: `S note-done <p> <id> "what changed"` (not by editing `review/notes.json`: the web app writes it
+  too, and a note the user adds meanwhile would be lost). In the pipeline the next assemble report lists them again
+  with what you marked. Interactive runs: look in `review/notes.json` for open `"version": "live"` notes now and then.
+
 ## 6. Build
 - Builders: autonomous runs: the studio starts them when you end your turn after gate 1; interactive:
   `S pipeline build <p>` in the background. Meanwhile build your own segments and the overlays. A builder that fails
@@ -193,6 +211,7 @@ lib and the style frames now if you're going to: after this they are what every 
   `MV.lineAt(t)`, `MV.wordAt(t)`, `MV.cue(t)`, seeded `MV.rand(key)` and `MV.noise(x, y, z)`. Blender scenes get the
   same through `mv.song` (`tools/blender/README.md`). A segment's scene renders only its own frames, in song time.
 - **Deterministic**: render(f) depends only on f. Simulations set `stateful: true` (pre-rolled). No wall-clock time.
+  Fast enough to play near real time at half size where it can (the user plays your scenes live): heavy work in setup.
 - Text: mark DOM text `data-mv-text="lyric|lyric-word|title|credit|label|deco"`; canvas/WebGL text calls
   `MV.text(str, {x, y, w, h, color, size, role})` every frame it shows. Black or frozen on purpose: `MV.intent('black',
   t0, t1, 'why')` (or `work/intent.json`). Otherwise the checks flag them.
@@ -259,8 +278,8 @@ final/music-video.mp4 --at <t>`, find the root cause. **Fix the film, not the fr
 everything after it against the music; re-think the downstream sections as a whole instead of squeezing the fix in
 (a note can move a boundary in plan.json). A video made with a plan starts at stage 4: fix it yourself, or send a
 builder back with `work/pipeline/tasks.json`; assemble, then the final. Keep what the user liked. Then render, check,
-mark each note `done: true` with a one-line `fix`, add a "Round N" section at the top of report.md, deliver (the new
-cut becomes vN+1; earlier versions stay in final/).
+mark each note done with a one-line fix (`S note-done <p> <id> "what changed"`), add a "Round N" section at the top
+of report.md, deliver (the new cut becomes vN+1; earlier versions stay in final/).
 
 ## Working with workflows (ultracode)
 Ambition without the token burn. **The pipeline is the fan-out**: builders are the parallel agents that build, each

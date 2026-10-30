@@ -235,6 +235,7 @@ def main():
 
     critic_check(m)
     pipeline_check(m)
+    live_check(m)
     session_check()
     pipeline_machine_check()
     builder_failures_check()
@@ -480,6 +481,210 @@ def pipeline_check(m):
         "pipeline status (segments, gates, the final's estimate, the render queue); build with every segment built: nothing to do",
         " | ".join(x for x in r.stdout.splitlines() if x.startswith(("the final", "render queue", "gate"))))
 
+
+def live_check(m):
+    """Live preview (tools/mv/live.py and the runtime's live mode): the live block in mv.js changes no render (mv.js
+    without it renders the same pixels); a scene played live shows exactly the renderer's frame (a stateless scene; a
+    stateful one after a jump forward, a jump back and a step on); the per-frame text list doesn't grow while it plays;
+    the live server serves the renderer's URL space and nothing else; the timelines the web app plays: work/live.json
+    first (with what it can't play said), then the plan (the segments in their slots, the type on top), then the renders
+    (the mini director's passes: field.js live over its ranges, the Blender pass as its video, the type on top)."""
+    print("== 6e. live preview: the scenes in the browser with the song", flush=True)
+    import io, http.client, urllib.parse
+    from mv import live, web
+    from PIL import Image, ImageChops
+    from playwright.sync_api import sync_playwright
+    pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
+    fps, W, H = pj["format"]["fps"], pj["format"]["width"], pj["format"]["height"]
+    out = os.path.join(PDIR, "cache", "_live")
+    shutil.rmtree(out, ignore_errors=True)
+    src = open(os.path.join(web.RUNTIME, "mv.js"), encoding="utf-8").read()
+    a, b = src.find("// ------------------------------------------------------------------ live preview (mv:live)"), src.find("(mv:live-end)")
+    rt = os.path.join(out, "runtime")
+    os.makedirs(rt)
+    open(os.path.join(rt, "mv.js"), "w", encoding="utf-8").write(src[:a] + src[src.index("\n", b) + 1:] if a > 0 and b > a else src)
+    frames = {"field.js": [37, 452], "trail.js": [120, 30, 45]}       # trail: forward, back (a reload), a step on
+    shots, keep_rt = {}, web.RUNTIME
+    for tag, rdir in (("render", web.RUNTIME), ("without", rt)):
+        web.RUNTIME = rdir
+        try:
+            for sc, fs in frames.items():
+                ps = web.stills(os.path.join(TESTS, "scenes", sc), [f / fps for f in fs], os.path.join(out, tag), project=PDIR,
+                                gpu="off", log=lambda x: None)
+                for p in ps:
+                    shots[(tag, sc, int(round(float(os.path.basename(p).rsplit("_", 1)[1][:-4]) * fps)))] = p
+        finally:
+            web.RUNTIME = keep_rt
+
+    def diff(x, y):
+        return max(e[1] for e in ImageChops.difference(Image.open(x).convert("RGB") if isinstance(x, str) else x,
+                                                       Image.open(y).convert("RGB")).getextrema())
+    same = [diff(shots[("render", sc, f)], shots[("without", sc, f)]) == 0 for sc, fs in frames.items() for f in fs]
+    say("PASS" if a > 0 and b > a and len(same) == 5 and all(same) else "FAIL",
+        "mv.js renders unchanged: without its live block the same frames come out pixel for pixel (a stateless and a stateful scene)",
+        f"{sum(same)} of {len(same)} frames identical")
+    srv = live.LiveServer(PDIR).start()
+
+    def until(pg, js, most=30):
+        t0 = time.time()
+        while time.time() - t0 < most:
+            try:
+                if pg.evaluate(js):
+                    return True
+            except Exception:                    # (reloading)
+                pass
+            time.sleep(0.1)
+        return False
+
+    def show(pg, f):                             # the parent's clock: frame f, paused (a jump back may reload the page)
+        clock = f"window.postMessage({{type: 'mv-clock', t: {f / fps}, playing: false, rate: 1, seek: true}}, '*')"
+        done = f"window.MV && MV._liveState && MV._liveState().last === {f} && !MV._liveState().busy"
+        until(pg, "window.__st && __st.some(s => s.ready)")
+        pg.evaluate("window.__mark = 1; " + clock)
+        until(pg, f"({done}) || !window.__mark")
+        if not until(pg, done, 0.5):             # reloaded: it asks for its clock again (as the parent does on load)
+            until(pg, "window.__st && __st.some(s => s.ready)")
+            pg.evaluate(clock)
+            until(pg, done)
+        return Image.open(io.BytesIO(pg.screenshot())).convert("RGB")
+    res, leak, catch, errs = [], {}, False, []
+    try:
+        with sync_playwright() as pw:
+            br, _ = web.launch(pw, "off")
+            ctx = br.new_context(viewport={"width": W, "height": H}, device_scale_factor=1)
+            ctx.add_init_script("window.__st = []; addEventListener('message', e => { if (e.data && e.data.type === 'mv-live') __st.push(e.data); });")
+            pg = ctx.new_page()
+            pg.on("pageerror", lambda e: errs.append(str(e)))
+            for sc, fs in frames.items():
+                pg.goto(srv.url + "/_mv/live.html?" + urllib.parse.urlencode({"scene": f"../../tests/scenes/{sc}", "scale": 1}))
+                for f in fs:
+                    res.append((sc, f, diff(show(pg, f), shots[("render", sc, f)])))
+                catch |= bool(pg.evaluate("__st.some(s => s.stateful)"))
+            pg.evaluate(f"window.postMessage({{type: 'mv-clock', t: {60 / fps}, playing: true, rate: 1}}, '*')")
+            time.sleep(2.5)
+            leak = pg.evaluate("MV._liveState()")
+            fps_seen = max(s.get("fps") or 0 for s in pg.evaluate("__st"))
+            # the clock correcting itself (a pause lands a frame behind the frame shown; a stem switch seeks back to
+            # where it was): the stateful scene holds its frame, its page isn't reloaded; a real jump back still is
+            pg.evaluate("window.__keep = 1")
+            last0 = pg.evaluate("MV._liveState().last")
+            pg.evaluate(f"window.postMessage({{type: 'mv-clock', t: {(last0 - 1) / fps}, playing: false, rate: 1}}, '*')")
+            time.sleep(0.6)
+            last1 = pg.evaluate("MV._liveState().last")           # (paused now: it holds)
+            pg.evaluate(f"window.postMessage({{type: 'mv-clock', t: {(last1 - 2) / fps}, playing: false, rate: 1, seek: true}}, '*')")
+            time.sleep(0.6)
+            hold = pg.evaluate("[window.__keep === 1, MV._liveState().last, MV._liveState().ready]")
+            # a stateful scene slower than real time: it skips frames to keep time (and says so), it doesn't fall behind
+            open(os.path.join(out, "slow.js"), "w", encoding="utf-8").write(
+                "let ctx, x = 0;\nexport default {stateful: true, setup(mv) { ctx = mv.canvas().getContext('2d'); },\n"
+                "  render(f) { let z = 0; for (let k = 0; k < 2.5e7; k++) z += Math.sqrt(k); window.__z = z;\n"
+                "    x = (x + 3) % f.w; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, f.w, f.h); ctx.fillStyle = '#fff'; ctx.fillRect(x, 10, 10, 10); }};\n")
+            pg.goto(srv.url + "/_mv/live.html?" + urllib.parse.urlencode({"scene": "cache/_live/slow.js", "scale": 0.25}))
+            until(pg, "window.__st && __st.some(s => s.ready)")
+            pg.evaluate(f"window.postMessage({{type: 'mv-clock', t: {30 / fps}, playing: true, rate: 1}}, '*')")
+            time.sleep(4)
+            slow = pg.evaluate("(() => { const s = MV._liveState(); return [s.approx, Math.round(s.t * %d) - s.last, s.last]; })()" % fps)
+            br.close()
+    finally:
+        pass
+    say("PASS" if len(res) == 5 and all(d == 0 for _, _, d in res) and catch and leak.get("texts") == 0 and leak.get("last", 0) > 60
+        and fps_seen > 0 and not errs else "FAIL",
+        "a scene played live shows the renderer's frame, pixel for pixel (a stateless scene; a stateful one forward, back, a step "
+        "on); while it plays the per-frame text list stays empty", f"{res}; playing: frame {leak.get('last')}, texts {leak.get('texts')}, "
+        f"{fps_seen} fps; {errs[:2]}")
+    say("PASS" if hold[0] and hold[2] and hold[1] >= last0 and slow[0] is True and slow[1] < fps / 2 and slow[2] > 60 else "FAIL",
+        "live, a stateful scene: a pause a frame back and a seek two frames back hold its frame (no reload, no restart from "
+        "setup); one slower than real time skips frames to keep time (said: approx) instead of falling behind the song",
+        f"hold {hold} (from frame {last0}); slow: approx {slow[0]}, {slow[1]} frames behind the clock at frame {slow[2]}")
+    # what the live server serves: the renderer's URL space, no-store, nothing outside it
+    def get(path, host=None):
+        c = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=20)
+        c.request("GET", path, headers={"Host": host} if host else {})
+        r = c.getresponse()
+        csp.append(r.getheader("Content-Security-Policy") or "")
+        return r.status, r.getheader("Cache-Control"), r.getheader("Location"), r.read()
+    csp = []
+    abs_field = "/_mv/abs/" + urllib.parse.quote(os.path.join(TESTS, "scenes", "field.js").replace("\\", "/").lstrip("/"))
+    outside = os.path.join(os.path.dirname(STUDIO), "_mv_live_outside.txt")
+    probes = {"shell": get("/_mv/live.html?scene=work/scenes/s2/scene.js&scale=0.5"), "fonts": get("/_mv/fonts.css"),
+              "runtime": get("/_mv/runtime/mv.js"), "scene": get("/work/scenes/s2/scene.js"), "song": get("/_mv/song/hits.json"),
+              "abs in the studio": get(abs_field), "abs outside": get("/_mv/abs/" + urllib.parse.quote(outside.replace("\\", "/").lstrip("/"))),
+              "..": get("/../../tools/studio.py"), "%2e%2e": get("/%2e%2e/%2e%2e/tools/studio.py"),
+              "runtime ..": get("/_mv/runtime/..%2f..%2f..%2fstudio.py"), "other host": get("/project.json", "example.com"),
+              "abs studio notes": get("/_mv/abs/" + urllib.parse.quote(os.path.join(STUDIO, "CLAUDE.md").replace("\\", "/").lstrip("/"))),
+              "unc": get("/%5C%5C127.0.0.1%5Cshare%5Cx.js"),
+              "html scene": get("/_mv/live.html?scene=work/scenes/type/type.html&transparent=1")}
+    loc = probes["html scene"][2] or ""
+    html = get(loc)[3].decode("utf-8", "replace") if loc else ""
+    srv.stop()
+    ok_srv = (probes["shell"][0] == 200 and b'"live": true' in probes["shell"][3] and all(probes[k][0] == 200 for k in ("fonts", "runtime", "scene", "song", "abs in the studio"))
+              and probes["scene"][1] == "no-store" and all(probes[k][0] == 403 for k in ("abs outside", "..", "%2e%2e", "runtime ..", "other host",
+                                                                                          "abs studio notes"))
+              and probes["unc"][0] in (403, 404)                    # (refused by name on Windows; a plain odd name here)
+              and csp and all("default-src 'self'" in x and "frame-ancestors" in x for x in csp)
+              and probes["html scene"][0] == 302 and "mv-live=1" in loc and '"transparent": true' in html and '"live": true' in html
+              and 'id="line"' in html)
+    say("PASS" if ok_srv else "FAIL", "the live server: the renderer's URL space (shell, fonts, runtime, the scene, the song, the "
+        "tests' scenes under the studio), no-store, a CSP that keeps pages off the network; outside the studio, the studio's "
+        "own notes, a \\\\host\\share path, .., another host: refused; an HTML scene in its own page",
+        "; ".join(f"{k} {v[0]}" for k, v in probes.items()))
+    # the timelines
+    st = live.state(PDIR)
+    by = {tl["source"]: tl for tl in st["timelines"]}
+    pl = by.get("plan.json", {}).get("layers") or []
+    rn = by.get("renders", {}).get("layers") or []
+    field = [x for x in rn if x.get("scene") == "../../tests/scenes/field.js"]
+    blend = os.path.exists(os.path.join(PDIR, "work", "renders", "stop.mp4"))
+    ok_tl = ([x["id"] for x in pl] == ["s1", "s2", "s3", "type"] and all(x["kind"] == "scene" for x in pl) and pl[-1]["transparent"]
+             and pl[0]["slots"][0][0] == 0 and pl[2]["slots"][0][1] == st["n"] and len(field) == 1 and len(field[0]["slots"]) == (2 if blend else 1)
+             and (not blend or any(x["kind"] == "video" and x["video"] == "work/renders/stop.mp4" for x in rn))
+             and rn[-1].get("scene", "").endswith("lyrics.html") and rn[-1]["transparent"])
+    sc = {x["path"] for x in st["scenes"]}
+    sec = m["sections"][1]
+    secs = [x for x in m["sections"] if x["name"] != sec["name"]]
+    s2_ = secs[-1] if len(secs) > 1 else None             # a section that isn't next to the first one
+    json.dump({"layers": [{"scene": "../../tests/scenes/trail.js", "section": sec["name"]}, {"scene": "work/scenes/nope.js"},
+                          {"scene": "work/scenes/s1/scene.js", "section": "no such section"},
+                          {"scene": "work/scenes/s2/scene.js", "section": [sec["name"]] + ([s2_["name"]] if s2_ else []), "mode": ["odd"]},
+                          {"scene": "work/scenes/type/type.html", "transparent": True}]},
+              open(os.path.join(PDIR, "work", "live.json"), "w", encoding="utf-8"))
+    st2 = live.state(PDIR)
+    os.remove(os.path.join(PDIR, "work", "live.json"))
+    lj = st2["timelines"][0]
+    fr = lambda x: [int(round(x["t0"] * fps)), int(round(x["t1"] * fps))]      # noqa: E731
+    want2 = [fr(sec)] + ([fr(s2_)] if s2_ else [])
+    ok_lj = (lj["source"] == "live.json" and [x.get("scene") for x in lj["layers"]] == ["../../tests/scenes/trail.js", "work/scenes/s2/scene.js",
+                                                                                       "work/scenes/type/type.html"]
+             and lj["layers"][0]["slots"] == [fr(sec)] and any("nope.js" in w for w in lj["warnings"])
+             and any("no such section" in w and "left out" in w for w in lj["warnings"])
+             and (lj["layers"][1]["slots"] == want2 or (len(want2) == 2 and want2[0][1] == want2[1][0])) and lj["layers"][1]["mode"] == "normal")
+    say("PASS" if ok_tl and ok_lj and {"work/scenes/s1/scene.js", "work/scenes/type/type.html", "../../tests/scenes/field.js"} <= sc
+        and "work/scenes/lib/look.js" not in sc else "FAIL",
+        "the timelines: work/live.json first (what it can't play said), the plan (segments in their slots, the type on top), the "
+        "renders (a scene live over its ranges, the Blender pass as its video, the type on top); the scenes, the lib left out",
+        f"plan {[x['id'] for x in pl]}; renders {[(x['kind'], x.get('scene') or x.get('video'), len(x['slots'])) for x in rn]}; "
+        f"live.json {[(x.get('scene'), x['slots']) for x in lj['layers']]} {lj['warnings']}; scenes {sorted(sc)[:6]}")
+    # live notes left while no run was going: a first run's brief has them (with their ids and how to mark them done)
+    import director
+    np_ = os.path.join(PDIR, "review", "notes.json")
+    keep = open(np_, encoding="utf-8").read() if os.path.exists(np_) else None
+    try:
+        live.update_notes(PDIR, lambda ns: ns + [{"id": 1700000000123, "version": "live", "t": 12.5, "text": "the marks should breathe (live)",
+                                                   "done": False, "scene": "work/scenes/s1/scene.js", "timeline": "plan.json"}])
+        br_ = director.build_brief(PDIR, 3600, started=time.time(), deadline=time.time() + 3600)
+        done = subprocess.run([PY, os.path.join(STUDIO, "tools", "studio.py"), "note-done", P, "1700000000123", "the marks breathe now"],
+                              capture_output=True, text=True, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        nt = next((x for x in json.load(open(np_, encoding="utf-8")) if x.get("id") == 1700000000123), {})
+    finally:
+        if keep is None:
+            os.remove(np_)
+        else:
+            open(np_, "w", encoding="utf-8").write(keep)
+    say("PASS" if "My notes from playing the scenes live" in br_ and "**the marks should breathe (live)** (id 1700000000123)" in br_
+        and "studio.py note-done" in br_ and done.returncode == 0 and nt.get("done") is True and nt.get("fix") == "the marks breathe now"
+        else "FAIL", "live notes left while no run was going are in a first run's brief (with the song context and their ids); "
+        "studio.py note-done marks one done with its fix", f"{done.stdout.strip() or done.stderr.strip()}; {nt}")
+    shutil.rmtree(out, ignore_errors=True)
 
 def queue_check():
     """The render queue with its own lock file: while the test holds the queue a render waits (and says for whom),
@@ -1009,17 +1214,96 @@ def pipeline_machine_check():
     tick(R, t0 + 120, 3)
     out["revise"] = (first, set_back, s.whys(), pl.calls)
     ok_revise = first == "revise" and set_back and reminded and R.stage == "final" and pl.calls == ["assemble final"]
+    ok_live = live_notes_machine(make, tick, root, out)
     shutil.rmtree(root, ignore_errors=True)
     bad = [k for k, v in (("the whole way", ok_whole), ("a review round from stage 4", ok_revise), ("never valid -> solo", ok_invalid), ("no plan by the deadline -> solo", ok_late),
                           ("a builder fails, then the final when time is short", ok_fail_forced), ("STOP while building", ok_stop),
                           ("the planner's session ends", ok_gone), ("tasks.json, a final that can't be made", ok_tasks),
                           ("the planner fixing the final: busy too long, or gone", ok_fixing), ("no room for the stages -> solo", ok_room),
-                          ("the nudge keeps the delivered cut", ok_kept)) if not v]
+                          ("the nudge keeps the delivered cut", ok_kept), ("the user's live notes", ok_live)) if not v]
     say("FAIL" if bad else "PASS", "the pipeline's stages, every way out (in-process, stand-ins): " + ", ".join(
         ["the whole way (and the early-finish nudge back to stage 4)", "never valid -> solo", "no plan by the deadline -> solo", "a builder fails", "the final when time is short",
          "STOP", "the planner gone", "tasks.json", "a final that can't be made", "a review round from stage 4",
-         "the planner fixing the final too long or gone (stand-ins)", "no room for the stages (solo)", "the nudge keeps the delivered cut"]),
+         "the planner fixing the final too long or gone (stand-ins)", "no room for the stages (solo)", "the nudge keeps the delivered cut",
+         "the user's live notes (sent where a turn is safe, held while the studio assembles and then in its report, held "
+         "in the final stage, solo too)"]),
         ("failed: " + "; ".join(bad) + f" {out}")[:2500] if bad else "")
+
+
+def live_notes_machine(make, tick, root, out):
+    """The user's live notes during a run (director.LiveNotes, Runner.live_step), on the simulated clock: an idle
+    planner gets them while builders work (the assemble then waits for its turn), with the command that marks them
+    done; a note from before the run, or one done already, isn't sent; one that comes while the studio assembles is
+    held and goes into the assemble report with the ones sent since; each is marked forwarded_run in review/notes.json;
+    while the final renders (the planner busy writing report.md, as the studio asked) and after, one is held for the
+    review round; a solo director gets them, a stopping run doesn't."""
+    import director
+    np = os.path.join(root, "review", "notes.json")
+
+    def note(text, **kw):
+        os.makedirs(os.path.dirname(np), exist_ok=True)
+        ns = json.load(open(np, encoding="utf-8")) if os.path.exists(np) else []
+        ns.append(dict({"id": int(time.time() * 1000) + len(ns), "version": "live", "t": 12.5, "text": text, "done": False,
+                        "scene": "work/scenes/s1/scene.js", "timeline": "plan.json"}, **kw))
+        json.dump(ns, open(np, "w", encoding="utf-8"))
+    marks = lambda: {n["text"]: n.get("forwarded_run") for n in json.load(open(np, encoding="utf-8"))}   # noqa: E731
+    R, s, pl, t0 = make(critic=False)
+    note("from before the run", id=int((t0 - 120) * 1000))
+    note("done already", done=True)
+    s.over()
+    tick(R, t0 + 60, 2)                      # the gate (critic off) -> the builders; the planner builds its own
+    s.over()
+    tick(R, t0 + 120)                        # it ended its turn: done with its own segments
+    was_done = R.planner_done
+    note("the marks should hit harder")
+    R.live_step(t0 + 130)
+    first = s.sent[-1] if s.sent else ("", "")
+    m1 = marks()
+    R.stage, R.job = "assemble", {"kind": "assemble", "done": False}      # the studio assembles; the planner is idle
+    note("the type comes too late", t=30.0)
+    n_sent = len(s.sent)
+    R.live_step(t0 + 200)
+    held = len(s.sent) == n_sent and marks().get("the type comes too late") is None
+    R.job = None
+    R.assemble_done({"ok": True, "video": "work/previews/preview_1.mp4", "checks": {}, "placeholders": []}, t0 + 210)
+    report = s.sent[-1][1] if s.sent else ""
+    m2 = marks()
+    R.stage, R.job = "final", {"kind": "final", "done": False}            # the final renders; the planner writes report.md
+    s.busy = True
+    note("the end should land harder", t=40.0)
+    n_sent = len(s.sent)
+    R.live_step(t0 + 300)
+    R.job = None                                                          # the final is in: it fixes FAILs, writes report.md
+    R.live_step(t0 + 310)
+    s.busy = False
+    R.live_step(t0 + 320)
+    held_final = len(s.sent) == n_sent and marks().get("the end should land harder") is None
+    ok_pipe = (was_done and first[0] == "the user's live note (1)" and "playing your scenes live" in first[1]
+               and "**the marks should hit harder**" in first[1] and "they saw work/scenes/s1/scene.js" in first[1]
+               and "studio.py note-done" in first[1] and "next assemble report lists these notes again" in first[1]
+               and not R.planner_done
+               and m1 == {"from before the run": None, "done already": None, "the marks should hit harder": 1} and held
+               and s.whys()[-1].startswith("assemble report") and "The user's live notes since the last report" in report
+               and "studio.py note-done" in report
+               and "**the marks should hit harder**" in report and "**the type comes too late**" in report and "(open)" in report
+               and m2.get("the type comes too late") == 1 and held_final)
+    # solo: a message at once; a stopping run sends none
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(os.path.join(root, "work", "director", "run-1"), exist_ok=True)
+    s2 = FakeSession()
+    t1 = time.time()
+    st = {"run": 1, "events": s2.status["events"], "messages_sent": s2.status["messages_sent"], "critiques": [], "critic_cost_usd": 0.0}
+    R2 = director.Runner(root, 1, os.path.join(root, "work", "director", "run-1"), st, s2, 3600, t1, log=lambda x: None)
+    note("more room before the drop")
+    R2.live_step(t1 + 10)
+    solo = s2.sent[-1] if s2.sent else ("", "")
+    R2.stop_reason = "stopped by the user"
+    note("never mind")
+    R2.live_step(t1 + 20)
+    ok_solo = (solo[0] == "the user's live note (1)" and "Then carry on" in solo[1] and len(s2.sent) == 1
+               and marks() == {"more room before the drop": 1, "never mind": None})
+    out["live"] = (first[0], m1, m2, held, held_final, s.whys()[-2:], solo[0], marks())
+    return ok_pipe and ok_solo
 
 
 def builder_failures_check():
@@ -1108,9 +1392,32 @@ def pipeline_run_check(env):
         p = os.path.join(PDIR, "work", "scenes", sid, "scene.js")
         if os.path.exists(p):
             os.remove(p)
+    import threading
+    from mv.live import update_notes
+    runs0 = (json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8")).get("runs") or [{}])[-1].get("run") or 0
+    mid = round(json.load(open(os.path.join(PDIR, "song", "song-map.json"), encoding="utf-8"))["duration"] / 2, 2)
+    wrote = {}
+
+    def user():                                    # the user plays the scenes live while the planner works, and leaves a note
+        t0_ = time.time()
+        while time.time() - t0_ < 600:
+            cur = json.load(open(os.path.join(PDIR, "work", "director", "current.json"), encoding="utf-8")) \
+                if os.path.exists(os.path.join(PDIR, "work", "director", "current.json")) else {}
+            if (cur.get("run") or 0) > runs0 and cur.get("state") == "running":
+                time.sleep(1)
+                n = {"id": int(time.time() * 1000), "version": "live", "t": mid, "text": "the field should breathe here (live)",
+                     "done": False, "at": time.strftime("%Y-%m-%d %H:%M"), "scene": "work/scenes/s2/scene.js",
+                     "timeline": "plan.json"}
+                update_notes(PDIR, lambda ns: ns.append(n))
+                wrote.update(n)
+                return
+            time.sleep(0.2)
+    th = threading.Thread(target=user, daemon=True)
+    th.start()
     t0 = time.time()
     r = studio("direct", P, "--mode", "pipeline", "--budget", "40m", "--model", "fake", "--critic-model", "fake", "--builders", "2",
                "--no-nudge", check=False, env=env, timeout=2400)
+    th.join(5)
     pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
     last = (pj.get("runs") or [{}])[-1]
     st = json.load(open(os.path.join(PDIR, "work", "pipeline", "state.json"), encoding="utf-8"))
@@ -1146,6 +1453,17 @@ def pipeline_run_check(env):
         and os.path.exists(os.path.join(PDIR, "final", f"critic_v{last.get('version')}.md")) else "FAIL",
         "the critic at every gate (the language, each builder, the film, the final); the reports reach the planner; costs by role",
         f"critiques {kinds}; messages {sent}; costs {st.get('costs')}")
+    ln = next((n for n in json.load(open(os.path.join(PDIR, "review", "notes.json"), encoding="utf-8")) if n.get("id") == wrote.get("id")), {})
+    md = os.path.join(PDIR, "work", "director", f"run-{last.get('run')}", "messages.md")
+    msgs = open(md, encoding="utf-8").read() if os.path.exists(md) else ""
+    own = "the user's live note (1)" in sent
+    say("PASS" if wrote and ln.get("forwarded_run") == last.get("run") and "the field should breathe here (live)" in msgs
+        and "segment s2 (yours, the hero)" in msgs and "The user's live notes since the last report" in msgs
+        and (not own or (ln.get("done") and "test stand-in" in (ln.get("fix") or ""))) else "FAIL",
+        "a live note left while the pipeline runs reaches the planner within seconds (with the song context and the segment), "
+        "is marked forwarded, done by the planner, and listed in the next assemble report",
+        f"{'its own message' if own else 'in the assemble report'}; forwarded_run {ln.get('forwarded_run')}, done {ln.get('done')}, "
+        f"fix {ln.get('fix')!r}")
     # an interactive planner's `pipeline build`
     r = studio("pipeline", "build", P, "--only", "s1", "--builder-model", "fake", "--critic-model", "fake", "--budget", "6m",
                check=False, env=env, timeout=900)

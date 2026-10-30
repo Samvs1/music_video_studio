@@ -10,9 +10,11 @@ audio unchanged.
 Every run follows **one pipeline**: the top model (at max effort) plans the video, locks its visual language in code
 and makes the first draft; **builder agents** build the other parts of the film in parallel; **the critic** (a
 cheaper model with fresh eyes) looks at the renders at every gate and reports back in text, ambition first, then
-craft. You watch it work on the Direct page (the stages, each agent, the critic's reports, the costs), then watch the
-video next to the song's lanes with the critic's notes beside it, press **N** to leave a note at a moment, and the
-director makes the next version. Earlier versions are kept. Short budgets run solo: one session does everything.
+craft. You watch it work on the Direct page (the stages, each agent, the critic's reports, the costs), and you can
+**play its scenes live** in your browser with the song while it works, no render (you are the only one who can hear:
+a note you leave there reaches the director within seconds). Then you watch the video next to the song's lanes with
+the critic's notes beside it, press **N** to leave a note at a moment, and the director makes the next version.
+Earlier versions are kept. Short budgets run solo: one session does everything.
 
 ## Install
 
@@ -60,11 +62,20 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    deadlines, the plan's segments over the song, a card per session (the planner and each builder: state, model,
    effort, cost, last lines, the full log on a click), the critic's report at every gate (scores, the video, the
    report itself), the previews, the costs by role and the planner's live log. A solo run shows its live log and the
-   critic's notes as before. **Stop** wraps it up cleanly. Or direct it *with* Claude: open Claude Code in this folder
+   critic's notes as before. While it runs, **▶ play the scenes live** opens the live view (step 6). **Stop** wraps it
+   up cleanly. Or direct it *with* Claude: open Claude Code in this folder
    and type `/musicvideo <project>`: your session is the planner, runs the same pipeline commands, and its builders
    and the critic's reports show up on the Direct page too.
 6. **Watch & review**: each version with the song's lanes under the video, and the critic's notes on it (scores, the
    worst problems with their times, what works; **Ask the critic** for a fresh look). Press **N** for a note at that moment.
+   **▶ live** (the default while there's no video yet) plays the project's scenes as they are now, in your browser with
+   the song and its lanes, no render: the plan's segments in their slots (or the director's `work/live.json`, the
+   renders, a pitch's draft plan, or one scene alone), a scene that changed reloads by itself within seconds. Pick the
+   size (¼, ½, full); each layer says how it keeps up ("24 of 30 fps", "catching up 40%", its error); set a **sound
+   delay** for Bluetooth headphones (kept in the browser). A note here (N) is a live note: during a run it goes to the
+   director (or the planner) within seconds with the bar, the section and the scene (while the studio assembles, in
+   its next report; while the final renders, in the next review round); the director marks it done with its fix under
+   it. Notes left while no run is going go into the next run's brief.
    Then **Direct → review round** (or `/musicvideo <project>`): the notes go to the director with the bar, section and
    lyric at each moment; the next version appears as `v2`, `v3`, ... (`final/music-video_vN.mp4`).
 
@@ -84,6 +95,7 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `pipeline gate <p> [--model M]` | the language gate: the critic on the hero segment's preview and the style frames, before any builder starts |
 | `pipeline build <p> [--only s1,s3] [--builders 3] [--builder-model M] [--budget 30m]` | builder agents for an interactive planner: one headless session per segment (or the tasks in `work/pipeline/tasks.json`), a critic round each; blocks until they're done, then a summary |
 | `clock <p>` · `stop <p>` | time left in a running budget · ask a running director to stop cleanly |
+| `note-done <p> <id> ["what changed"] [--undo]` | mark the user's note done with a one-line fix (how a director answers a note: `review/notes.json` is written safely, since the web app writes it too) |
 | `check <p> [video]` | every check on the final (spec, flashes, text, sync) |
 | `deliver <p> [--critic]` · `versions <p>` | archive `final/music-video.mp4` as the next version (+ checks; `--critic`: + the critic's notes) · list versions |
 | `permtest <p> [--builder]` | check the director's (or a pipeline builder's) sandbox with the real Claude Code (a few cents with Haiku) |
@@ -183,6 +195,18 @@ The tools are documented in **`tools/README.md`** (with `tools/web-engine/README
   and segment preview, each critique and video); a session's full log comes from `GET /api/p/<p>/session-log`, which
   summarises the end of its `events.jsonl` the way the live log does. Its Stop also reaches an interactive
   planner's `pipeline build` (the same STOP file as `studio.py stop`).
+- **The live preview** (`tools/mv/live.py`, the runtime's live mode in `web-engine/runtime/mv.js`, the Watch page's
+  `livePlayer`): the web app starts a small server per project on 127.0.0.1 (its own port, GET only, `no-store`, the
+  renderer's exact URL space and nothing outside it) and stacks the scenes' pages from it as iframes, each visible only
+  in its slot, over the song's `<audio>`, which is the clock: every frame the page tells each scene where the song is,
+  and the scene shows that frame (its own frame clock, the same pixels a render gives), dropping frames when it is
+  slower than real time rather than drifting (a stateful scene then skips frames too, and is close to its render, not
+  exact; pausing or playing never restarts a simulation). `GET /api/p/<p>/live` lists the timelines (work/live.json, work/plan.json,
+  the renders, the pitches' draft plans) and the scenes. The live notes go into `review/notes.json` (`"version":
+  "live"`, the scene, the timeline), and the director's runner forwards them every ~5 s (`director.py` `LiveNotes`):
+  into the running turn, or at once to an idle planner while it plans, revises or waits for builders; while the studio
+  gates or assembles, in its next report (which lists them all again with what was marked); in the final stage they
+  wait for the review round; marked `forwarded_run`. The director marks one done with `studio.py note-done`.
 - **The render queue** (`tools/mv/renderlock.py`): every video render (`web-engine/render.py`, `blender/run.py`; not
   stills) takes a machine-wide lock first (`cache/render.lock` in the studio folder), so parallel agents queue their
   renders instead of sharing the CPU/GPU and all slowing down; a waiting render prints `waiting for the render queue:
@@ -315,6 +339,25 @@ director how they look, so it can draw them; the pictures never appear in the vi
   about which mode a budget gets uses the same rule as the runner (`pipeline.stage_times` with the final render's
   estimate here).
 
+- **Live preview: the browser plays the scenes, the parent page owns the clock.** No render, no video stream: the
+  scenes' own pages run in the user's browser on the song's audio clock. Frames drop when a scene is slower than real
+  time, but each frame shown is the one for that moment of the song, so the timing the user hears against is true;
+  stateful scenes catch up the way a render pre-rolls (a jump back in one without `preroll` reloads it, since its state
+  must start from setup). The same runtime, page and URLs as a render, so a live frame is the render's frame (the smoke
+  test compares them pixel for pixel), and a scene edited on disk plays its new version within seconds.
+- **A live server per project, on its own port**: a separate origin with exactly the renderer's URL space (`/_mv/...`,
+  the project at `/`), so scenes need no rewriting and can't reach the web app; the iframes are sandboxed to their
+  origin. Started lazily, kept for the web app's life.
+- **Live notes reach the director without derailing the pipeline**: a message to a busy session joins its turn, and
+  an idle planner gets one at once, only where a turn of its own is safe (planning, revising, waiting for builders: the
+  assemble then waits for that turn); while the studio gates or assembles, they wait for the planner's next message
+  (the assemble report has them), busy planner or not, since a fix then would race the scenes being rendered; in the
+  final stage (the planner is told not to touch the scenes while the final renders) they wait for the review round.
+  Open ones go into the next run's brief. The director marks a note done through `studio.py note-done` (a lock, a
+  re-read, an atomic replace), never by editing `review/notes.json`, which the web app writes too.
+- **Under the live view the song's lanes give way**: they share the browser's main thread with the scenes, so while a
+  scene falls behind real time the lanes are drawn less often (the line above them still every frame).
+
 ## Known limitations
 - A builder's sandbox refuses its Write and Edit tools outside its two folders (Claude Code's deny rules); its Bash
   commands aren't path-checked, so a builder that copies files with Bash could still write elsewhere in the project
@@ -360,6 +403,17 @@ director how they look, so it can draw them; the pictures never appear in the vi
   says so). It can be wrong; the director decides. A critique stopped midway (Stop on the Watch page, a preview
   critique giving way to a new final, the end of a run) isn't counted in the run's critic cost: the call can't say
   what it spent.
+- Live preview: the scenes play in iframes from the same site as the web app, which Chrome and Edge usually run on
+  one main thread with the page, so several heavy scenes at once (a segment, an overlay, the lanes) share one CPU core;
+  a scene that is slow live may still render fine (renders run in parallel workers). Blender scenes don't play live
+  (their preview render does, or a slate), nor do transparent PNG-folder passes; blend modes and opacity are the
+  browser's (`mix-blend-mode`), close to compose's but not the same pixels. The sound delay for Bluetooth headphones is
+  set by hand (the browser can't measure it). Live notes made while no run is going wait for the next run's brief (a
+  first run gets them as notes on the scenes as they were). A stateful scene too slow to render every frame live skips
+  frames to keep time, so its picture is then only close to its render's. A player scrolled out of view stops drawing
+  (the browser doesn't run a frame it doesn't show) and catches up when it's back.
+- In headless browsers (the tests) `page.wait_for_function` can't watch a scene's own page: the runtime owns its
+  `requestAnimationFrame` and `setTimeout`; the tests poll from Python instead.
 
 ## Ideas for next
 - A **storyboard view** in the web app: the director's style frames and section plan as cards before the full render.

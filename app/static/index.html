@@ -267,6 +267,24 @@ video{max-height:58vh}
 .xp-b{flex-basis:100%;margin-top:6px}
 .xp-b .sv-md{background:#121214;border:1px solid var(--line);border-radius:10px;padding:8px 12px;max-height:420px;overflow:auto}
 img.sf{height:34px;border-radius:4px;vertical-align:middle}
+/* the live view: the scenes in the browser with the song (livePlayer) */
+.lv-stage{position:relative;overflow:hidden;background:#000;border-radius:12px;margin:0 auto;cursor:pointer}
+.lv-stage>*{position:absolute;left:0;top:0;border:0;pointer-events:none;transition:none}
+.lv-stage video,.lv-stage .lv-slate{width:100%;height:100%}
+.lv-stage video{object-fit:fill}
+.lv-slate{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;background:#18181c;color:#bdbbb6;font-size:13px;text-align:center;padding:12px}
+.lv-slate b{font:22px Anton,Impact,sans-serif;letter-spacing:.02em;color:var(--fg)}
+.lv-bar{gap:8px 10px;margin:0 0 10px;font-size:13px}
+.lv-bar select{width:auto;max-width:440px;padding:6px 9px}
+.lv-bar input{width:76px;padding:5px 8px}
+.lv-bar .chip{font-size:12.5px;padding:4px 10px}
+.lv-st{font-size:12.5px;margin:8px 0 4px}
+.lv-st div{display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+.lv-st .lv-k{font:11.5px SpaceMono,monospace}
+.lv-st .on b{color:var(--ok)}
+.lv-st .slow b,.lv-st .slow{color:var(--acc)}
+.lv-st .bad{color:var(--bad)}
+a.lv-go{font-weight:700;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -295,7 +313,7 @@ function go(hash) { location.hash = hash; }
 window.onhashchange = route;
 async function route() {
   clearInterval(poll); clearInterval(dpoll); clearInterval(lxPoll);
-  lxRestore(); svStop(); document.onkeydown = document.onkeyup = null;
+  lxRestore(); svStop(); lvStop(); document.onkeydown = document.onkeyup = null;
   const h = location.hash.slice(1).split("/");
   if (!h[0]) return home();
   step = STEPS.some(s => s[0] === h[1]) ? h[1] : "song";
@@ -549,6 +567,7 @@ const opts = (list, cur) => list.map(o => { const [v, l] = [].concat(o); return 
 function vDirect() {
   const d = S.project.director || {}, latest = S.versions.filter(v => v.n).slice(-1)[0];
   const open = latest ? S.notes.filter(n => !n.done && String(n.version).replace("v", "") === String(latest.n)) : [];
+  const liveOpen = latest ? S.notes.filter(n => !n.done && n.version === "live") : [];     // left in the live view, still open
   const cmd = `/musicvideo ${S.name}`;
   $("#pane").innerHTML = `<h2>Direct</h2>
   <div class="cards2"><div class="box"><div class="hand">on its own</div><h2 style="font-size:24px">Let Claude direct it</h2>
@@ -568,7 +587,7 @@ function vDirect() {
     <p class="hint">The critic is a cheaper model with fresh eyes: it looks at the renders (the pipeline's gates, or every preview in a solo run) and reports back in text, ambition first, then craft. The director decides what to take. Looking at pictures is where the tokens go, so the expensive model doesn't do it.</p>
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
     ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
-    ${open.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto" onchange="dirMode()"> Review round: address my ${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n} and make v${latest.n + 1}</label>` : ""}
+    ${open.length || liveOpen.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto" onchange="dirMode()"> Review round: address my ${[open.length ? `${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n}` : "", liveOpen.length ? `${liveOpen.length} note${liveOpen.length > 1 ? "s" : ""} from the live view` : ""].filter(Boolean).join(" and ")} and make v${latest.n + 1}</label>` : ""}
     <div class="row" style="margin-top:12px"><button id="go-direct" onclick="startDirect()" ${S.song.map ? "" : "disabled"}>Start the director</button><button class="ghost small" id="stop-direct" onclick="stopJob()" style="display:none">Stop it (wraps up cleanly)</button></div>
     ${S.song.map ? "" : `<p class="hint" style="color:var(--bad)">Analyse the song first.</p>`}</div>
   <div class="box"><div class="hand">with you</div><h2 style="font-size:24px">Direct it together</h2>
@@ -634,7 +653,7 @@ function runHead(d, extra) {
   const cost = d.costs && d.costs.total != null ? d.costs.total : d.cost_usd || 0;
   const none = !running && d.result === "no final";   // it ended without a new final: say so, in red
   return `<div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : none ? "background:var(--bad);color:#fff" : ""}">${esc(none ? d.state + ": no new final" : d.state)}</span>
-      <span class="mut">${extra}</span><span class="sp" style="flex:1"></span>
+      <span class="mut">${extra}</span>${running ? `<a class="lv-go" href="#${S.name}/watch" onclick="wsel='live'" title="the scenes as they are now, in your browser with the song (no render): your notes from there reach the director within seconds">&#9654; play the scenes live</a>` : ""}<span class="sp" style="flex:1"></span>
       <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; $${(+cost).toFixed(2)}${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
     ${running ? `<div class="prog"><div style="width:${Math.min(100, Math.max(0, (d.now - d.started) / d.budget_s * 100))}%"></div></div>` : `<p class="hint"${none ? ' style="color:var(--bad)"' : ""}>${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}`;
 }
@@ -774,14 +793,27 @@ function scoreChips(sc) {            // the critic's four scores (out of 10)
 // ---------------------------------------------------------------- 6. watch & review
 let wsel = null;
 async function vWatch() {
-  svStop();
-  if (!S.versions.length) { $("#pane").innerHTML = `<h2>Watch &amp; review</h2><p class="mut">No video yet. Start the director on the Direct page.</p>`; return; }
+  svStop(); lvStop();
+  let L = null;
+  if (S.song.map) { try { L = await api(`/api/p/${S.name}/live`); } catch (e) { L = null; } }
+  const live = !!(L && L.song && (L.timelines.some(x => x.layers.length) || L.scenes.length));
+  if (wsel === "live" && !live) wsel = null;
+  if (!S.versions.length && live) wsel = "live";                  // no video yet (e.g. during the first run): the scenes
+  if (wsel === "live") return vLive(L);
+  if (!S.versions.length) {
+    let j = {}; try { j = await api(`/api/p/${S.name}/job`); } catch (e) { /* no news */ }
+    const run = j.running && j.job === "direct";
+    $("#pane").innerHTML = `<h2>Watch &amp; review</h2><p class="mut">${run ? "No video yet, and no scene yet: the director is at work. Once it has written a scene, it plays here live, with the song (this page looks again every few seconds)."
+      : "No video yet. Start the director on the Direct page: once it has written a scene, you can play the scenes here live, with the song."}</p>`;
+    clearTimeout(LVS.wait); if (run) LVS.wait = setTimeout(() => { if (step === "watch" && !S.versions.length && !LVS.player) vWatch(); }, 5000);
+    return;
+  }
   const v = S.versions.find(x => x.label === wsel) || S.versions[S.versions.length - 1];
   wsel = v.label;
   const vkey = v.n ? `v${v.n}` : "current", notes = S.notes.filter(n => n.version === vkey).sort((a, b) => a.t - b.t);
   const rep = v.report || S.files.report;
   $("#pane").innerHTML = `<h2>Watch &amp; review</h2>
-  <div class="vtabs">${S.versions.map(x => `<span class="chip ${x.label === wsel ? "on" : ""}" onclick="wsel='${x.label}';vWatch()">${esc(x.label)}${x.at ? ` <span class="mut" style="font-size:11px">${esc(x.at)}</span>` : ""}</span>`).join("")}</div>
+  <div class="vtabs">${live ? `<span class="chip" onclick="wsel='live';vWatch()" title="the scenes as they are now, in your browser with the song (no render)">&#9654; live</span>` : ""}${S.versions.map(x => `<span class="chip ${x.label === wsel ? "on" : ""}" onclick="wsel='${x.label}';vWatch()">${esc(x.label)}${x.at ? ` <span class="mut" style="font-size:11px">${esc(x.at)}</span>` : ""}</span>`).join("")}</div>
   <video id="vid" controls preload="metadata" src="${v.url}"></video>
   ${S.song.map ? `<div class="sv-now" style="margin-top:8px"><div><div class="big" id="sv-sec">&nbsp;</div><div class="pos" id="sv-pos">&nbsp;</div></div><div class="ly" id="sv-ly"></div><div class="nx" id="sv-nx"></div></div>
   <div class="row sv-ctl"><span class="t" id="sv-t">0:00.0</span><span class="sep"></span>${[[8, "8 bars"], [16, "16"], [32, "32"], [0, "whole song"]].map(([z, l]) => `<span class="chip ${SV.zoom === z ? "on" : ""}" data-zoom="${z}" onclick="svZoom(${z})">${l}</span>`).join("")}
@@ -825,6 +857,7 @@ async function critDone() {         // the critic's notes are in: redraw only it
 }
 function vidSeek(t) { const v = $("#vid"); if (v) { v.currentTime = Math.max(0, t - 1); v.play(); } }
 function addNote() {
+  if (lvOn()) return lvAddNote();
   const v = $("#vid"); const t = v ? v.currentTime : 0; if (v) v.pause();
   $("#nbox").innerHTML = `<div class="box" style="margin-top:10px"><b>${fmt(t)}</b> <textarea id="ntx" placeholder="What should change here? e.g. 'the drop should hit harder', 'the type comes too late', 'love this'"></textarea>
     <div class="row" style="margin-top:8px"><button class="small" id="nsave">Save note</button><button class="ghost small" onclick="$('#nbox').innerHTML=''">Cancel</button></div></div>`;
@@ -838,6 +871,283 @@ function addNote() {
   $("#ntx").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#nsave").click(); e.stopPropagation(); };
 }
 async function noteEdit(id, ch) { S.notes = await post(`/api/p/${S.name}/note-edit`, {id, ...ch}); vWatch(); }
+
+// ---------------------------------------------------------------- the live player (the scenes in the browser, with the song)
+// livePlayer(el, {base, delivery: {w, h, fps}, n, size: [w, h], scale, layers, audio, offset: () => ms, onStatus, onClick,
+//                  window: [t0, t1]?}) -> {layers, P, play(), pause(), seek(t), destroy(), reload(ids), top(frame)}
+// The layers come from GET /api/p/<p>/live (tools/mv/live.py), bottom to top: an iframe from the project's live server
+// (a scene: the renderer's own page with the runtime in live mode), a muted <video> (a rendered pass) or a slate, each
+// shown only inside its slots (song frames [a, b)). The audio element is the clock: on every frame while it plays, and on
+// a seek or a pause, each scene gets {type: "mv-clock", t, playing, rate}; outside its slots it gets its next slot's first
+// frame (or its last one), paused, so it is ready when its slot comes. A scene loads when the playhead is within 15 s of
+// one of its slots (6 at most stay loaded); its status comes back as "mv-live" messages (the achieved fps, catching up,
+// errors). The picture runs `offset` ms behind the audio element (Bluetooth headphones play the sound late). While the
+// audio element loads a new source (a switch of stems), the picture holds where it was. A video layer follows the audio
+// within a frame (its speed nudged, or a seek when it is far off). With `window` (song seconds), play() starts at t0 when
+// the playhead is outside it and the audio pauses at t1 (the pitch round's proof window).
+// One piece, so it can be embedded anywhere (the Watch page; the pitch round's cards).
+function livePlayer(el, o) {
+  const fps = o.delivery.fps, n = Math.max(1, o.n), [W, H] = o.size, AHEAD = 15 * fps, KEEP = 6;
+  const P = {dead: false, raf: 0, seek: false, t: 0, f: 0, playing: false, k: 1, had: false, swap: 0};
+  el.innerHTML = `<div class="lv-stage"></div>`;
+  const stage = el.firstChild;
+  const layers = o.layers.map((l, z) => ({...l, z, el: null, st: null, sent: null, on: false}));
+  const fit = () => {
+    if (P.dead) return;
+    const ar = o.delivery.w / o.delivery.h, sw = Math.max(160, Math.floor(Math.min(el.clientWidth || 640, window.innerHeight * 0.6 * ar)));
+    stage.style.width = sw + "px"; stage.style.height = Math.round(sw / ar) + "px";
+    P.k = sw / W;
+    for (const l of layers) if (l.el && l.kind === "scene") l.el.style.transform = `scale(${P.k})`;
+  };
+  const slotAt = (l, f) => l.slots.find(([a, b]) => f >= a && f < b);
+  const near = (l, f) => l.slots.some(([a, b]) => f >= a - AHEAD && f < b + 3 * fps);
+  const dist = (l, f) => Math.min(...l.slots.map(([a, b]) => f < a ? a - f : f >= b ? f - b + 1 : 0));
+  function load(l) {
+    let e;
+    if (l.kind === "scene") {
+      e = document.createElement("iframe");
+      e.setAttribute("sandbox", "allow-scripts allow-same-origin");     // its own origin (the live server): no reach into this page
+      e.setAttribute("scrolling", "no"); e.tabIndex = -1; e.title = l.label;
+      Object.assign(e.style, {width: W + "px", height: H + "px", transformOrigin: "0 0", transform: `scale(${P.k})`});
+      e.onload = () => { l.sent = null; };                              // (re)loaded: its clock again
+      e.src = `${o.base}${l.src}&scale=${o.scale}`;
+    } else if (l.kind === "video") {
+      e = document.createElement("video"); e.muted = true; e.playsInline = true; e.preload = "auto"; e.src = l.video_url;
+    } else {
+      e = document.createElement("div"); e.className = "lv-slate";
+      e.innerHTML = `<b>${esc(l.label)}</b><span>${esc(l.note || "not playable live")}</span>`;
+    }
+    e.style.zIndex = l.z; e.style.opacity = 0;
+    if (l.mode && l.mode !== "normal") e.style.mixBlendMode = l.mode;
+    stage.appendChild(e);
+    Object.assign(l, {el: e, st: null, sent: null, loaded: performance.now()});
+  }
+  function unload(l) {
+    if (!l.el) return;
+    if (l.kind === "video") { l.el.pause(); l.el.removeAttribute("src"); l.el.load(); }
+    if (l.kind === "scene") l.el.src = "about:blank";
+    l.el.remove(); Object.assign(l, {el: null, st: null, sent: null, on: false});
+  }
+  function onMsg(e) {
+    if (e.origin !== o.base || !e.data || e.data.type !== "mv-live") return;
+    const l = layers.find(x => x.el && x.kind === "scene" && x.el.contentWindow === e.source);
+    if (l) l.st = e.data;
+  }
+  const onSeek = () => { if (P.swap && performance.now() - P.swap < 2000) { P.swap = 0; return; } P.seek = true; };  // (a new source put back where it was: no jump)
+  function loop() {
+    if (P.dead) return;
+    P.raf = requestAnimationFrame(loop);
+    const a = o.audio, off = (o.offset ? +o.offset() || 0 : 0) / 1000;
+    if (a && a.readyState >= 1) P.had = true;
+    const swap = !!a && P.had && a.readyState < 1;              // a new source is loading: its time reads 0 until it's in
+    if (swap) P.swap = performance.now();
+    if (a && o.window && !a.paused && a.currentTime >= o.window[1]) a.pause();
+    const t = swap ? P.t : Math.max(0, (a ? a.currentTime : 0) - off), f = clamp(Math.round(t * fps), 0, n - 1);
+    const playing = !swap && !!a && !a.paused && !a.seeking && !a.ended && a.readyState >= 3, rate = (a && a.playbackRate) || 1;
+    const seek = P.seek && !swap; if (!swap) P.seek = false;
+    Object.assign(P, {t, f, playing});
+    for (const l of layers) if (!l.el && (l.kind !== "scene" || near(l, f))) load(l);
+    const live = layers.filter(l => l.el && l.kind === "scene");
+    if (live.length > KEEP)
+      live.filter(l => !near(l, f)).sort((x, y) => dist(y, f) - dist(x, f)).slice(0, live.length - KEEP).forEach(unload);
+    for (const l of layers) {
+      if (!l.el) continue;
+      l.on = !!slotAt(l, f);
+      l.el.style.opacity = l.on ? (l.opacity ?? 1) : 0;
+      const nx = l.slots.find(([a0]) => a0 > f), last = l.slots[l.slots.length - 1];
+      const lt = l.on ? t : (nx ? nx[0] : last[1] - 1) / fps, lp = l.on && playing;
+      if (l.kind === "scene") {
+        const key = `${lt.toFixed(4)}|${lp}|${rate}`;
+        if (seek || lp || key !== l.sent) {
+          l.sent = key;
+          try { l.el.contentWindow.postMessage({type: "mv-clock", t: lt, playing: lp, rate, seek}, o.base); } catch (e) { /* still loading */ }
+        }
+      } else if (l.kind === "video") {
+        const v = l.el, want = Math.max(0, lt - (l.video_t0 || 0)), drift = v.currentTime - want;
+        if (lp) {
+          if (v.paused) v.play().catch(() => {});
+          if (Math.abs(drift) > 0.5) { v.currentTime = want; l.nudge = false; }          // far off: a seek
+          else if (Math.abs(drift) > 1 / fps) l.nudge = true;                           // a frame off: a little faster or slower
+          else if (Math.abs(drift) < 0.3 / fps) l.nudge = false;                        //   until it is back on the beat
+          const r = l.nudge ? rate * (1 - clamp(drift * 2, -0.1, 0.1)) : rate;
+          if (Math.abs(v.playbackRate - r) > 1e-3) v.playbackRate = r;
+        } else {
+          if (!v.paused) v.pause();
+          if (!v.seeking && Math.abs(v.currentTime - want) > 0.5 / fps) v.currentTime = want;
+        }
+      }
+    }
+  }
+  window.addEventListener("message", onMsg);
+  window.addEventListener("resize", fit);
+  if (o.audio) o.audio.addEventListener("seeking", onSeek);
+  const ro = window.ResizeObserver ? new ResizeObserver(fit) : null;
+  if (ro) ro.observe(el);
+  fit();
+  stage.onclick = () => o.onClick && o.onClick();
+  P.raf = requestAnimationFrame(loop);
+  const sti = o.onStatus ? setInterval(() => { if (!P.dead) o.onStatus(layers, P); }, 250) : 0;
+  return {
+    layers, P,
+    play() {
+      const a = o.audio; if (!a) return;
+      if (o.window && (a.currentTime < o.window[0] || a.currentTime >= o.window[1] - 0.05)) a.currentTime = o.window[0];
+      a.play().catch(() => {});
+    },
+    pause() { if (o.audio) o.audio.pause(); },
+    seek(t) { if (o.audio) o.audio.currentTime = Math.max(0, +t || 0); },
+    destroy() {
+      P.dead = true; cancelAnimationFrame(P.raf); clearInterval(sti); if (ro) ro.disconnect();
+      window.removeEventListener("message", onMsg); window.removeEventListener("resize", fit);
+      if (o.audio) o.audio.removeEventListener("seeking", onSeek);
+      layers.forEach(unload); el.innerHTML = "";
+    },
+    reload(ids) { layers.filter(l => ids.includes(l.id) && l.el && l.kind === "scene").forEach(l => { unload(l); load(l); }); },
+    top(f) { return layers.slice().reverse().find(l => !l.transparent && slotAt(l, f)) || null; },   // what the picture is made of there
+  };
+}
+
+// ---------------------------------------------------------------- 6b. the live view (Watch & review, "▶ live")
+// The project's scenes as they are now, played with the song: the timeline from work/live.json, the plan or the renders
+// (or a pitch's draft plan, or any scene alone), the song's lanes under it (#sv-au: Space, the click, the stems), N for a
+// note (version "live": a running director gets it within seconds). Every 5 s it looks again: a changed scene reloads.
+const LVS = {L: null, pick: null, player: null, poll: 0, wait: 0, sig: "", vers: {}, notes: "", opts: ""};
+const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode: not kept */ } };
+const lvOn = () => step === "watch" && wsel === "live";
+const lvOffset = () => +lsGet("mv-live-offset", "0") || 0;
+function lvStop() { clearInterval(LVS.poll); LVS.poll = 0; if (LVS.player) { LVS.player.destroy(); LVS.player = null; } }
+function lvTimelines(L) {             // the picker: the timelines, then each scene alone
+  return L.timelines.map(x => ({key: x.source, label: x.label, layers: x.layers, warnings: x.warnings || []}))
+    .concat(L.scenes.map(sc => ({key: "scene:" + sc.path, label: sc.path, single: true, warnings: [],
+      layers: [{id: "scene", kind: "scene", label: sc.path, scene: sc.path, src: sc.src, slots: [[0, L.n]], transparent: false,
+                mode: "normal", opacity: 1, version: sc.version ?? sc.mtime}]})));
+}
+const lvSig = tl => JSON.stringify(tl.layers.map(l => [l.id, l.kind, l.src, l.video, l.slots, l.transparent, l.mode, l.opacity, l.note]));
+function lvScaleNow() { const s = lsGet("mv-live-scale", "0.5"); return ["0.25", "0.5", "1"].includes(s) ? s : "0.5"; }
+async function vLive(L) {
+  LVS.L = L; SV.lvGap = 0;
+  const tls = lvTimelines(L);
+  if (!tls.some(x => x.key === LVS.pick)) LVS.pick = (tls.find(x => x.layers.length) || tls[0]).key;
+  const sc = lvScaleNow(), cur = S.song;
+  const stemChips = [["mix", "Mix", "M"], ["vocals", "Voice", "V"], ["drums", "Drums", "D"], ["bass", "Bass", "B"], ["other", "Other", "O"]].filter(([k]) => k === "mix" || cur.stems[k]);
+  if (SV.src !== "mix" && !cur.stems[SV.src]) SV.src = "mix";
+  $("#pane").innerHTML = `<h2>Watch &amp; review</h2>
+  <div class="vtabs"><span class="chip on" title="the scenes as they are now, in your browser with the song (no render)">&#9654; live</span>${S.versions.map(x => `<span class="chip" onclick="wsel='${x.label}';vWatch()">${esc(x.label)}${x.at ? ` <span class="mut" style="font-size:11px">${esc(x.at)}</span>` : ""}</span>`).join("")}</div>
+  <div class="row lv-bar"><select id="lv-pick" onchange="lvPick(this.value)">${LVS.opts = lvOptions(tls)}</select>
+    <span class="mut">size</span>${[["0.25", "&frac14;"], ["0.5", "&frac12;"], ["1", "full"]].map(([s, l]) => `<span class="chip ${s === sc ? "on" : ""}" data-scale="${s}" onclick="lvScale('${s}')" title="the scenes render at ${s === "1" ? "the delivery size" : s === "0.5" ? "half the delivery size" : "a quarter of the delivery size"} (${(L.sizes[s] || []).join("×")})">${l}</span>`).join("")}
+    <span class="sep" style="width:1px;height:20px;background:var(--line)"></span>
+    <label class="mut" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px" title="Bluetooth headphones play the sound late: if the picture runs ahead of what you hear, raise this until they meet (often 150-250 ms). Kept in this browser.">sound delay <input id="lv-off" type="number" step="10" min="0" max="2000" value="${lvOffset()}" onchange="lsSet('mv-live-offset', String(Math.max(0, Math.min(2000, +this.value || 0)))); this.blur()"> ms</label></div>
+  <div id="lv-player"></div>
+  <div class="lv-st" id="lv-st"></div><div id="lv-warn" class="hint"></div>
+  <p class="hint">The scenes as they are on disk, played in your browser with the song: no render. What you see is what renders (the same runtime), at the size you pick; a scene that is slower than real time drops frames but stays on time (a stateful one is then close to the render, not exact), and a stateful one catches up after a jump. A Blender segment plays as its preview render, a segment that isn't built yet as a slate. Click the picture or press <b>Space</b> to play; <b>N</b> for a note: during a run it reaches the director within seconds.</p>
+  <div class="sv-now" style="margin-top:8px"><div><div class="big" id="sv-sec">&nbsp;</div><div class="pos" id="sv-pos">&nbsp;</div></div><div class="ly" id="sv-ly"></div><div class="nx" id="sv-nx"></div></div>
+  <div class="row sv-ctl"><button class="small" id="sv-play" onclick="svToggle()" style="min-width:84px">&#9654; Play</button><span class="t" id="sv-t">0:00.0</span><span class="sep"></span>
+    ${stemChips.map(([k, l, key]) => `<span class="chip ${SV.src === k ? "on" : ""}" data-src="${k}" title="${key}" onclick="svSource('${k}')">${l}</span>`).join("")}
+    <span class="sep"></span>${[0.5, 0.75, 1].map(r => `<span class="chip ${SV.rate === r ? "on" : ""}" data-rate="${r}" onclick="svRate(${r})">${r}&times;</span>`).join("")}
+    <span class="sep"></span>${[[8, "8 bars"], [16, "16"], [32, "32"], [0, "whole song"]].map(([z, l]) => `<span class="chip ${SV.zoom === z ? "on" : ""}" data-zoom="${z}" onclick="svZoom(${z})">${l}</span>`).join("")}
+    <span class="sep"></span><span class="chip ${SV.follow ? "on" : ""}" id="sv-follow" onclick="svFollow(!SV.follow)">follow</span><span class="chip ${SV.click ? "on" : ""}" id="sv-click" onclick="svClick()" title="K">beat click</span></div>
+  <canvas class="sv" id="sv-ov"></canvas><canvas class="sv" id="sv-cv" style="height:380px"></canvas><div class="sv-hov" id="sv-hov">&nbsp;</div>
+  <audio id="sv-au" preload="auto" src="${SV.src === "mix" ? svMix() : cur.stems[SV.src]}"></audio>
+  <div class="row" style="margin-top:6px"><button onclick="lvAddNote()">+ Note at <span id="nt">0:00.0</span></button><span class="mut">or press <b>N</b> while it plays. A note here is on what you saw and heard at that moment; during a run the director gets it with the bar, the section and the scene.</span></div>
+  <div id="nbox"></div><div style="margin-top:14px" id="lv-notes"></div>`;
+  lvNotes(L.notes);
+  await svEnsure(); svWire();
+  const a = $("#sv-au");
+  a.addEventListener("timeupdate", () => { const e = $("#nt"); if (e) e.textContent = fmt(Math.max(0, a.currentTime - lvOffset() / 1000)); });
+  lvBuild();
+  clearInterval(LVS.poll); LVS.poll = setInterval(lvPoll, 5000);
+}
+function lvOptions(tls) {
+  const t = tls.filter(x => !x.single), s = tls.filter(x => x.single), o = x => `<option value="${esc(x.key)}" ${x.key === LVS.pick ? "selected" : ""}>${esc(x.label)}${x.layers.length ? "" : " (empty)"}</option>`;
+  return t.map(o).join("") + (s.length ? `<optgroup label="one scene, the whole song">${s.map(o).join("")}</optgroup>` : "");
+}
+function lvBuild() {                  // the player for the picked timeline at the picked size (the song plays on)
+  if (LVS.player) { LVS.player.destroy(); LVS.player = null; }
+  const L = LVS.L, tl = lvTimelines(L).find(x => x.key === LVS.pick), el = $("#lv-player");
+  if (!tl || !el) return;
+  const sc = lvScaleNow();
+  LVS.sig = lvSig(tl); LVS.vers = Object.fromEntries(tl.layers.map(l => [l.id, l.version]));
+  $("#lv-warn").innerHTML = (tl.warnings || []).map(w => `<div style="color:var(--acc)">${esc(w)}</div>`).join("") +
+    (tl.layers.length ? "" : `<div>Nothing to play in this timeline yet.</div>`);
+  LVS.player = livePlayer(el, {base: L.base, delivery: L.delivery, n: L.n, size: L.sizes[sc], scale: sc, layers: tl.layers,
+                               audio: $("#sv-au"), offset: lvOffset, onStatus: lvStatus, onClick: svToggle});
+}
+function lvPick(k) { LVS.pick = k; const e = $("#lv-pick"); if (e) e.blur(); lvBuild(); }   // (off the picker: Space and N work again)
+function lvScale(s) { lsSet("mv-live-scale", s); document.querySelectorAll(".lv-bar [data-scale]").forEach(c => c.classList.toggle("on", c.dataset.scale === s)); lvBuild(); }
+async function lvPoll() {             // every 5 s: a scene that changed reloads; a timeline that changed is built again
+  if (!lvOn() || !LVS.player) return;
+  let L; try { L = await api(`/api/p/${S.name}/live`); } catch (e) { return; }
+  if (!lvOn() || !LVS.player) return;
+  LVS.L = L;
+  const tls = lvTimelines(L), tl = tls.find(x => x.key === LVS.pick), sel = $("#lv-pick");
+  const opts = lvOptions(tls);
+  if (sel && opts !== LVS.opts && document.activeElement !== sel) { LVS.opts = opts; sel.innerHTML = opts; }
+  lvNotes(L.notes);
+  if (!tl) return;
+  if (lvSig(tl) !== LVS.sig) { toast("The timeline changed: playing the new one"); return lvBuild(); }
+  const changed = tl.layers.filter(l => l.kind === "scene" && LVS.vers[l.id] !== l.version).map(l => l.id);
+  tl.layers.forEach(l => { LVS.vers[l.id] = l.version; });
+  if (changed.length) { LVS.player.reload(changed); toast(`${changed.join(", ")} changed: reloaded`); }
+}
+function lvStatus(layers, P) {        // a line per layer: what it is, its slots, how it keeps up
+  const el = $("#lv-st"); if (!el) return;
+  const behind = P.playing && layers.some(l => l.on && l.st && l.st.ready && !l.st.catching_up && l.st.need && l.st.fps < l.st.need * 0.9);
+  SV.lvGap = behind ? Math.min(500, (SV.lvGap || 0) + 60) : Math.max(0, (SV.lvGap || 0) - 20);   // the lanes give way
+  const fps = LVS.L.delivery.fps, now = performance.now();
+  el.innerHTML = layers.map(l => {
+    const s = l.st || {}, sl = l.slots.map(([a, b]) => `${fmt(a / fps)}–${fmt(b / fps)}`).join(", ");
+    let what, cls = "";
+    if (l.kind === "slate") what = `<span class="mut">a slate: ${esc(l.note || "not playable live")}</span>`;
+    else if (l.kind === "video") what = `${esc(l.note || "a rendered pass")} <span class="mut">(${esc(l.video)})</span>`;
+    else if (!l.el) what = `<span class="mut">loads when the playhead comes near</span>`;
+    else if (s.reloading) what = "starting again from its setup (a stateful scene, after a jump back)&hellip;";
+    else if (!s.ready) what = s.nerr ? "" : now - (l.loaded || now) > 20000 && !l.st ? `<span class="bad">no answer from the page: see the browser's console (F12)</span>` : "setting up&hellip;";
+    else if (s.catching_up > 0) { what = `catching up ${Math.round(s.catching_up * 100)}% <span class="mut">(a stateful scene: every frame up to here)</span>`; cls = "slow"; }
+    else if (l.on && P.playing) {
+      const need = Math.round(s.need || 0), ok = (s.fps || 0) >= need * 0.9, cheap = s.ms != null && need && s.ms < 500 / need;
+      what = `<b>${s.fps}</b> of ${need} fps` + (ok ? "" : cheap ? " &middot; the browser is busy (not this scene): frames drop, the timing holds"
+                                                     : " &middot; slower than real time here: frames drop, the timing holds"); cls = ok ? "on" : "slow";
+    } else what = l.on ? "ready (paused)" : "ready, waiting for its slot";
+    if (l.kind === "scene" && s.ready && s.ms != null) what += ` <span class="mut">&middot; ${s.ms < 1 ? "&lt;1" : s.ms} ms a frame</span>`;
+    if (l.kind === "scene" && s.ready && s.approx) what += ` <span class="mut">&middot; skipping frames to keep time (a stateful scene slower than real time): close to the render, not exact</span>`;
+    if (s.nerr) { what += ` <span class="bad">${esc((s.errors || []).slice(-1)[0] || "")}${s.nerr > 1 ? ` (${s.nerr} errors)` : ""}</span>`; cls = "bad"; }
+    const lab = l.label === l.id ? "" : l.label.startsWith(l.id + " · ") ? l.label.slice(l.id.length + 3) : l.label;   // (not the id twice)
+    return `<div class="${cls}"><span class="sv-dot" style="background:${l.on ? "var(--acc)" : "#3a3a40"}"></span><b>${esc(l.id)}</b><span class="mut lv-k">${lab ? esc(lab) + " &middot; " : ""}${sl}</span><span>${what}</span></div>`;
+  }).join("");
+}
+function lvNotes(ns) {                // the live notes: done / undo / remove, and whether a run got them
+  if (ns) S.notes = S.notes.filter(n => n.version !== "live").concat(ns);
+  const el = $("#lv-notes"); if (!el) return;
+  const list = S.notes.filter(n => n.version === "live").sort((a, b) => a.t - b.t), key = JSON.stringify(list);
+  if (key === LVS.notes && el.innerHTML) return;
+  LVS.notes = key;
+  el.innerHTML = list.map(n => `<div class="note ${n.done ? "done" : ""}"><span class="ts" onclick="lvSeek(${n.t})">${fmt(n.t)}</span><span class="tx">${esc(n.text)}<small class="mut" style="display:block">${esc(n.scene || "")}${n.forwarded_run ? ` &middot; sent to the director (run ${esc(n.forwarded_run)})` : ""}</small>${n.fix ? `<span class="fx">fixed: ${esc(n.fix)}</span>` : ""}</span>
+    <button class="ghost small" onclick="lvNoteEdit(${n.id},{done:${!n.done}})">${n.done ? "undo" : "&#10003;"}</button><button class="ghost small" onclick="lvNoteEdit(${n.id},{delete:true})">&#10005;</button></div>`).join("")
+    || '<p class="mut">No live notes yet: press <b>N</b> while it plays.</p>';
+}
+function lvSeek(t) { svSeek(Math.max(0, t - 1 + lvOffset() / 1000), true); }
+async function lvNoteEdit(id, ch) { try { S.notes = await post(`/api/p/${S.name}/note-edit`, {id, ...ch}); LVS.notes = ""; lvNotes(); } catch (e) { toast(e.message); } }
+function lvAddNote() {
+  const a = svMedia(), t = Math.max(0, (a ? a.currentTime : 0) - lvOffset() / 1000); if (a) a.pause();
+  const fps = LVS.L ? LVS.L.delivery.fps : 30, top = LVS.player ? LVS.player.top(Math.round(t * fps)) : null;
+  const tl = LVS.L ? lvTimelines(LVS.L).find(x => x.key === LVS.pick) : null;
+  $("#nbox").innerHTML = `<div class="box" style="margin-top:10px"><b>${fmt(t)}</b> <span class="mut">${esc(top ? top.label : "")}</span><textarea id="ntx" placeholder="What should change here? e.g. 'the drop should hit harder', 'the type comes too late', 'love this'"></textarea>
+    <div class="row" style="margin-top:8px"><button class="small" id="nsave">Save note</button><button class="ghost small" onclick="$('#nbox').innerHTML=''">Cancel</button></div></div>`;
+  $("#ntx").focus();
+  $("#nsave").onclick = async () => {
+    const tx = $("#ntx").value.trim(); if (!tx) return;
+    try {
+      S.notes = await post(`/api/p/${S.name}/note`, {version: "live", t, text: tx, scene: top ? top.scene || top.video || top.label : "",
+                                                    layer: top ? top.id : "", timeline: tl ? tl.key : ""});
+    } catch (e) { return toast(e.message); }
+    $("#nbox").innerHTML = ""; LVS.notes = ""; lvNotes();
+    let j = {}; try { j = await api(`/api/p/${S.name}/job`); } catch (e) { /* no news */ }
+    toast(j.running && j.job === "direct" ? "Note saved: the director gets it as soon as it can act on it (while the final renders: in the next review round)"
+                                         : "Note saved: no run is going; the next run gets it in its brief");
+  };
+  $("#ntx").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#nsave").click(); e.stopPropagation(); };
+}
 
 // ---------------------------------------------------------------- the lyric timing editor (on The song page)
 // Tap along (Enter as each line starts), nudge, fix the words, add the repeats; the lanes and the line above them show
@@ -1260,8 +1570,8 @@ function svWire() {
       const st = m.sections.map(s => s.t0), i = bsearch(st, now + 0.05) - 1;
       const j = k === "]" ? i + 1 : (i >= 0 && now - st[i] > 1 ? i : i - 1);
       svSeek(st[clamp(j, 0, st.length - 1)], !a.paused);
-    } else if (step === "listen" && {m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]) svSource({m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]);
-    else if (step === "listen" && k.toLowerCase() === "k") svClick();
+    } else if ((step === "listen" || lvOn()) && {m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]) svSource({m: "mix", v: "vocals", d: "drums", b: "bass", o: "other"}[k.toLowerCase()]);
+    else if ((step === "listen" || lvOn()) && k.toLowerCase() === "k") svClick();
   };
   document.onkeyup = e => { if (step === "listen" && e.key === "Enter" && SV.ed && SV.ed.open) lxTapUp(); };
   SV.dirty = true;
@@ -1315,7 +1625,12 @@ function svLoop() {
   if (!a || !cv || !SV.m) { SV.raf = 0; return; }
   const t = a.currentTime, playing = !a.paused;
   if (playing && SV.follow && SV.zoom) { svCenter(t, 0.3); SV.dirty = true; }
-  if (playing || SV.dirty) { svDraw(t); svOverview(t); svNow(t); SV.dirty = false; }
+  // under the live view the scenes come first (they share this page's main thread): while a scene falls behind real
+  // time, the lanes are drawn less often (SV.lvGap, steered by the scenes' achieved fps: lvStatus); the line above
+  // them every frame
+  const gap = lvOn() && playing ? SV.lvGap || 0 : 0, now = performance.now();
+  if ((playing || SV.dirty) && now - (SV.drawAt || 0) >= gap) { svDraw(t); svOverview(t); svNow(t); SV.dirty = false; SV.drawAt = now; }
+  else if (playing) svNow(t);
   svClicks(a);
   SV.raf = requestAnimationFrame(svLoop);
 }

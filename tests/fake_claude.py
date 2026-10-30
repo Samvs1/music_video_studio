@@ -18,7 +18,10 @@ It speaks the same headless protocol the studio uses:
           work/plan.json (s1 builder, s2 planner + hero, s3 builder; cuts at bars[n//3] and bars[2n//3]); renders the
           hero with `studio.py pipeline render`; to the gate: keeps the language; to "the language is locked": renders
           the overlay; to the first assemble report: sets the stage to final; to the final: writes report.md. A
-          review round (the revise brief with the marker): marks the notes done, sets the stage to final.
+          review round (the revise brief with the marker): marks the notes done, sets the stage to final. To the
+          user's live notes ("playing your scenes live"): marks them done with a fix (the solo director too). Notes
+          are marked done the way the brief or the message says: `studio.py note-done <p> <id> "<fix>"`, by the ids
+          they give.
           FAKE_PLANNER=bad writes a plan.json that never validates (the solo fallback; to the switch it then runs the
           mini director like a solo director).
         - <!-- mv:builder -->: writes its scene (a copy of field.js) where the brief says, renders its segment preview
@@ -132,7 +135,7 @@ class Director:
         try:
             mini_director.run(os.getcwd(), log=lambda s: say(s.strip()))
             if "review round" in self.brief.lower():
-                mark_notes_done()
+                mark_notes_done(self.brief)
                 with open("report.md", "a", encoding="utf-8") as f:
                     f.write("\n## Round 2\nAddressed every note (test stand-in).\n")
             say("Delivered final/music-video.mp4 and wrote report.md.")
@@ -140,16 +143,32 @@ class Director:
             say(f"The mini director failed: {ex}")
 
     def answer(self, msg, say):
+        if "playing your scenes live" in msg:
+            return live_notes_done(msg, say)
         say(f"(studio said: {msg[:60]}...) Nothing more to improve in the test.")
 
 
-def mark_notes_done():
-    p = os.path.join("review", "notes.json")
-    notes = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
-    for n in notes:
-        if not n.get("done"):
-            n.update(done=True, fix="re-rendered (test stand-in)")
-    json.dump(notes, open(p, "w", encoding="utf-8"), indent=1)
+def notes_done(text, fix, say):
+    """Mark the notes a brief or a message names (by "(id N)") done with `studio.py note-done`, as the text says to (a
+    text that doesn't name the command marks nothing: the test then sees the notes still open)."""
+    ids = list(dict.fromkeys(re.findall(r"\(id (\d+)\)", text)))
+    if "studio.py note-done" not in text:
+        ids = []
+    proj = os.path.basename(os.getcwd())
+    for i in ids:
+        say(f"Marking note {i} done.", "Bash", {"command": f'studio.py note-done {proj} {i} "{fix}"'})
+        studio_cmd("note-done", proj, i, fix, log=say)
+    return ids
+
+
+def live_notes_done(msg, say):
+    """The user's live notes the studio forwarded: each marked done with a fix, by the id the message gives."""
+    ids = notes_done(msg, "the scene answers the note (test stand-in)", say)
+    say(f"Took the user's live note{'s' * (len(ids) != 1)} ({len(ids)}): marked done.")
+
+
+def mark_notes_done(brief, say=lambda *a, **k: None):
+    notes_done(brief, "re-rendered (test stand-in)", say)
 
 
 class Planner:
@@ -163,7 +182,7 @@ class Planner:
 
     def first(self, say):
         if "review round" in self.brief.lower():
-            mark_notes_done()
+            mark_notes_done(self.brief)
             with open("report.md", "a", encoding="utf-8") as f:
                 f.write("\n## Round 2\nAddressed every note through the pipeline (test stand-in).\n")
             edit_json(os.path.join("work", "plan.json"), lambda d: d.update(stage="final"))
@@ -208,6 +227,8 @@ class Planner:
         if "switching this run to solo" in msg:
             self.solo = Director(self.brief)
             return self.solo.first(say)
+        if "playing your scenes live" in msg:
+            return live_notes_done(msg, say)
         if "The language is locked" in msg:
             studio_cmd("pipeline", "render", self.project, "--preview", "--only", "type", log=say)
             say("Rendered the type overlay; s2 is drafted.")
