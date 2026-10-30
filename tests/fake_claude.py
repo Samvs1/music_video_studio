@@ -6,7 +6,9 @@ It speaks the same headless protocol the studio uses:
   claude auth status                                                   -> {"loggedIn": true}
   claude -p --output-format json ... (the prompt on stdin)             -> the story step: a song story from the song map;
         a prompt with <!-- mv:critic --> gets a canned critique instead (markdown + a json block, its worst problem at
-        the first ★★★ moment the prompt names; it says how many of the pictures it was told to open exist)
+        the first ★★★ moment the prompt names; it says how many of the pictures it was told to open exist); one with
+        <!-- mv:verdict --> (the pitch round's verdict) a canned verdict: p2 wins when there is a p2, graft ideas from
+        the others, the pictures it was told to open counted
   claude -p --input-format stream-json --output-format stream-json ... -> a session: reads the first message from
         stdin, emits init / assistant / tool_use / result events, answers the studio's follow-ups, exits when stdin
         closes. Like the real CLI (verified on Claude Code 2.1.311-2.1.312): every turn starts with a system/init and
@@ -33,6 +35,14 @@ It speaks the same headless protocol the studio uses:
           the session starts when the agent is done it runs `studio.py plan assemble --preview` (the critic on the
           film), `plan assemble --final` and `studio.py check`, and writes report.md. A message that comes while the
           agent works is noted in work/_fake_agent_heard.txt (the test sees what reached it then).
+        - <!-- mv:pitch -->: a pitch of the pitch round, in the pitch folder its brief names: pitch.md, a shared lib
+          and the proof scene (copies of tests/scenes/field.js importing it), two style frames (render.py --still), the
+          proof over the brief's --frames A:B at preview size (through the render queue); the second pitch also a
+          draft plan.json for the whole song (its scenes named where they'll live once picked: work/scenes/<id>/), the
+          first also a short background agent (haiku) that writes notes into its folder. To the studio's push to go
+          further it answers that this is its best. FAKE_PITCH="1:linger,2:md,3:fail" plays pitches that go wrong:
+          md writes only its pitch.md; fail writes nothing (its render "failed"); linger writes only its pitch.md and
+          keeps running after its input is closed (a CLI still at work: the studio has to stop it).
         - <!-- mv:echo -->: works FAKE_ECHO_S seconds (default 2) on each turn, then answers every message of the turn
           (the session plumbing's test). <!-- mv:echo-agent --> also starts a background agent in its first turn
           (FAKE_AGENT_S seconds, default 4) and says "echo: the agent finished" in the turn of its own after it.
@@ -40,6 +50,8 @@ FAKE_CLAUDE_SLOW=<s> (or a file of that name in the project) sleeps that long fi
 FAKE_CLAUDE_NO_BUDGET=1 refuses --max-budget-usd the way an older Claude Code would (unknown option).
 FAKE_CLAUDE_CRITIC_ERROR=1 answers a critic prompt the way Claude Code reports a login or usage-limit error: exit 1,
         is_error true and the error as the "result" text (with a cost).
+FAKE_VERDICT=nojson answers the verdict without its json block (the studio falls back to the critic's scores);
+        FAKE_VERDICT_S=<s> takes that long first (round.json must stay fresh meanwhile).
 """
 import json, os, re, sys, threading, time
 
@@ -129,6 +141,32 @@ def critic(prompt):
             f"pictures exist)\n\n```json\n{json.dumps(data)}\n```\n")
     emit({"type": "result", "subtype": "success", "result": text, "total_cost_usd": 0.0123, "is_error": False,
           "modelUsage": {"fake-critic": {}}})
+
+
+def verdict(prompt):
+    """A canned verdict of a pitch round: p2 wins when there is one (the last pitch otherwise), a graft idea from each
+    of the others; it says how many of the pictures it was told to open exist."""
+    time.sleep(float(os.environ.get("FAKE_VERDICT_S") or 0))
+    ks = [int(x) for x in re.findall(r"^### p(\d+) ·", prompt, re.M)] or [1]
+    titles = dict((int(k), t) for k, t in re.findall(r'^### p(\d+) · [^\n]*? · "([^"\n]*)"', prompt, re.M))
+    win = 2 if 2 in ks else ks[-1]
+    pics = re.findall(r"`([^`]+\.png)`", prompt)
+    there = sum(os.path.exists(p) for p in pics)
+    rank = [win] + [k for k in ks if k != win]
+    data = {"winner": win, "ranking": rank, "verdict": f"p{win} is the boldest pitch that can be made well (test stand-in).",
+            "why": "Its proof changes the rules on the ★★★ moment (test stand-in).",
+            "scores": {str(k): {"ambition": 8 if k == win else 6, "song_fit": 7, "buildable": 8, "craft": 7} for k in ks},
+            "graft": [{"from": k, "idea": f"p{k}'s freeze on the stop (test stand-in)", "where": "the stop"} for k in ks if k != win],
+            "push": ["let the chorus break the field's rule completely (test stand-in)"]}
+    text = (f"# Verdict: pitch round (test stand-in)\n**Winner:** p{win}, \"{titles.get(win, '')}\": the boldest that can be "
+            f"made well.\n\n## Ranking\n" + "\n".join(f"{i}. **p{k} \"{titles.get(k, '')}\"**: ambition "
+                                                     f"{data['scores'][str(k)]['ambition']} · song fit 7 · buildable 8 · craft 7."
+                                                     for i, k in enumerate(rank, 1))
+            + "\n\n## Ideas worth grafting into the winner\n" + "\n".join(f"- from p{g['from']}: {g['idea']}" for g in data["graft"])
+            + f"\n\n## What the winner's director should push\n- the chorus (test stand-in: {there} of {len(pics)} pictures "
+            f"exist)\n" + ("" if os.environ.get("FAKE_VERDICT") == "nojson" else f"\n```json\n{json.dumps(data)}\n```\n"))
+    emit({"type": "result", "subtype": "success", "result": text, "total_cost_usd": 0.0211, "is_error": False,
+          "modelUsage": {"fake-verdict": {}}})
 
 
 def text_of(line):
@@ -314,6 +352,93 @@ class AgentDirector(Director):
         super().answer(msg, say)
 
 
+class Pitch:
+    """A pitch of the pitch round (<!-- mv:pitch -->), in the pitch folder its brief names."""
+
+    def __init__(self, brief, q, costs):
+        self.brief, self.q, self.costs = brief, q, costs
+        m = re.search(r"work/pitches/round-\d+/p(\d+)", brief)
+        self.dir, self.k = (m.group(0), int(m.group(1))) if m else ("work/pitches/round-0/p0", 0)
+        fr = re.search(r"--frames (\d+):(\d+)", brief)
+        self.a, self.b = (int(fr.group(1)), int(fr.group(2))) if fr else (0, 60)
+        an = re.search(r"your angle is \*\*(.+?)\*\*", brief)
+        self.angle = an.group(1) if an else "?"
+        self.project = os.path.basename(os.getcwd())
+        self.agent = None
+        modes = dict(x.split(":", 1) for x in (os.environ.get("FAKE_PITCH") or "").split(",") if ":" in x)
+        self.mode = modes.get(str(self.k), "full")
+        self.lingers = self.mode == "linger"         # it keeps running after its input is closed
+
+    def running(self):
+        return bool(self.agent and not self.agent.done)
+
+    def first(self, say):
+        d, k = self.dir, self.k
+        if self.mode in ("md", "linger", "fail"):
+            os.makedirs(d, exist_ok=True)
+            if self.mode != "fail":
+                open(os.path.join(d, "pitch.md"), "w", encoding="utf-8").write(
+                    f"# Only a pitch ({self.mode}, pitch {k})\n\n**The idea:** A pitch without its proof (test stand-in, "
+                    f"{self.mode}).\n")
+                say("Wrote pitch.md; the proof render failed.", "Write", {"file_path": f"{d}/pitch.md"})
+            else:
+                say("The proof render failed; nothing to deliver.")
+            return
+        say(f"Pitch {k} ({self.angle}): reading the song, then the proof over frames {self.a}:{self.b}.", "Read",
+            {"file_path": "song/README.md"})
+        field = open(os.path.join(TESTS, "scenes", "field.js"), "rb").read()
+        imp = b'import { LOOK } from "../lib/look.js";   // the pitch\'s shared look\n'
+        for sub in ("lib", "proof", "style"):
+            os.makedirs(os.path.join(d, "scenes" if sub != "style" else "", sub), exist_ok=True)
+        open(os.path.join(d, "scenes", "lib", "look.js"), "wb").write(
+            f'// the shared look of pitch {k} (smoke test)\nexport const LOOK = {{ink: "#e9e4d8", pitch: {k}}};\n'.encode())
+        open(os.path.join(d, "scenes", "proof", "scene.js"), "wb").write(imp + field)
+        pj = json.load(open("project.json", encoding="utf-8"))
+        fps = int((pj.get("format") or {}).get("fps") or 30)
+        m = json.load(open(os.path.join("song", "song-map.json"), encoding="utf-8"))
+        if k == 2:                                     # a draft plan for the whole song
+            bars = [b["t"] for b in m["bars"]]
+            c1 = round(bars[len(bars) // 2], 3)
+            for sid in ("s1", "s2"):
+                os.makedirs(os.path.join(d, "scenes", sid), exist_ok=True)
+                open(os.path.join(d, "scenes", sid, "scene.js"), "wb").write(imp + field)
+            plan = {"segments": [{"id": "s1", "name": "s1 (pitch 2)", "from": 0.0, "to": c1, "renderer": "web",
+                                  "scene": "work/scenes/s1/scene.js"},
+                                 {"id": "s2", "name": "s2 (pitch 2)", "from": c1, "to": m["duration"], "renderer": "web",
+                                  "scene": "work/scenes/s2/scene.js"}]}
+            json.dump(plan, open(os.path.join(d, "plan.json"), "w", encoding="utf-8"), indent=1)
+            say("Wrote a draft plan.", "Write", {"file_path": f"{d}/plan.json"})
+        open(os.path.join(d, "pitch.md"), "w", encoding="utf-8").write(
+            f"# The field, dealt from {self.angle} (pitch {k})\n\n**The idea:** A field of marks re-dealt on every downbeat, "
+            f"seen from {self.angle}; the stop freezes it mid-deal. Test stand-in, pitch {k}.\n\n**Why this song:** its "
+            f"downbeats are its spine.\n\n## The visual language\nSquare marks, one ink (#e9e4d8) on four grounds.\n\n"
+            f"## Signature moments\n- 12:0 the chorus: the field re-deals itself.\n\n## Section plan\n| time | bars | music "
+            f"| picture |\n|---|---|---|---|\n| 0:00 | 0-4 | intro | the field |\n\n## Unlike the defaults\nNo spectrum bars.\n\n"
+            f"## How it gets made\nThe web engine (2D canvas): about a minute here.\n\n## Risks\nNone (test stand-in).\n")
+        say("Wrote pitch.md.", "Write", {"file_path": f"{d}/pitch.md"})
+        t1, t2 = round((self.a + (self.b - self.a) / 3) / fps, 2), round((self.a + 2 * (self.b - self.a) / 3) / fps, 2)
+        say("Two style frames.", "Bash", {"command": f"studio.py run {self.project} web-engine/render.py ... --still {t1},{t2}"})
+        studio_cmd("run", self.project, "web-engine/render.py", f"{d}/scenes/proof/scene.js", "--still", f"{t1},{t2}",
+                   "--out", f"{d}/style", log=say)
+        say("The proof.", "Bash", {"command": f"studio.py run {self.project} web-engine/render.py ... --frames {self.a}:{self.b}"})
+        studio_cmd("run", self.project, "web-engine/render.py", f"{d}/scenes/proof/scene.js", "--frames", f"{self.a}:{self.b}",
+                   "--preview", "--out", f"{d}/proof.mp4", log=say)
+        if k == 1:
+            self.agent = Agent(self.q, self.costs, "pitch notes", "haiku", work=self.notes, seconds=2.0)
+            self.agent.launch()
+        say(f"Pitch {k} is delivered.")
+
+    def notes(self, say):
+        say("Writing the notes.", "Write", {"file_path": f"{self.dir}/notes-agent.md"})
+        open(os.path.join(self.dir, "notes-agent.md"), "w", encoding="utf-8").write("# Notes (the pitch's agent, test stand-in)\n")
+
+    def answer(self, msg, say):
+        say("This is my best: ending." if "push it further" in msg or "Before you end" in msg else f"(studio said: {msg[:60]})")
+
+    def own(self, agent, say):
+        say("The agent's notes are in.")
+
+
 class Echo:
     """Works a little on each turn; says what it got (the session plumbing's test). <!-- mv:echo-agent --> also starts
     a background agent in its first turn."""
@@ -358,7 +483,7 @@ def session(argv):
     threading.Thread(target=reader, daemon=True).start()
     first = q.get()
     brief = (text_of(first) or "") if first else ""
-    role = Echo if "<!-- mv:echo" in brief else director_kind()
+    role = Echo if "<!-- mv:echo" in brief else Pitch if "<!-- mv:pitch -->" in brief else director_kind()
     model = f"fake-{role.__name__.lower()}"
     cap = float(argv[argv.index("--max-budget-usd") + 1]) if "--max-budget-usd" in argv else None
     costs = Costs(model, cap)
@@ -373,6 +498,10 @@ def session(argv):
     time.sleep(float(slow))
     who.first(say)
     turns, done, capped = 2, first is None, False
+
+    def end():                                     # stdin closed: it exits (a lingering one keeps "working")
+        if getattr(who, "lingers", False):
+            time.sleep(600)
 
     def handle(item):
         nonlocal turns, done
@@ -397,10 +526,10 @@ def session(argv):
         capped = capped or costs.over()
         result(turns, t0, costs, capped)
         if done:
-            return
+            return end()
         item = q.get()                             # idle until the next message, or one of its agents finishing
         if item is None:
-            return
+            return end()
         t0, turns = time.time(), 0
         emit(init)                                 # every turn starts with an init (the real CLI's way)
         handle(item)
@@ -423,7 +552,7 @@ def main():
             emit({"type": "result", "subtype": "success", "is_error": True, "result": "Invalid API key · Please run /login",
                   "total_cost_usd": 0.004})
             sys.exit(1)
-        critic(prompt) if "<!-- mv:critic -->" in prompt else story()
+        critic(prompt) if "<!-- mv:critic -->" in prompt else verdict(prompt) if "<!-- mv:verdict -->" in prompt else story()
     else:
         print("fake claude: nothing to do", file=sys.stderr)
         sys.exit(2)

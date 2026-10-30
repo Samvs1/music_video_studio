@@ -299,13 +299,15 @@ def tree_files(d, skip=()):
 
 def scene_inputs(scene, project, skip=()):
     """What a Blender scene's render depends on, besides the settings: its own folder (work/scenes/<name>/ with its
-    modules and assets; only the file itself when it lies loose in work/scenes/, work/ or the project), and the shared
-    code every scene may import (work/scenes/lib/, work/kit/: mvblend puts them on sys.path). A change in any of them
-    renders the scene again."""
+    modules and assets; only the file itself when it lies loose in work/scenes/, work/ or the project), the lib folder
+    next to it (a pitch's scenes/lib/ for its scenes/<name>/), and the shared code every scene may import
+    (work/scenes/lib/, work/kit/: mvblend puts them all on sys.path). A change in any of them renders the scene again."""
     project, scene = os.path.abspath(project), os.path.abspath(scene)
     d = os.path.dirname(scene)
     loose = os.path.normcase(d) in {os.path.normcase(os.path.join(project, *p)) for p in ((), ("work",), ("work", "scenes"))}
-    files = {scene} | (set() if loose else set(tree_files(d, skip)))
+    files = {scene}
+    if not loose:
+        files.update(tree_files(d, skip), tree_files(os.path.join(os.path.dirname(d), "lib"), skip))
     for p in SHARED_CODE:
         files.update(tree_files(os.path.join(project, *p), skip))
     return sorted(files)

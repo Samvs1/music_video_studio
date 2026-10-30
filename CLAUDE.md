@@ -15,7 +15,8 @@ what it can't hear; Claude Code directs the video, interactively (`/musicvideo <
   import (the render caches follow them); `work/segments/<id>/` a plan segment's renders, log and eyes; `work/plan/`
   the plan tools' render times and assemble logs; `work/previews/preview_N.mp4` the full previews the critic looks at,
   `work/critic/` its critiques + `log.jsonl` + `pending/`; `work/director/run-N/` a run's brief, events, messages and
-  status.json with its agents and costs per model),
+  status.json with its agents and costs per model; `work/pitches/round-K/` an optional pitch round: `round.json`,
+  `verdict.md`, and per pitch `pN/` its pitch.md, scenes, style frames, proof and the critic's notes),
   `final/` (`music-video.mp4` + `music-video_vN.mp4`, never overwritten; `critic_vN.md/.json`: the critic's notes on
   each version, rewritten by "Ask the critic"), `report.md`, `review/notes.json`.
 - `tools/README.md`: every tool. `tools/installed.md`: what this machine has. `tools/speeds.json`: render speeds here.
@@ -32,8 +33,9 @@ what it can't hear; Claude Code directs the video, interactively (`/musicvideo <
   <id> "<fix>"` (the web app writes `review/notes.json` too).
 - `.claude/skills/musicvideo/SKILL.md`: how a run works (full reign, the critic, live notes; optional agents and plan
   tools), the director's workflow and craft rules (+ `anti-defaults.md`).
-- `templates/`: the director brief, the revise brief, the story prompt, the critic's prompt. `app/`: the web app.
-  `tests/`: smoke + server tests.
+- `templates/`: the director brief, the revise brief, the story prompt, the critic's prompt, the pitch brief and the
+  pitch verdict. `tools/pitch.py` (`studio.py pitch`): the optional pitch round. `app/`: the web app (with its
+  optional Pitch round page). `tests/`: smoke + server tests.
 
 ## A run (autonomous or interactive)
 One director (the top model, effort max by default) with full reign: it builds the video itself, or deploys agents
@@ -42,7 +44,10 @@ the Workflow tool; nothing forces agents). If agents build parts, the look, char
 code the director owns (`work/scenes/lib/`, `work/kit/`). Agents share the director's sandbox and its cost
 (`--max-usd` caps the session). The cheap critic looks at every preview and the final and reports back in text
 (ambition first); the user's live notes reach the director mid-run. `studio.py direct <p> --budget 90m [--ultracode]
-[--max-usd N]`.
+[--max-usd N]`. Optional before a run, and only when the user starts it: a pitch round (`studio.py pitch <p>`):
+several directors pitch from different angles with a short proof at the song's biggest moment, the critic ranks
+them (ambition first), the user picks; `direct --pitch round-K/pN` starts the director from that pitch, a starting
+point to go further from, with full reign. A director never starts a pitch round itself.
 
 ## Running things
 Always through the studio's venv: `.venv\Scripts\python.exe tools\studio.py ...` (Windows; prefix
@@ -71,7 +76,8 @@ venv. Bash heredocs mangle quotes: for non-trivial patches write a small script 
 ## Working on the studio itself
 - Python 3.11-3.13 (no 3.12-only syntax: run `python3.11 -m py_compile`); `tools/mv/song.py` and
   `tools/blender/mvblend.py` also run inside Blender's own Python. Windows is the main target: no POSIX-only calls,
-  paths via `os.path`, subprocess lists (no shell strings).
+  paths via `os.path`, subprocess lists (no shell strings). A Blender scene's own folder, its sibling `lib/`
+  (`<scene dir>/../lib`), `work/scenes/lib/` and `work/kit/` are on its `sys.path` and in its render cache key.
 - Tests: `python tests/smoke_test.py` (synthetic song → ingest → web engine + Blender → compose → every check →
   the director runner with a stand-in for Claude) and `python tests/test_server.py` (the web app's API + each page in
   headless Chromium). Both must pass. `studio.py permtest <p>` checks the director's sandbox, and an agent's, with

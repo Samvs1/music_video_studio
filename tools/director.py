@@ -260,6 +260,14 @@ def clock(pdir):
     now = time.time()
     c = run_active(pdir)
     if not c:
+        import pitch
+        r = pitch.round_active(pdir)
+        if r:                                    # a pitch round: its directors share one deadline
+            left = r["deadline"] - now
+            print(f"{time.strftime('%H:%M:%S')}  pitch round {r['round']}: elapsed {fmt_dur(now - r['started'])} of "
+                  f"{fmt_dur(r['budget_s'])}; {'LEFT ' + fmt_dur(left) if left > 0 else 'TIME IS UP: finish now'} "
+                  f"(deadline {hm(r['deadline'])})")
+            return
         c = current(pdir)
         print("no autonomous run is going on (no time budget). " + (f"Last run: {c.get('state')}" if c else "")
               + (" (its runner stopped writing: it was cut off)" if c and c.get("state") in ("running", "finishing") else ""))
@@ -302,7 +310,10 @@ def looking(critic, project, python, tools):
             "agents': they don't open frames to judge them.", "the looking stays yours")
 
 
-def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadline=None, critic=None, ultracode=False):
+def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadline=None, critic=None, ultracode=False,
+                pitch_text=""):
+    """The run's brief (templates/director-brief.md, or revise-brief.md for a review round). pitch_text: the short
+    section on the pitch the run starts from (pitch.brief_section), "" without one."""
     pj = load_pj(pdir)
     d = delivery(pj)
     sf = song_file(pdir)
@@ -313,7 +324,7 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
             "height": d["height"], "fps": d["fps"], "budget": fmt_dur(budget_s), "tools": tools, "project": name,
             "python": venv_python(pdir), "started": hm(started), "deadline": hm(deadline) + f" (in {fmt_dur(budget_s)})",
             "skill": rel(SKILL, pdir), "anti": rel(os.path.join(os.path.dirname(SKILL), "anti-defaults.md"), pdir),
-            "refs": refs_brief(pdir, pj), "ultracode": ULTRACODE_LINE if ultracode else ""}
+            "refs": refs_brief(pdir, pj), "ultracode": ULTRACODE_LINE if ultracode else "", "pitch": pitch_text}
     vals["critic"] = critic_brief(critic, name, vals["python"], tools)
     vals["looking"], vals["looking_short"] = looking(critic, name, vals["python"], tools)
     notes = user_notes(pj, seed_notes)
@@ -359,10 +370,12 @@ def rule_path(p):
     return "/" + q
 
 
-def claude_args(pdir, model, effort, ultracode=False, max_usd=None):
+def claude_args(pdir, model, effort, ultracode=False, max_usd=None, extra_deny=(), settings_path=None, system=None):
     """The stream-json session's command with the director's sandbox (its agents share it): the project is the
     director's, the studio's own folders are read-only, no network. ultracode adds the Workflow tool; max_usd is a
-    hard cap on the session's spending (--max-budget-usd)."""
+    hard cap on the session's spending (--max-budget-usd). The pitch round's directors get more deny rules (extra_deny:
+    everything in the project outside their own pitch folder that matters), their own settings file and system
+    prompt."""
     cl = claude_bin()
     if not cl:
         raise SystemExit("Claude Code isn't installed: https://claude.com/claude-code (or set MV_CLAUDE)")
@@ -370,8 +383,9 @@ def claude_args(pdir, model, effort, ultracode=False, max_usd=None):
     for d in ("tools", "assets", ".claude", "templates", "app"):             # the studio itself is read-only to the director
         rp = rule_path(os.path.join(STUDIO, d))
         deny += [f"Edit({rp}/**)", f"Write({rp}/**)"]
-    settings_d = {"permissions": {"deny": deny + ["WebFetch", "WebSearch"]}}
-    sp = os.path.join(pdir, "work", "director", "settings.json")    # a file, not inline JSON (cmd.exe-safe on Windows)
+    settings_d = {"permissions": {"deny": deny + list(extra_deny) + ["WebFetch", "WebSearch"]}}
+    # a file, not inline JSON (cmd.exe-safe on Windows)
+    sp = settings_path or os.path.join(pdir, "work", "director", "settings.json")
     os.makedirs(os.path.dirname(sp), exist_ok=True)
     with open(sp, "w", encoding="utf-8") as f:
         json.dump(settings_d, f, indent=1)
@@ -379,7 +393,7 @@ def claude_args(pdir, model, effort, ultracode=False, max_usd=None):
            "--permission-mode", "dontAsk", "--allowedTools", *ALLOWED, *(ULTRACODE if ultracode else []),
            "--disallowedTools", *DISALLOWED, "--settings", sp, "--add-dir", os.path.join(STUDIO, "tools"),
            os.path.join(STUDIO, "assets"), os.path.join(STUDIO, ".claude", "skills"), os.path.join(STUDIO, "templates"),
-           "--strict-mcp-config", "--append-system-prompt", SYSTEM_APPEND]
+           "--strict-mcp-config", "--append-system-prompt", system or SYSTEM_APPEND]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -1111,7 +1125,8 @@ class Runner:
         return status
 
     RUN_KEYS = ("run", "kind", "model", "model_used", "effort", "ultracode", "max_usd", "budget_hit", "budget", "wall_s",
-                "cost_usd", "turns", "version", "result", "stop_reason", "claude_version", "critic_model", "critic_cost_usd")
+                "cost_usd", "turns", "version", "result", "stop_reason", "claude_version", "critic_model", "critic_cost_usd",
+                "pitch")
 
     def keep_record(self, v):
         """report.md's run settings, status.json, current.json, project.json runs."""
@@ -1165,10 +1180,13 @@ class Runner:
 
 
 def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=False, nudge=True, dry_run=False,
-           critic_model=None, critic_effort=None, critic_max=6, ultracode=False, max_usd=None, log=print):
+           critic_model=None, critic_effort=None, critic_max=6, ultracode=False, max_usd=None, pitch=None, picked_by=None,
+           log=print):
     """The autonomous run: one director session (model: the project's, else opus; effort default max) with full reign,
     agents its choice (ultracode: the Workflow tool too; max_usd: a hard cap on the session's spending), the critic
-    watcher, the user's live notes. Returns the run's status."""
+    watcher, the user's live notes. pitch ("round-K/pN"): first the pitch round's pitch is put in place (pitch.promote:
+    the concept, the scenes, the style frames, a draft plan) and the brief says to build it and go further; picked_by
+    "auto" when the round's verdict picked it (studio.py pitch --auto). Returns the run's status."""
     from studio import Status
     import critic as crit
     if not os.path.exists(os.path.join(pdir, "song", "song-map.json")):
@@ -1176,6 +1194,13 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     budget_s = parse_budget(budget)
     if max_usd is not None and float(max_usd) <= 0:
         raise SystemExit("--max-usd must be more than 0 (leave it out for no cap)")
+    if pitch and revise:
+        raise SystemExit("a review round builds on the version you watched: it doesn't start from a pitch (leave out --pitch)")
+    import pitch as pitches
+    if not dry_run and pitches.round_active(pdir):
+        raise SystemExit("a pitch round is going on in this project: let it finish (or `studio.py stop`) first")
+    if pitch:                                  # a pitch that can't be built is refused before anything is made or moved
+        pitches.promote(pdir, pitch, dry=True, log=lambda x: None)
     pj = load_pj(pdir)
     model = model or (pj.get("director") or {}).get("model") or "opus"
     effort = effort or "max"
@@ -1197,11 +1222,15 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
                        env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     except Exception:
         pass
+    picked = None
+    if pitch:                                  # the pitch in place before the clock starts (its brief section names it)
+        picked = pitches.promote(pdir, pitch, by="auto" if picked_by == "auto" else "the user", run=n, dry=dry_run, log=log)
     started = time.time()
     deadline = started + budget_s
     critic = {"model": critic_model, "effort": critic_effort, "max": critic_max} if use_critic else None
     text = build_brief(pdir, budget_s, seed_notes, revise, started, deadline,
-                       critic=(critic_model, critic_max) if use_critic else None, ultracode=ultracode)
+                       critic=(critic_model, critic_max) if use_critic else None, ultracode=ultracode,
+                       pitch_text=pitches.brief_section(picked) if picked else "")
     open(os.path.join(rdir, "brief.md"), "w", encoding="utf-8").write(text)
     cmd = claude_args(pdir, model, effort, ultracode=ultracode, max_usd=max_usd)
     json.dump({"cmd": cmd, "cwd": pdir}, open(os.path.join(rdir, "command.json"), "w"), indent=1)
@@ -1215,7 +1244,10 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
               "budget_s": budget_s, "budget": fmt_dur(budget_s), "started": started, "deadline": deadline,
               "claude_version": cver, "events": [], "turns": 0, "cost_usd": 0.0, "model_usage": {}, "agents": [],
               "messages_sent": [], "pid": None, "critic_model": critic_model if use_critic else "off",
-              "critic_effort": critic_effort if use_critic else None, "critiques": [], "critic_cost_usd": 0.0}
+              "critic_effort": critic_effort if use_critic else None, "critiques": [], "critic_cost_usd": 0.0,
+              "pitch": {"ref": picked["ref"], "title": picked["title"], "angle": picked["angle"], "by": picked["by"],
+                        "proof_av": picked["proof_av"], "round_cost_usd": picked.get("cost_usd"),
+                        "round_costs": picked.get("costs"), "chained": picked_by == "auto"} if picked else None}
     if dry_run:
         log(text)
         log("\n" + " ".join(cmd[:4]) + " ... (dry run: not started)")
@@ -1233,7 +1265,8 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     R.send(text, "the brief")
     log(f"director run {n}: {model}, effort {effort}, budget {fmt_dur(budget_s)} (until {hm(deadline)})"
         + (f"; critic {critic_model}" if use_critic else "; no critic") + ("; ultracode" if ultracode else "")
-        + (f"; cost cap ${float(max_usd):g}" if max_usd else ""))
+        + (f"; cost cap ${float(max_usd):g}" if max_usd else "")
+        + (f"; starting from pitch {picked['ref']}" + (f" \"{picked['title']}\"" if picked["title"] else "") if picked else ""))
     try:
         R.loop()
     finally:
@@ -1325,6 +1358,17 @@ def append_settings(pdir, status, v):
                      + (f"; +{len(agents) - 8} more" if len(agents) > 8 else ""))
     else:
         lines.append("- Agents: none (the director built everything itself)")
+    pt = status.get("pitch") or {}
+    if pt:
+        rc = pt.get("round_costs") or {}
+        lines.append(f"- Started from pitch {pt.get('ref')}" + (f" \"{pt['title']}\"" if pt.get("title") else "")
+                     + f" ({pt.get('angle')}), picked by " + ("the round's verdict (--auto: the round and this run in one job)"
+                                                             if pt.get("by") == "auto" else "the user")
+                     + (f"; the pitch round cost {money(pt.get('round_cost_usd'))}" if pt.get("round_cost_usd") is not None else "")
+                     + (f" (the pitches {money(rc.get('pitches'))}, the critic {money(rc.get('critic'))}, the verdict "
+                        f"{money(rc.get('verdict'))})" if rc else "")
+                     + (f"; the round and this run together: {money(total_cost(status) + float(pt.get('round_cost_usd') or 0))}"
+                        if pt.get("chained") else ""))
     lines.append(f"- Delivered: {ver}" + (f"; checks {v.get('checks')}" if v else ""))
     if status.get("critic_model") not in (None, "off"):
         from critic import score_line
@@ -1342,8 +1386,11 @@ def append_settings(pdir, status, v):
 
 
 def request_stop(pdir):
+    """Ask the running director to stop cleanly, and a running pitch round too (pitch.py: work/pitches/STOP)."""
     os.makedirs(os.path.join(pdir, "work", "director"), exist_ok=True)
     open(os.path.join(pdir, "work", "director", "STOP"), "w").write(time.strftime("%Y-%m-%d %H:%M:%S"))
+    import pitch
+    pitch.request_stop(pdir)
 
 
 def permission_test(pdir, model="haiku", log=print, timeout=600):

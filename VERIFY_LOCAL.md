@@ -221,6 +221,52 @@ scenes (after step 8 or 8d):
 - F12 → Console: no errors (a scene's own error shows in red on its layer's line instead). When paused, the live view
   uses little CPU (Task Manager: the browser well under one core).
 
+## 8g. A pitch round: three directors pitch, you pick one (uses your Claude plan: about three short director sessions)
+First the pitches' sandbox, cheaply: `.venv\Scripts\python.exe tools\studio.py permtest <p> --pitch` (a few cents with
+Haiku): five `[PASS]` lines (its own folder writable; another pitch's folder, `work\scenes\`, `final\` and the
+studio's tools refused). On Windows this is the check that the `//c/...` rules hold for the pitch folders too.
+Then in the web app, on a project that has its song folder and your notes (no director run needed first):
+- the step list has **Pitch round** between Story and Direct, with no number and marked *optional*; the page opens
+  with the choice: **Hold a pitch round** or **Skip it** (Go to Direct). Does it read as a choice, not a step you
+  have to take? Tell Claude if it doesn't;
+- the form: 3 pitches, 20 minutes each, the model (the project's director model; Sonnet for a cheaper round),
+  effort high, the critic Sonnet; "Their angles: the story, the wild card, the sound and the structure" under it.
+  **Start the pitch round**. Within seconds a box at the top: *Round 1 pitching*, the time left, the proof window
+  (`0:xx–0:yy of the song (... s, bar:beat ...)`: a 12-24 s window around the song's biggest moment, a chorus start or
+  a drop), and a line per pitch: its angle, *at work*, its time, its cost, its agents, its last lines, all three at
+  once. In Task Manager one render at a time (the pitches' proof renders queue: `waiting for the render queue` in a
+  pitch's lines while another renders); `studio.py clock <p>` prints the round's time left;
+- after ~20-25 min the box says *judging* (the proofs get the song's audio, the critic looks at each proof, the
+  verdict), then **Round 1** appears as cards, above the form (which now offers *Hold another pitch round*). Per pitch: its title, angle, the idea in two sentences, 2-3 style
+  frames (click one: it opens large), the proof (**play it with the sound: the picture should land on the music you
+  hear; tell Claude if a proof is out of step**), the critic's scores and notes on it; above them the verdict: the
+  critic's pick (★, its card outlined), the ranking, why, the ideas worth grafting, what to push, and the round's
+  cost (pitches + the critic + the verdict). Judge for yourself: are the three really different from each other,
+  and bold? Is the verdict's pick the most ambitious one, not the safest? Tell Claude where it isn't;
+- **▶ live** on a card: its scenes (or its draft plan) play in the card with the song from the start of the proof
+  window and stop at its end; the slider moves within the window; ✕ close gives the proof back. Opening another
+  card's live view closes the first; leaving the page stops the sound;
+- `work\pitches\round-1\round.json` has no `warnings` (a warning names a project file a pitch changed outside its
+  folder; the cards' round shows it too).
+Pick one: **Build this one** on any card (it uses your Direct settings, shown above the cards; change them on the
+Direct page first if you want another budget: the form keeps them as you change them). You land on the Direct page:
+the run's view says *Starting from pitch round-1/p2: <title>* (the angle; your pick), and its costs show *the pitch
+round $...* next to the run's. The job log's first lines say `pitch round-1/p2 "<title>" in place: work/concept.md,
+work/scenes/, work/style-frames/ ...` and the run's `work\director\run-N\brief.md` has the section *The pitch I picked:
+go further* (the critic's notes on its proof, the graft ideas). The video should build on the pitch and go beyond its
+proof; report.md's run settings say `Started from pitch round-1/p2 ... the pitch round cost $...`. Back on the Pitch
+round page the card says *your pick: run N*, and the step list ticks Pitch round.
+Then "go straight on", once: a round with 2 pitches, 15 minutes, **Let the critic pick and go straight on with a 60
+-minute director run** ticked. When the round is done the box says *Round 2 is done ★ the critic's pick: pN* and *The
+director is building it now*; the Direct page shows that run (its Stop works) and its costs add *the round and this
+run together*. (The command line does the same: `studio.py pitch <p> --n 2 --budget 15m --auto --direct-budget 60m`;
+`studio.py direct <p> --pitch round-1/p2 --budget 90m` builds a pitch.)
+Stop: start a round and press **Stop it** after a few minutes: each pitch wraps up within ~2 minutes, the critic and
+the verdict still look at what exists, the round says `stopped`, no director starts (also with "go straight on"), and
+no `claude` process is left in Task Manager. Once more with a Stop while the box says *the verdict compares them*: the
+verdict's `claude` process ends at once too (the round says the verdict was stopped). A round started with `studio.py pitch` in a console shows on the page
+too, and its **Stop it** button asks it to stop the same way.
+
 ## 9. A review round
 On **Watch & review**, play, press **N** at a moment and write a note (e.g. "the chorus should hit harder") → **Direct**
 → the "Review round" box is ticked → budget 20 min → Start. Expect `v2` next to `v1` (both play), your note ticked with

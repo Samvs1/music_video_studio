@@ -276,9 +276,9 @@ def plan_layers(pdir, F, plan=None, pitch_dir=None):
         ov = it["kind"] == "overlay"
         tr = bool(ov and it.get("transparent"))
         full = it.get("scene_abs")
-        if full and not os.path.isfile(full) and pitch_dir and str(it.get("scene") or "").startswith("work/scenes/"):
-            alt = os.path.join(pitch_dir, "scenes", *it["scene"].split("/")[2:])       # a draft that names its final place
-            full = alt if os.path.isfile(alt) else full
+        if pitch_dir and str(it.get("scene") or "").startswith("work/scenes/"):     # a draft that names its final place:
+            alt = os.path.join(pitch_dir, "scenes", *it["scene"].split("/")[2:])       # the pitch's own copy first (the
+            full = alt if os.path.isfile(alt) else full                                # project's may be another's)
         there = bool(full) and os.path.isfile(full)
         if it["renderer"] == "web" and there:
             layers.append(scene_layer(pdir, it["id"], label, full, slots, tr, seed_of(it.get("render_args")),

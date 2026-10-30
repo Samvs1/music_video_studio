@@ -36,8 +36,10 @@ def frame(mv, f):           # optional: before every frame f; must depend only o
 text this pass shows (for the text checks; type is usually better in a web-engine pass on top).
 
 ## Shared code and models
-A scene script can import what the whole video shares. Three folders are on `sys.path`:
+A scene script can import what the whole video shares. These folders are on `sys.path`, in this order:
 - the scene's own folder (`work/scenes/stage/` for `work/scenes/stage/scene.py`): its own helpers;
+- the `lib/` folder next to it (`work/scenes/lib/` for that scene; a pitch's own `scenes/lib/` for its
+  `work/pitches/round-K/pN/scenes/proof/scene.py`, and the same once it is promoted to `work/scenes/pitch-K-N/`);
 - `work/scenes/lib/`: the film's shared code (the palette, the motifs, the motion rules);
 - `work/kit/`: the assets built once and used across the video: a character rig, a set of procedural models, an
   environment (`work/kit/city/__init__.py` -> `from city import build_city`). Procedural models in Python are the
@@ -54,7 +56,7 @@ def build(mv):
     build_city(mv, palette=look.PALETTE)
 ```
 The cache follows them: the frames of a render are kept while the scene's own folder (only the file itself when it lies
-loose in `work/scenes/`, `work/` or the project), `work/scenes/lib/` and `work/kit/` are what they were and the
+loose in `work/scenes/`, `work/` or the project), the `lib/` next to it, `work/scenes/lib/` and `work/kit/` are what they were and the
 settings are the same; any change there renders it again (`mv.common.scene_inputs`; `studio.py plan` uses the same
 rule to tell a Blender segment's render is stale).
 

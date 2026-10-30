@@ -157,6 +157,85 @@ requires them. What the studio does around them (`director.py`, `mv/session.py`)
   was reached the run ends there without more messages, and report.md says so.
 - **Renders**: every video render waits its turn in the render queue (below), the agents' too.
 
+## pitch.py: the pitch round, optional (`studio.py pitch <p>`)
+Several directors pitch the video at the same time from different angles; the critic compares; the user picks which
+one the director builds (`studio.py direct <p> --pitch round-K/pN`). A run without a pitch round is exactly as before.
+```
+studio.py pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--critic-effort E]
+                    [--proof "chorus 1" | --proof 24-44] [--angles story,wild,structure,medium,against,ideas]
+                    [--seed-notes "..."] [--max-usd N] [--dry-run]
+                    [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N] [--ultracode]]
+```
+- **The round**: `work/pitches/round-K/` with `round.json` (the settings, the proof window, the angles, the deadline,
+  `state` running | done | stopped | failed and `stage` pitching | proofs | critic | verdict | done; per pitch: k,
+  angle, dir, state done | no proof | failed | stopped, cost_usd (its session's latest running total), model_usage,
+  agents, turns, title, idea (from pitch.md), pitch, proof, proof_av, style, scenes, plan, critic (scores, verdict, the
+  top problems, file, cost), error, the last log lines; `verdict`; `picked`; `costs` {pitches, critic, verdict,
+  total}; `warnings`), `p1/ … pN/` (each pitch's folder) and `sessions/pN/` (brief.md, command.json, settings.json:
+  its sandbox, events.jsonl, messages.md, stderr.log, status.json with its live log). `pitch.rounds(p)` and
+  `pitch.round_active(p)` read them.
+- **The angles**: the story, the wild card, the sound and the structure, one medium pushed to its limit, against the
+  grain; with ideas in the brief, "your ideas taken to the extreme" comes first. `--angles` picks them.
+- **The proof window** (the same for every pitch): the strongest ★★★ moment with music on both sides (a chorus start
+  or a drop first, then the biggest lift, a key change, the loudest stretch), from 2 bars before it to the downbeat
+  nearest ~16 s after, 12-24 s, inside the song. `--proof "chorus 1"` takes the same rule around a section's start;
+  `--proof 24-44` exact seconds. The brief gives it as times, bar:beat and `--frames A:B` at the delivery fps.
+- **Each pitch** is a headless director at pitch scale (`mv/session.py`; agents allowed, its choice), cwd the project
+  folder, the brief `templates/pitch-brief.md` (`<!-- mv:pitch -->`), the project's director model by default at
+  effort high. Its sandbox: the director's plus deny rules on writes outside its own folder (`pitch.deny_rules`: the
+  other pitches, the round's files, earlier rounds, `final/`, `report.md`, `review/`, `project.json`, `song/`, `refs/`,
+  `work/scenes/`, `work/kit/`, `work/plan.json`, `work/concept.md`, `work/director/`, `work/style-frames/`, ...);
+  `studio.py permtest <p> --pitch` checks it with the real Claude Code. It delivers in its folder: `pitch.md` (title;
+  the idea in two sentences; why this song; the visual language; 3-5 signature moments with bar:beat; a section plan;
+  unlike the defaults; how it gets made, with the final render time here; risks), `style/` (2-3 style frames),
+  `scenes/` (shared code in `scenes/lib/`, imported relatively; the proof scene in its own folder), `proof.mp4` (the
+  window at preview size) and optionally a draft `plan.json` (the plan tools' format; its scenes named where they'll
+  live once picked: `work/scenes/<id>/...`, the files in its `scenes/<id>/`). Its eyes go to its own `eyes/`.
+  All N run at once; their renders wait in the render queue (`MV_RENDER_WHO` = `pitch pN (round K)`). The studio
+  sends each the time warnings (half time, the last minutes, time's up), a reminder when pitch.md, the proof or the
+  style frames are missing, one push to go further when it ends early with a third of its time left, and ends it at
+  the deadline plus a grace (10%, 1.5-5 min).
+- **After the pitches**: `proof_av.mp4` (the proof's video copied, the song's audio from the proof's own range, AAC; a
+  proof without a sidecar gets the window's), the critic on each proof (`critic.py <proof> --concept pN/pitch.md
+  --out pN/ --pictures <its style frames> --focus <the round>`, two at a time), then one verdict call (`claude -p`,
+  the critic's model, read-only tools, `templates/pitch-verdict.md`, `<!-- mv:verdict -->`: every pitch.md, its style
+  frames and the proof's strips to open, each critique, the song, the user's notes, this machine's render speeds;
+  ambition highest, then the fit to this song, then whether it can be built well in a director's budget here, then
+  craft; never the safe option) → `verdict.md` + `verdict.json` (winner, ranking, verdict, why, scores per pitch,
+  graft [{from, idea, where}], push), read with the critic's lenient json parser. One pitch with a pitch.md wins
+  without a call; an answer without readable json falls back to the critic's scores on the proofs.
+- **Stop**: `studio.py stop <p>` (and the web app's Stop) writes `work/pitches/STOP`: each pitch wraps up, then the
+  critic and the verdict run on what exists; a stop while they work ends them too (their processes are ended). The
+  round's state is `stopped` and `--auto` doesn't start the director. A pitch whose session doesn't end within 20 s
+  of its input closing at the deadline plus the grace is stopped with what it started. round.json is written every
+  few seconds all along (the verdict's wait too), so the web app and the guards see the round as running until it is
+  done.
+- **Costs**: per pitch its session's latest running total (agents included), the critic per proof, the verdict, the
+  round's total (`round.json` `costs`, the job log's last line). `--max-usd N` caps each pitch's session.
+- **Picking**: `studio.py direct <p> --pitch round-K/pN [...]` (`pitch.promote`, before the run): pitch.md →
+  `work/concept.md` (an existing one kept as `work/concept_before_pitch_<time>.md`); its scenes → `work/scenes/` (its
+  `lib/` → `work/scenes/lib/`), or `work/scenes/pitch-K-N/` when `work/scenes/` has scenes already (they're kept as they
+  are; the brief says so; the same pitch picked again after its folder there changed: that folder is kept as
+  `work/scenes/pitch-K-N_before_pitch_<time>/`); its style frames → `work/style-frames/` (the ones there before moved to
+  `work/style-frames_before_pitch_<time>/`); its `plan.json` → `work/plan.json` with the scene paths moved with the
+  scenes (an existing one kept as `work/plan_before_pitch_<time>.json`). `round.json` records `picked` {k, by, at, run}.
+  The brief gets a short section (`pitch.brief_section`): the user picked this pitch (its title, angle, proof), build
+  it and go further than the pitch (the proof is a first draft, not a ceiling), the critic's notes on its proof,
+  the verdict's graft ideas, and the round's notes (`--seed-notes`, written for the pitchers: context, not the
+  director's own notes, the same with `--auto` and with a pick); full reign as always. A pitch that can't be built
+  (no such round or pitch, no pitch.md, its round still running) is refused before the run starts. status.json and the run's entry in project.json have `pitch`
+  {ref, title, angle, by, round_cost_usd, chained}; report.md's run settings name it with the round's cost. A review
+  round (`--revise`) never starts from a pitch. `--auto` picks the verdict's winner and runs `direct` in the same job.
+- `clock <p>` says the round's time left while one runs (the pitches use it).
+- **The web app** (`app/server.py`, the **Pitch round** page between Story and Direct, marked optional): `POST
+  /api/p/<p>/pitch` {n, budget, model, effort, critic_model, seed_notes, max_usd, auto, direct_budget} runs `studio.py
+  pitch` as the job "pitch" (`auto`: `--auto` with the Direct form's saved model, effort, ultracode and cap); `GET
+  /api/p/<p>/pitches` gives every round.json with its files' URLs and, per pitch, `live` {timeline: "pitch:round-K/pN"
+  when it has a draft plan, scene: the one its proof was rendered from}; `POST /api/p/<p>/pitch-pick` {round, k} runs
+  `studio.py direct --pitch round-K/pN` with the Direct form's saved settings. Stop works on a pitch job (and on a
+  round started from the command line). With `--auto` the job state carries `chained: "direct"` once its director
+  run starts.
+
 ## The render queue (`mv/renderlock.py`)
 One video render at a time on this machine, the director's and its agents' alike: parallel agents speed up
 thinking and code, not rendering. `web-engine/render.py` and `blender/run.py` take `<studio>/cache/render.lock` (O_CREAT|O_EXCL: pid, who, what, started) before a video render (not
@@ -244,6 +323,7 @@ project.json `lyrics_fix` (`held_lines`, `words`, `text`; see `fix_lyrics.py`).
 `studio.py doctor` (install check; writes `installed.md`), `benchmark` (speeds.json), `models.py status|fetch`,
 `director.py` (`studio.py story | direct | clock | stop | deliver | versions | permtest`: the autonomous run,
 `Runner`, with its `CriticWatcher` and `LiveNotes`), `critic.py` (`studio.py critique`), `plan.py` (`studio.py plan`),
+`pitch.py` (`studio.py pitch`, `direct --pitch`, `permtest --pitch`: the pitch round),
 `studio.py serve` (web app).
 Shared code: `mv/session.py` (one long stream-json Claude Code session: start, send, events into a status, turn
 ends, stop with grace, the process tree killed; busy from a message to an idle session until its `result`, messages
@@ -251,7 +331,7 @@ sent while busy join the running turn; working while its agents or background co
 by itself when they end; its cost the latest result's running total: verified on Claude Code 2.1.311-2.1.312; see
 "Agents in a run"), `mv/common.py` (paths, project, fonts, ffmpeg, encoders, `scene_inputs`: what a Blender scene's
 render cache follows, `file_lock`), `mv/claude.py` (the claude command and one
-headless print-mode call: the story step, the critic; `kill_tree` stops a process with what it started,
+headless print-mode call: the story step, the critic, the pitch round's verdict; `kill_tree` stops a process with what it started,
 `pid_alive` is Windows-safe), `mv/renderlock.py` (the render queue), `mv/device.py` (GPU or CPU, one model at a time),
 `mv/listen.py` (the song kit's ears), `mv/songdoc.py` (its writers), `mv/curves.py` (frame curves, hits), `mv/web.py`
 (the web engine's driver), `mv/live.py` (the live preview: the live server, the timelines, the notes file).

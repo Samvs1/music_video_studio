@@ -140,7 +140,9 @@ def main():
     mv = MV()
     mv.scene = scene
     random.seed(A["seed"])
-    for d in (os.path.dirname(A["scene"]), os.path.join(A["project"], "work", "scenes", "lib"), os.path.join(A["project"], "work", "kit")):
+    sd = os.path.dirname(A["scene"])            # its own folder, the lib next to it (a pitch's scenes/lib/), the film's
+    for d in (sd, os.path.join(os.path.dirname(sd), "lib"), os.path.join(A["project"], "work", "scenes", "lib"),
+              os.path.join(A["project"], "work", "kit")):
         if os.path.isdir(d) and d not in sys.path:
             sys.path.append(d)
     spec = importlib.util.spec_from_file_location("mv_scene", A["scene"])

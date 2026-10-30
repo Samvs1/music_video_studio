@@ -53,6 +53,27 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    `[00:12.00] hold the light <00:14.10>`) and analyses the song again, which aligns every word inside its line.
 4. **Story**: Claude drafts what the song is about and how its arc could carry a video, from the lyrics, the song map
    and your notes; edit it, it's yours. (Skip it and the director writes it first.)
+   **Pitch round** (optional: the step with no number; your choice, never a required step): several directors pitch
+   from different angles; the critic compares; you pick which one the director builds. Skip it and the director
+   starts from your notes, exactly as before. The page puts the two side by side: **Hold a pitch round** (how many,
+   2-5; the minutes per pitch, 20 by default; the model and the effort, high; the critic, which is the judge; notes for
+   the round; a cost cap per pitch; and "let the critic pick and go straight on with a __-minute director run") or
+   **Skip it**. Each pitch gets its own angle (the story, the wild card, the sound and the structure, one medium pushed
+   to its limit, against the grain; your ideas taken to the extreme first when you wrote some) and is told to be
+   unmistakably different from the others and as bold as it can make well, and proves its idea on the same 12-24 s
+   window around the song's biggest moment. While they work, each pitch's line shows its angle, its state, its time,
+   its cost, its agents and its last lines; **Stop** makes each wrap up (the critic and the verdict still look at what
+   exists). Then each round is a row of cards: per pitch its title, angle, the idea in two sentences, its style frames
+   (click to enlarge), **the proof with the song** (`proof_av.mp4`), **▶ live** (its scenes, or its draft plan, played
+   in your browser with the song over the proof window, no render; ✕ closes it), the critic's scores and notes on its
+   proof, and the verdict above them: the critic's pick (★), the ranking, why, the ideas worth grafting from the
+   others, what to push (ambition first; the safe option never wins; it's advice). **Build this one** starts the
+   director on that pitch with your Direct settings (step 5: the form keeps them as you change them) and takes you
+   to the Direct page, which says "starting from pitch round-1/p2: <title>": its pitch, scenes, style frames and draft
+   plan are put in place, and the director, with full reign as always, is told to go further than the pitch. The
+   pitches are full directors on the top model (the idea is what you're choosing); the critic's cheaper model does the
+   looking. From the command line: `studio.py pitch <project>`, then `studio.py direct <project> --pitch round-K/pN`
+   (`--auto`: the verdict picks and the director starts at once).
 5. **Direct**: set a time budget (e.g. 90 min), the model (Opus by default), the effort (max), the critic (Sonnet by
    default; Haiku is cheaper, Opus sharper, or off), **Ultracode** (off by default: the director may also orchestrate
    multi-agent workflows; more tokens), optionally a cost cap in dollars (a hard stop for the director's session, its
@@ -84,15 +105,16 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `song <p>` · `curves <p> [--fps N]` | remake the song folder · remake the per-frame files for another fps |
 | `story <p> [--model M]` | Claude drafts `song/song-story.md` (headless, read-only) |
 | `align-lyrics <p> [--in lines.json]` | the lyric lines placed where Whisper hears them (`cache/lyrics/aligned.json`; the timing editor's button) |
-| `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-max 6]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final |
+| `pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--proof "chorus 1"\|24-44] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N] [--auto [--direct-budget 90m] [--direct-effort max] [--ultracode]] [--dry-run]` | the pitch round, optional: N directors pitch at once from different angles, each proving its idea on the same window of the song (`work/pitches/round-K/`); proof_av.mp4 (the proof with the song), the critic on each proof, one verdict (ambition first) with graft ideas, the costs; `--auto`: the verdict's winner is built at once |
+| `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-max 6] [--pitch round-K/pN]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final; `--pitch`: it starts from that pitch (put in place first) and goes further |
 | `critique <p> <video \| vN> [--model sonnet] [--effort medium] [--focus "..."] [--max-usd 2] [--pictures a.png,b.png]` | the critic: a cheaper model with fresh eyes looks at a video, reports back in text (`work/critic/`; a version also `final/critic_vN.md`) |
 | `plan validate\|status <p>` | the optional plan tools (`work/plan.json`, a scene list): check it (exit 1 with what to fix) · each scene's renders, the previews with the critic's scores, the final's estimated render time here, the render queue |
 | `plan render <p> [--preview\|--final] [--only s1,s3]` · `plan assemble <p> [--preview\|--final] [--no-critic]` | each segment over its own frame range (unchanged ones from the cache) · join, layer, mux → `work/previews/preview_N.mp4` or `final/music-video.mp4`, then the eyes, the checks and the critic on the whole film |
-| `clock <p>` · `stop <p>` | time left in a running budget · ask a running director to stop cleanly |
+| `clock <p>` · `stop <p>` | time left in a running budget (a director's or a pitch round's) · ask a running director or pitch round to stop cleanly |
 | `note-done <p> <id> ["what changed"] [--undo]` | mark the user's note done with a one-line fix (how a director answers a note: `review/notes.json` is written safely, since the web app writes it too) |
 | `check <p> [video]` | every check on the final (spec, flashes, text, sync) |
 | `deliver <p> [--critic]` · `versions <p>` | archive `final/music-video.mp4` as the next version (+ checks; `--critic`: + the critic's notes) · list versions |
-| `permtest <p>` | check the director's sandbox, and an agent's, with the real Claude Code (a few cents with Haiku) |
+| `permtest <p> [--pitch]` | check the director's sandbox, and an agent's, with the real Claude Code (a few cents with Haiku); `--pitch`: a pitch's (its own folder writable, another pitch's and the project's files refused) |
 | `run <p> <tool.py> [args]` | run any tool inside a project (`eyes.py`, `songq.py`, `compose.py`, `web-engine/render.py`, `blender/run.py`, `checks.py`, ...) |
 | `serve [--port 8765]` · `doctor` · `benchmark [--quick]` · `smoke` | web app · install check · render speeds · the end-to-end smoke test |
 The tools are documented in **`tools/README.md`** (with `tools/web-engine/README.md` and `tools/blender/README.md`).
@@ -151,6 +173,29 @@ The tools are documented in **`tools/README.md`** (with `tools/web-engine/README
   the few pictures it needs. The early-finish nudge carries its notes on the final (ambition first); the archived
   version keeps its critique as `final/critic_vN.md`. A call that couldn't answer (a usage limit, a login, the $2 cap)
   is no critique: nothing is written but a log line, and its cost still counts.
+- **The pitch round** (`tools/pitch.py`, `templates/pitch-brief.md`, `templates/pitch-verdict.md`), optional: N
+  headless directors at pitch scale, all at once, each its own session (`mv/session.py`, like the director's: agents
+  allowed, its own time budget, time warnings, a reminder when something is missing, one push to go further when it
+  ends early, the deadline plus a grace), its own angle, and a sandbox: the director's plus deny rules on writes
+  outside its own pitch folder (the other pitches, the round's files, earlier rounds, `final/`, `report.md`,
+  `review/`, `project.json`, `song/`, `work/scenes/`, `work/kit/`, `work/plan.json`, `work/concept.md`, ...). Each
+  brief says the others pitch from other angles and that the user will compare: be unmistakably different, as bold
+  as can be made well, the proof the idea at full strength on the window, honest about the render time (the whole
+  song's final render per renderer on this machine is in it). The studio picks one proof window for all: the
+  strongest ★★★ moment with music on both sides (a chorus start or a drop first, then the biggest lift), 2 bars
+  before it to ~16 s after, on downbeats, 12-24 s (`--proof` sets it). After the pitches: `proof_av.mp4` (the proof's
+  video copied, the song's audio cut at the window, AAC), the critic on each proof (`--concept pN/pitch.md --out
+  pN/`, with its style frames; two at a time), then one verdict call on the critic's model (every pitch.md inline, the
+  style frames and the proofs' strips to open, each critique, this machine's render speeds): ambition highest, then
+  the fit to this song, then whether it can be built well in a director's budget here, then craft; never the safe
+  option; a ranking, the winner, why, ideas worth grafting → `verdict.md` + `verdict.json`. `round.json` keeps it
+  all (per pitch: angle, state, the session's latest running cost, agents, title, idea, proof, critic; the verdict;
+  the costs; `picked`). `direct --pitch round-K/pN` puts the pick in place (pitch.md → `work/concept.md`, its scenes
+  and `lib/` → `work/scenes/`, or `work/scenes/pitch-K-N/` when there are scenes already, its style frames, its draft
+  plan with the paths moved; whatever was there is kept as a `_before_pitch_<time>` copy) and the brief gets a short
+  section: the user picked this pitch, build it and go further, the critic's notes on its proof, the verdict's
+  graft ideas and the round's notes (written for the pitchers: context, not a rule); full reign as always. A review
+  round never starts from a pitch.
 - **The plan tools** (`tools/plan.py`, `studio.py plan ...`), optional: when a scene list helps its video, the
   director writes `work/plan.json` (segments that cover the song on downbeats, each scene in its own folder
   `work/scenes/<id>/`, shared code in `work/scenes/lib/` and `work/kit/`, overlays on top); the studio checks it
@@ -161,7 +206,15 @@ The tools are documented in **`tools/README.md`** (with `tools/web-engine/README
   the whole film; a segment without a scene is a labelled slate in a preview, the final needs them all). Python, no
   tokens. plan.json is also the live preview's timeline.
 - **The Direct page** polls `GET /api/p/<p>/director` (the run's status: its live log, the clock, the agents, the
-  costs per model with the total, the critiques).
+  costs per model with the total, the critiques; the pitch it started from, with the round's cost).
+- **The Pitch round page** polls `GET /api/p/<p>/pitches` (every round.json, newest first, with the URLs of each
+  pitch's files and what its card's live player plays: its draft plan as the live state's `pitch:round-K/pN` timeline,
+  else the scene its proof was rendered from, per the proof's sidecar). `POST /api/p/<p>/pitch` starts `studio.py
+  pitch` as the job "pitch" (with "go straight on": `--auto` and the Direct form's saved model, effort, ultracode and
+  cap); `POST /api/p/<p>/pitch-pick {round, k}` starts `studio.py direct --pitch round-K/pN` with the Direct form's
+  saved settings; Stop asks a pitch job (or a round started from the command line) to wrap up. With `--auto` one job
+  runs the round and then the director: the job state says `chained: "direct"`, and the Direct page treats it as its
+  run (its steps, its Stop).
 - **The live preview** (`tools/mv/live.py`, the runtime's live mode in `web-engine/runtime/mv.js`, the Watch page's
   `livePlayer`): the web app starts a small server per project on 127.0.0.1 (its own port, GET only, `no-store`, the
   renderer's exact URL space and nothing outside it) and stacks the scenes' pages from it as iframes, each visible only
@@ -235,6 +288,23 @@ director how they look, so it can draw them; the pictures never appear in the vi
   with its confidence in report.json. No mood / genre tags (aftermovie-studio found them too often wrong).
 - **The runner nudges** a director that delivers early to use the time left (`--no-nudge` turns it off), and reminds
   one that hasn't delivered.
+- **The pitch round is a choice, not a stage**: nothing runs it unless you ask (a director may suggest it in an
+  interactive session; an autonomous one never starts it), and the director that builds the winner keeps full reign:
+  the pitch is its starting point ("go further than the pitch: the proof is a first draft, not a ceiling"), not a
+  spec. The pitches are full directors on the top model (the project's director model, effort high), because the idea
+  is what's being chosen; the critic's cheaper model does the image-heavy looking at the proofs and judges the round,
+  weighing ambition highest and never rewarding the safe option. All pitches prove themselves on the same window
+  (chosen by the studio, around the song's biggest moment), so they can be compared, and start fresh from the song and
+  your notes rather than from an earlier director's work. The angles are fixed starts (the story, the wild card, the
+  sound and the structure, one medium, against the grain; your ideas first when you wrote some) so the pitches differ
+  by construction, not by luck. Picking never overwrites: an existing concept, plan or style frames are kept as
+  `_before_pitch_<time>` copies, and existing scenes stay where they are (the pitch's go next to them).
+- **The Pitch round page is a choice, not a stage**: it sits between Story and Direct without a number and marked
+  optional, opens with the choice (hold a round or skip it, side by side), and every word on it says the director
+  keeps full reign. The cards stay in pitch order (p1, p2, ...) with the verdict's rank as a badge, so you watch the
+  proofs before you read the ranking; the verdict sits above them as advice ("you pick"). Build this one uses the
+  Direct form's saved settings rather than a second form (one place to set the director), and the page says which.
+  A card plays one live view at a time; opening another, closing it, or leaving the page destroys the player.
 - **The critic pushes ambition up, never down**: its prompt says to never recommend a safer or more conventional
   idea, and when something bold isn't landing, to say how to make it land (timing, staging, room, set-up and payoff)
   rather than how to retreat; to push the director's own concept, not swap in its own; and to say what the pictures
@@ -347,6 +417,22 @@ director how they look, so it can draw them; the pictures never appear in the vi
 - `SendMessage` isn't allowed in autonomous runs: in Claude Code 2.1.312 it can also address another Claude session
   on the same machine by its name, and the deny rules can't limit whom it reaches. The director starts and stops its
   own agents (`Agent`, `TaskStop`); it can't steer one that is already running (it stops it and starts another).
+- A pitch's sandbox is the director's plus deny rules for its file tools (verified with `permtest --pitch` on Claude
+  Code 2.1.312 and Haiku: its own folder writable; another pitch's folder, `work/scenes/`, `final/` and the studio's
+  tools refused); its Bash commands aren't path-checked. The round notes any file in the project's own folders that
+  changed while the pitches worked (round.json `warnings`), whoever changed it.
+- A pitch round renders N proofs through the one render queue: with N pitches the last proof may wait behind the
+  others' (each brief says to start its proof by half time). Its cost is N short director sessions on the top model
+  plus N critiques and the verdict (round.json and the job log give each); `--max-usd` caps each pitch.
+- The verdict sees stills (style frames, the proofs' strips and moments) and reads the pitches and the critiques: like
+  the critic it can't judge motion or sound, and says so; with `--auto` it is the only judge. When its answer can't be
+  read, the critic's scores on the proofs rank the pitches (round.json says so). A stop while the verdict works ends
+  its call: what it had spent is never reported (it never answered), so the round's cost leaves it out.
+- A pitch card's ▶ live plays only web scenes: a pitch built in Blender has its proof (with the song) but no live view.
+  A pitch without a draft plan plays the one scene its proof was rendered from, over the proof window only.
+- Build this one takes the Direct form's settings (the form keeps them as you change them, without starting a run):
+  to build a pitch with another budget or model, change them on the Direct page first. A round started from the
+  command line shows on the page (its pitches, Stop) but its job log doesn't.
 - An agent's render that waits for the render queue waits inside one Bash call: a Bash timeout can cut the wait short
   and the render is started again (the skill says to run long renders in the background or with the longest timeout).
 - Tested here on Linux without a GPU: Windows, NVENC, CUDA, Eevee on a real GPU and GPU WebGL are written carefully

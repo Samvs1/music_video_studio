@@ -158,13 +158,14 @@ def from_output(pdir, out):
     return load(pdir, lines[-1].rsplit(" · ", 1)[-1]) if lines else None
 
 
-def parse(text):
-    """The critic's answer -> (markdown, data, warning). The last ```json block is the data; missing or broken: the
-    markdown is kept, the scores are None, and the warning says so."""
+def json_block(text):
+    """An answer -> (markdown without its json block, the block's object or None, warning). The last ```json block
+    is the data (an earlier one may be an example or a draft); missing or broken: None, and the warning says which.
+    (The critique's parse and the pitch round's verdict use it.)"""
     text = (text or "").strip()
     blocks = list(re.finditer(r"```(?:json\w*)?\s*(\{[\s\S]*?\})\s*```", text, re.I))   # ```json, ```JSON, ```jsonc
-    data, warn = None, ""
-    if blocks:                                   # only the last one: an earlier block may be an example or a draft
+    data = None
+    if blocks:
         m = blocks[-1]
         try:
             data = json.loads(m.group(1))
@@ -173,10 +174,17 @@ def parse(text):
             data = None
         if not isinstance(data, dict):
             data = None
+    warn = "" if data is not None else "the json block didn't parse" if blocks else "there was no readable json block"
+    return text, data, warn
+
+
+def parse(text):
+    """The critic's answer -> (markdown, data, warning). The last ```json block is the data; missing or broken: the
+    markdown is kept, the scores are None, and the warning says so."""
+    text, data, warn = json_block(text)
     if data is None:
-        warn = "the critic's answer had no readable json block: the report is kept, the scores are missing"
-        if blocks:
-            warn = "the critic's json block didn't parse: the report is kept, the scores are missing"
+        warn = "the critic's answer had no readable json block: the report is kept, the scores are missing" \
+            if "no readable" in warn else "the critic's json block didn't parse: the report is kept, the scores are missing"
         data = {}
     sc = data.get("scores") if isinstance(data.get("scores"), dict) else {}
     scores = {}

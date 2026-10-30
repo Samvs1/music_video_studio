@@ -10,11 +10,20 @@
                                                                      (cache/lyrics/aligned.json; the web app's timing editor)
   python tools/studio.py direct <project> --budget 90m [--model opus] [--effort max] [--seed-notes "..."] [--revise]
                          [--ultracode] [--max-usd N] [--critic-model sonnet|haiku|opus|off] [--critic-effort medium]
-                         [--critic-max 6]
+                         [--critic-max 6] [--pitch round-K/pN]
                                                                      the autonomous run (Claude Code headless) -> final/music-video.mp4:
                                                                      one director with full reign (agents if it wants them;
                                                                      --ultracode: multi-agent workflows too; --max-usd: a cap)
                                                                      and the critic on its previews and the final
+                                                                     (--pitch: it starts from that pitch, put in place first)
+  python tools/studio.py pitch <project> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet]
+                         [--proof "chorus 1" | --proof 24-44] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N]
+                         [--auto [--direct-budget 90m] [--direct-effort max] [--ultracode]]
+                                                                     the pitch round, optional (tools/pitch.py): several directors
+                                                                     pitch at once from different angles, each proving its idea on
+                                                                     the same window of the song; the critic on each proof, one
+                                                                     verdict (ambition first); then direct --pitch round-K/pN
+                                                                     builds the one you pick (--auto: the verdict's, at once)
   python tools/studio.py critique <project> <video | vN> [--model sonnet] [--focus "..."] [--max-usd 2] [--pictures a.png]
                                                                      the critic: a cheaper model with fresh eyes looks at a video
                                                                      and reports back (work/critic/; vN also final/critic_vN.md)
@@ -27,11 +36,12 @@
   python tools/studio.py versions <project>                          the delivered versions (final/music-video_vN.mp4)
   python tools/studio.py deliver <project> [--critic]                archive final/music-video.mp4 as the next version + checks
                                                                      (--critic: and the critic's notes on it)
-  python tools/studio.py stop <project>                              ask a running autonomous director to stop cleanly
+  python tools/studio.py stop <project>                              ask a running autonomous director (or pitch round) to stop cleanly
   python tools/studio.py note-done <project> <id> ["what changed"] [--undo]
                                                                      mark the user's note done with a one-line fix
                                                                      (review/notes.json, safely: the web app writes it too)
-  python tools/studio.py permtest <project>                          check the director's sandbox (and an agent's) with the real Claude Code (cents)
+  python tools/studio.py permtest <project> [--pitch]                check the director's sandbox (and an agent's; --pitch: a pitch's)
+                                                                     with the real Claude Code (cents)
   python tools/studio.py run <project> <tool.py> [args]              run any tool inside a project (eyes.py, songq.py, compose.py, ...)
   python tools/studio.py serve [--port 8765] [--no-browser]          the local web app
   python tools/studio.py doctor                                      check the install and say how to fix what's missing
@@ -331,7 +341,13 @@ def cmd_direct(a):
     import director
     director.direct(project_dir(a.project), budget=a.budget, effort=a.effort, model=a.model, seed_notes=a.seed_notes,
                     revise=a.revise, nudge=not a.no_nudge, dry_run=a.dry_run, critic_model=a.critic_model,
-                    critic_effort=a.critic_effort, critic_max=a.critic_max, ultracode=a.ultracode, max_usd=a.max_usd)
+                    critic_effort=a.critic_effort, critic_max=a.critic_max, ultracode=a.ultracode, max_usd=a.max_usd,
+                    pitch=a.pitch)
+
+
+def cmd_pitch(a):
+    import pitch
+    sys.exit(pitch.run_args(project_dir(a.project), a))
 
 
 def cmd_critique(a):
@@ -390,7 +406,7 @@ def cmd_deliver(a):
 def cmd_stop(a):
     import director
     director.request_stop(project_dir(a.project))
-    print("asked the running director to stop (it wraps up within a minute or two)")
+    print("asked the running director (or pitch round) to stop (it wraps up within a minute or two)")
 
 
 def cmd_note_done(a):
@@ -405,6 +421,9 @@ def cmd_note_done(a):
 
 def cmd_permtest(a):
     import director
+    if a.pitch:
+        import pitch
+        sys.exit(0 if pitch.permission_test(project_dir(a.project), model=a.model) else 1)
     sys.exit(0 if director.permission_test(project_dir(a.project), model=a.model) else 1)
 
 
@@ -470,6 +489,10 @@ def main():
     p.add_argument("--critic-model", help="the critic's model (default: project.json director.critic_model, else sonnet); off = no critic")
     p.add_argument("--critic-effort", help="the critic's effort (default medium)")
     p.add_argument("--critic-max", type=int, default=6, help="automatic critiques per run (default 6)")
+    p.add_argument("--pitch", help="start from a pitch of a pitch round: round-K/pN (studio.py pitch)")
+    p = sp.add_parser("pitch", help="the pitch round (tools/pitch.py)"); p.add_argument("project")
+    import pitch as pitch_
+    pitch_.add_args(p)
     p = sp.add_parser("critique"); p.add_argument("project"); p.add_argument("video", help="a video in the project, or vN")
     p.add_argument("--model"); p.add_argument("--effort"); p.add_argument("--focus", default="")
     p.add_argument("--concept"); p.add_argument("--out"); p.add_argument("--max-usd", type=float)
@@ -482,6 +505,7 @@ def main():
     p = sp.add_parser("deliver"); p.add_argument("project"); p.add_argument("--critic", action="store_true")
     p.add_argument("--critic-model")
     p = sp.add_parser("permtest"); p.add_argument("project"); p.add_argument("--model", default="haiku")
+    p.add_argument("--pitch", action="store_true", help="a pitch's sandbox (its own folder writable, the rest refused)")
     p = sp.add_parser("stop"); p.add_argument("project")
     p = sp.add_parser("note-done"); p.add_argument("project"); p.add_argument("id"); p.add_argument("fix", nargs="?", default="")
     p.add_argument("--undo", action="store_true", help="open the note again")

@@ -14,7 +14,10 @@ form in headless Chromium (one director: effort max by default, Ultracode, a cos
 keeps; the run view while the director's agent works: its line in the live log, the Agents list, '▶ play the scenes
 live' offered; after the run the Agents list, the costs per model and the total) -> live preview (GET live, the live server's URL space and what it
 refuses, a live note round-trip; the Watch page's live view playing the plan's scenes with the song in headless Chromium,
-the size picker, the sound delay, a stateful scene caught up after a seek, N for a live note) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
+the size picker, the sound delay, a stateful scene caught up after a seek, N for a live note) -> the pitch round
+(started from the Pitch round page in headless Chromium: the round at work, GET pitches, the cards with their proofs,
+▶ live over the proof window, Build this one -> a director run from the pitch; pitch-pick's refusals; Stop on a pitch
+job) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
 tests/out/ui/; on the brief page a picture is added and named, on the song page the lyric timing editor opens, taps,
 undoes and closes, and aligns with Whisper; the Direct page has the critic select and the settings kept, the Watch
 page the critic's box with its scores.
@@ -184,6 +187,7 @@ def main():
         os.remove(os.path.join(STUDIO, "projects", name, "FAKE_CLAUDE_SLOW"))
         direct_form_check(B, name, out, browser=not a.no_browser)
         live_check(B, name, out, browser=not a.no_browser)
+        pitch_check(B, name, out, browser=not a.no_browser)
         r = requests.get(B + "/api/doctor").json()
         say("Music Video Studio" in r.get("text", ""), "GET /api/doctor")
         if not a.no_browser:
@@ -492,6 +496,202 @@ def live_check(B, name, out, browser=True):
                 os.remove(lj)
     say(not errs, "UI: the live view (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
 
+
+def pitch_check(B, name, out, browser=True):
+    """The pitch round from the web app (the stand-in's pitch and verdict roles). The form's refusals (the critic off,
+    7 pitches). A round of 2 started from the Pitch round page (in headless Chromium: the form's settings sent and
+    kept; the round at work on the page, a line per pitch). GET pitches: both delivered, each proof with the song,
+    the style frames, the critic's notes, the verdict's pick and graft ideas, what each card's live player plays. The
+    cards: the proofs load (the window's length); the critic's pick; ▶ live plays the pitch's draft plan with the song
+    inside the proof window and stops at its end; another card's live view replaces it (its proof back); ✕ closes it
+    (the player destroyed). "Build this one" (pitch-pick, the Direct form's saved settings): the Direct page says it
+    starts from the pitch; the run delivers; round.json's picked; pitch-pick's refusals. Stop on a pitch job: each
+    pitch wraps up, the round is stopped, no director. No JavaScript errors."""
+    pdir = os.path.join(STUDIO, "projects", name)
+    r1 = requests.post(f"{B}/api/p/{name}/pitch", json={"n": 2, "critic_model": "off"}).json()
+    r2 = requests.post(f"{B}/api/p/{name}/pitch", json={"n": 7}).json()
+    say("the critic" in r1.get("error", "") and "2 to 5" in r2.get("error", ""), "POST pitch refuses a round without the critic "
+        "(the judge) and 7 pitches", f"{r1.get('error')}; {r2.get('error')}")
+    form = {"n": 2, "budget": "3", "model": "fake", "effort": "low", "critic_model": "haiku",
+            "seed_notes": "one of you, try it with nothing but type (server test)"}
+    shots = os.path.join(out, "ui")
+    os.makedirs(shots, exist_ok=True)
+    pw = b = page = None
+    errs, sent = [], []
+    if browser:
+        sys.path.insert(0, os.path.join(STUDIO, "tools"))
+        from mv.web import launch
+        from playwright.sync_api import sync_playwright
+        pw = sync_playwright().start()
+        b, _ = launch(pw, "off", extra=["--autoplay-policy=no-user-gesture-required"])
+        page = b.new_page(viewport={"width": 1400, "height": 1000})
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
+    try:
+        if page:
+            page.goto(f"{B}/#{name}/pitch")
+            page.wait_for_selector("#go-pitch", timeout=15000)
+            nav = page.inner_text("nav.steps")
+            first = page.inner_text("#pane")
+            say("Pitch round" in nav and "optional" in nav and "Skip it" in first and "Go to Direct" in first
+                and page.locator("nav.steps .dot.opt").count() == 1 and page.inner_text("nav.steps .dot.opt").strip() == "",
+                "UI: the Pitch round step: between Story and Direct, no number, marked optional; the page opens with the choice "
+                "(hold a round, or skip it)", nav.replace("\n", " | "))
+            page.select_option("#p-n", "2")
+            page.fill("#p-budget", form["budget"])
+            page.fill("#p-model", form["model"])
+            page.select_option("#p-effort", form["effort"])
+            page.select_option("#p-critic", form["critic_model"])
+            page.fill("#p-seed", form["seed_notes"])
+
+            def grab(route):
+                sent.append(json.loads(route.request.post_data or "{}"))
+                route.continue_()
+            page.route("**/api/p/*/pitch", grab)
+            page.click("#go-pitch")
+            page.wait_for_selector("#pv-live-round .pv-row >> nth=1", timeout=60000)
+            page.unroute("**/api/p/*/pitch")
+            page.wait_for_timeout(3500)
+            run = page.inner_text("#pv-run")
+            page.screenshot(path=os.path.join(shots, "pitch-running.png"), full_page=True)
+            got = sent[0] if sent else {}
+            say(all(got.get(k) == x for k, x in form.items()) and got.get("auto") is False and "the story" in run
+                and "the wild card" in run and "pitching" in run and "left" in run and page.is_visible("#stop-pitch"),
+                "UI: the pitch round started from the page (the form's settings sent); the round at work: a line per pitch "
+                "(its angle, state, time, cost, last lines), the time left, Stop", f"sent {got}; {run[:200]!r}")
+        else:
+            requests.post(f"{B}/api/p/{name}/pitch", json=form)
+        j, _ = wait_job(B, name, timeout=1200, want="pitch")
+        R = requests.get(f"{B}/api/p/{name}/pitches").json()
+        rd = (R.get("rounds") or [{}])[0]
+        K, ps, v, w = rd.get("round"), rd.get("pitches") or [], rd.get("verdict") or {}, rd.get("proof") or {}
+        by = {p["k"]: p for p in ps}
+        av = requests.get(B + ((by.get(1) or {}).get("urls") or {}).get("proof_av", "/x"), headers={"Range": "bytes=0-1023"})
+        kept = requests.get(f"{B}/api/p/{name}").json()["project"].get("pitch") or {}
+        ok = (j.get("returncode") == 0 and rd.get("state") == "done" and len(ps) == 2 and all(p["state"] == "done" for p in ps)
+              and all((p.get("urls") or {}).get("proof_av") and (p.get("urls") or {}).get("pitch") and len(p.get("style_urls") or []) == 2
+                      and ((p.get("critic") or {}).get("url")) and (p.get("critic") or {}).get("scores") for p in ps)
+              and av.status_code == 206 and av.headers.get("Content-Type") == "video/mp4"
+              and v.get("winner") == 2 and v.get("ranking") == [2, 1] and (v.get("graft") or [{}])[0].get("from") == 1 and v.get("url")
+              and (by.get(2) or {}).get("live", {}).get("timeline") == f"pitch:round-{K}/p2"
+              and str(((by.get(1) or {}).get("live") or {}).get("scene") or "").endswith(f"round-{K}/p1/scenes/proof/scene.js")
+              and rd.get("model") == "fake" and rd.get("effort") == "low" and rd.get("critic_model") == "haiku"
+              and rd.get("seed_notes") == form["seed_notes"] and not R.get("running")
+              and (not page or (kept.get("n"), kept.get("budget"), kept.get("critic_model"), kept.get("auto")) == ("2", "3", "haiku", False)))
+        say(ok, "GET pitches: the round done, both pitches delivered (pitch.md, the proof with the song, 2 style frames, the "
+            "critic's notes), the verdict (p2, graft ideas from p1), what each card plays live (p2 its draft plan, p1 its "
+            "proof's scene); the form's settings kept",
+            f"round {K} {rd.get('state')}; {[(p['k'], p['state'], p.get('live')) for p in ps]}; verdict {v.get('winner')} "
+            f"{v.get('ranking')}; proof_av {av.status_code} {av.headers.get('Content-Type')}; kept {kept}")
+        if page:
+            page.wait_for_selector(f"#pv-r{K} .pv-card video >> nth=1", timeout=30000)
+            page.wait_for_function(f"() => [...document.querySelectorAll('#pv-r{K} .pv-card video')].every(v => v.readyState >= 1)", timeout=30000)
+            vids = page.evaluate(f"[...document.querySelectorAll('#pv-r{K} .pv-card video')].map(v => [v.currentSrc.split('?')[0].split('/').slice(-2).join('/'), v.duration])")
+            card2 = page.inner_text(f"#pv-c{K}-2")
+            verdict = page.inner_text(f"#pv-v{K}")
+            say(sorted(x[0] for x in vids) == ["p1/proof_av.mp4", "p2/proof_av.mp4"] and all(abs(x[1] - w["seconds"]) < 0.1 for x in vids)
+                and "the critic's pick" in card2 and "pv-card win" in page.get_attribute(f"#pv-c{K}-2", "class") + " " and "from p1" in verdict
+                and "ambition" in card2 and page.locator(f"#pv-c{K}-1 .pv-style img").count() == 2 and "Build this one" in card2,
+                "UI: the round's cards: each proof with the song (the window's length), the style frames, the critic's scores; the "
+                "verdict (the critic's pick, its card outlined, the graft ideas)", f"{vids}; window {w.get('seconds')} s; {verdict[:120]!r}")
+            page.click(f"#pv-c{K}-2 .pv-lvb")
+            page.wait_for_selector(f"#pv-m{K}-2 iframe", timeout=20000)
+            page.wait_for_function("() => PV.player && PV.player.layers.filter(l => l.el && l.kind === 'scene').length && "
+                                   "PV.player.layers.filter(l => l.el && l.kind === 'scene').every(l => l.st && l.st.ready)", timeout=60000)
+            page.click("#pv-play")
+            page.wait_for_timeout(4000)
+            live = page.evaluate("({t: $('#pv-au').currentTime, paused: $('#pv-au').paused, ids: PV.player.layers.map(l => l.id), "
+                                 "scenes: PV.player.layers.map(l => l.scene), "
+                                 "on: PV.player.layers.filter(l => l.on && l.st).map(l => ({id: l.id, frame: l.st.frame, fps: l.st.fps, nerr: l.st.nerr}))})")
+            page.screenshot(path=os.path.join(shots, "pitch-live.png"), full_page=True)
+            page.evaluate(f"PV.player.seek({w['t1']} - 0.6); PV.player.play()")
+            page.wait_for_timeout(2500)
+            end = page.evaluate("[$('#pv-au').currentTime, $('#pv-au').paused]")
+            on = live.get("on") or [{}]
+            say(live["ids"] == ["s1", "s2"] and all(str(x).startswith(f"work/pitches/round-{K}/p2/scenes/") for x in live["scenes"])
+                and w["t0"] + 1 < live["t"] <= w["t1"] and not live["paused"]
+                and (on[0].get("frame") or 0) > w["a"] and on[0].get("nerr") == 0 and end[1] and w["t1"] - 0.1 <= end[0] <= w["t1"] + 0.4,
+                "UI: a card's ▶ live plays the pitch's draft plan (its own scenes) with the song inside the proof window (the "
+                "scene renders frames of the window) and pauses at the window's end", f"{live}; at the end {end}; window {w.get('t0')}-{w.get('t1')}")
+            page.click(f"#pv-c{K}-1 .pv-lvb")
+            page.wait_for_selector(f"#pv-m{K}-1 iframe", timeout=20000)
+            swap = page.evaluate(f"[PV.card, PV.player.layers.map(l => l.label), document.querySelectorAll('#pv-m{K}-2 video').length, "
+                                 "document.querySelectorAll('iframe').length]")
+            page.click(f"#pv-m{K}-1 button:has-text('close')")
+            page.wait_for_timeout(500)
+            shut = page.evaluate(f"[PV.player, PV.card, document.querySelectorAll('iframe').length, document.querySelectorAll('#pv-m{K}-1 video').length, !!$('#pv-au')]")
+            say(swap[0] == f"{K}-1" and str((swap[1] or [""])[0]).endswith("p1/scenes/proof/scene.js") and swap[2] == 1 and swap[3] == 1
+                and shut == [None, None, 0, 1, False],
+                "UI: another card's ▶ live replaces the first (its proof back; p1 plays its proof's scene); ✕ close destroys the "
+                "player (no frame, no song left, the proof back)", f"{swap}; closed {shut}")
+
+            def no_nudge(route):
+                body = json.loads(route.request.post_data or "{}")
+                sent.append(body)
+                route.continue_(post_data=json.dumps(dict(body, nudge=False)))
+            page.route("**/api/p/*/pitch-pick", no_nudge)
+            page.click(f"#pv-c{K}-2 .pv-build")
+            page.wait_for_function(f"() => location.hash.endsWith('/direct') && /round-{K}\\/p2/.test(($('#dir-pitch') || {{}}).innerText || '')", timeout=60000)
+            head = page.inner_text("#dir-pitch")
+            page.unroute("**/api/p/*/pitch-pick")
+            say(sent[-1] == {"round": K, "k": 2} and "Starting from pitch" in head and "your pick" in head,
+                "UI: Build this one (pitch-pick) takes you to the Direct page, which says the run starts from the pitch",
+                f"sent {sent[-1]}; {head[:140]!r}")
+        else:
+            requests.post(f"{B}/api/p/{name}/pitch-pick", json={"round": K, "k": 2, "nudge": False})
+        j, _ = wait_job(B, name, timeout=1500, want="direct")
+        d = requests.get(f"{B}/api/p/{name}/director").json()
+        R2 = requests.get(f"{B}/api/p/{name}/pitches").json()
+        pk = (R2.get("rounds") or [{}])[0].get("picked") or {}
+        pt = d.get("pitch") or {}
+        cmd = json.load(open(os.path.join(pdir, "work", "director", f"run-{d.get('run')}", "command.json"), encoding="utf-8"))["cmd"]
+        say(j.get("returncode") == 0 and d.get("state") == "done" and d.get("version") and pt.get("ref") == f"round-{K}/p2"
+            and pt.get("by") == "the user" and pk.get("k") == 2 and pk.get("run") == d.get("run") and pk.get("by") == "the user"
+            and d.get("model") == "fake" and d.get("effort") == "max" and d.get("ultracode") is True and d.get("max_usd") == 25
+            and d.get("budget_s") == 1800 and cmd[cmd.index("--max-budget-usd") + 1] == "25"
+            and open(os.path.join(pdir, "work", "concept.md"), encoding="utf-8").read() == open(os.path.join(pdir, (by.get(2) or {}).get("pitch") or "x"), encoding="utf-8").read(),
+            "pitch-pick: the director builds p2 with the Direct form's saved settings (fake, effort max, ultracode, cap $25, "
+            "30 min), its pitch put in place first; delivered; round.json's picked names the run",
+            f"run {d.get('run')} v{d.get('version')} {d.get('state')}; pitch {pt}; picked {pk}; {d.get('stop_reason')}")
+        if page:
+            page.reload()
+            page.wait_for_selector("#dir-pitch", timeout=15000)
+            page.wait_for_timeout(1500)
+            head, costs = page.inner_text("#dir-pitch"), page.inner_text("#dir-costs")
+            page.screenshot(path=os.path.join(shots, "direct-from-pitch.png"), full_page=True)
+            say(f"Started from pitch round-{K}/p2" in head and "the pitch round" in costs and "the round and this run" not in costs,
+                "UI: after the run the Direct page says it started from the pitch, and the round's cost next to the run's",
+                f"{head[:100]!r}; {costs.replace(chr(10), ' ')[:200]!r}")
+        e1 = requests.post(f"{B}/api/p/{name}/pitch-pick", json={"round": 99, "k": 1}).json()
+        e2 = requests.post(f"{B}/api/p/{name}/pitch-pick", json={"round": K, "k": 9}).json()
+        say("no pitch round 99" in e1.get("error", "") and "no p9" in e2.get("error", ""), "pitch-pick refuses an unknown round "
+            "or pitch", f"{e1.get('error')}; {e2.get('error')}")
+        # Stop on a pitch job: each pitch wraps up, the critic and the verdict on what exists, no director
+        requests.post(f"{B}/api/p/{name}/pitch", json=dict(form, auto=True, direct_budget="4"))
+        t0 = time.time()
+        while time.time() - t0 < 60 and not requests.get(f"{B}/api/p/{name}/pitches").json().get("running"):
+            time.sleep(1)
+        st = requests.post(f"{B}/api/p/{name}/stop").json()
+        j, _ = wait_job(B, name, timeout=600, want="pitch")
+        R3 = requests.get(f"{B}/api/p/{name}/pitches").json()
+        r3 = (R3.get("rounds") or [{}])[0]
+        d3 = requests.get(f"{B}/api/p/{name}/director").json()
+        say("each pitch wraps up" in st.get("stopping", "") and r3.get("round") == K + 1 and r3.get("state") == "stopped"
+            and r3.get("stop_reason") == "stopped by the user" and d3.get("run") == d.get("run") and not j.get("chained")
+            and time.time() - t0 < 400,
+            "POST stop on a pitch job: each pitch wraps up, the round says stopped, no director run starts (with 'go straight on' "
+            "ticked)", f"{st}; round {r3.get('round')} {r3.get('state')} ({r3.get('stop_reason')}) after {time.time() - t0:.0f} s; "
+                      f"last run {d3.get('run')}")
+    finally:
+        if b:
+            b.close()
+        if pw:
+            pw.stop()
+    if browser:
+        say(not errs, "UI: the Pitch round page (the form, the round at work, the cards, ▶ live, Build this one) and the "
+            "Direct page after it (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
+
+
 def lyric_timing_check(B, name):
     """The lyric timing editor's save: LRC in project.json, marked as timed on this song file, so the analysis uses the
     times as they are (here shifted 3 s on purpose: an offset search would have moved them back); the old lyrics kept;
@@ -651,7 +851,7 @@ def browser_pages(B, name, out):
         errs = []
         page.on("pageerror", lambda e: errs.append(str(e)))
         page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
-        for h in ["", f"{name}/song", f"{name}/analyse", f"{name}/listen", f"{name}/story", f"{name}/direct", f"{name}/watch"]:
+        for h in ["", f"{name}/song", f"{name}/analyse", f"{name}/listen", f"{name}/story", f"{name}/pitch", f"{name}/direct", f"{name}/watch"]:
             n0 = len(errs)
             page.goto(f"{B}/#{h}")
             page.wait_for_timeout(2500)
@@ -711,6 +911,11 @@ def browser_pages(B, name, out):
                 page.wait_for_function("() => /ambition/.test(($('#wcrit-md') || {}).innerText || '')", timeout=10000)
                 say("ambition" in page.inner_text("#wcritic") and page.locator("#go-critique").count() == 1,
                     "UI: the Watch page's critic box (scores, the notes, Ask the critic)", page.inner_text("#wcritic")[:90].replace("\n", " "))
+            if h.endswith("/pitch"):
+                page.wait_for_selector(".pv-card video", timeout=10000)
+                say(page.locator(".pv-round").count() == 2 and page.locator(".pv-card").count() == 4 and "Skip it" in page.inner_text("#pane")
+                    and page.locator(".pv-card.picked").count() == 1, "UI: the Pitch round page lists the rounds as cards (the pick marked)",
+                    f"{page.locator('.pv-round').count()} rounds, {page.locator('.pv-card').count()} cards")
             if h.endswith("/direct"):
                 say(page.locator("#d-critic option").count() == 4 and page.input_value("#d-critic") in ("sonnet", "fake"),
                     "UI: the Direct page's critic select", page.input_value("#d-critic"))

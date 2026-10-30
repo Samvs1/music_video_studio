@@ -47,6 +47,18 @@ the studio the clock, the render queue, the checks, the versions, the costs (and
   finish you get a turn of your own. At the deadline plus a grace it ends the session, archives the cut as the next
   version, runs the checks and appends the run settings (models and their costs, agents, ultracode) to report.md.
   `S clock <p>` prints the time left.
+- **A pitch round** (optional, and the user's choice: the web app's **Pitch round** page, or `S pitch <p>`; an
+  autonomous director never starts one): before a run, several directors pitch the video at once from different
+  angles, each proving its idea on the same short window around the song's biggest moment; the critic looks at every
+  proof and a verdict ranks them, ambition first.
+  If the run's brief says the user picked a pitch (`direct --pitch round-K/pN`), its pitch is your `work/concept.md`,
+  its scenes, style frames and draft plan are in place, and the brief has the critic's notes on its proof and the
+  verdict's ideas worth grafting from the other pitches. It's your starting point, not your ceiling: the proof is a
+  first draft of one window, made in twenty minutes; build the whole song from it and go further, graft what makes it
+  bolder, rewrite the concept where it gets stronger. Full reign as always. Interactively, when the user is torn
+  between directions or asks for options, suggest a pitch round (the Pitch round page, or `S pitch <p> --n 3 --budget
+  20m`: several short sessions on their plan; they watch the proofs with the song and pick) rather than fanning out
+  concept agents yourself.
 - **Interactive runs** (`/musicvideo`): the same steps. Run anything over about two minutes **in the background**
   (Bash `run_in_background`) and keep working: you're told when it ends. Don't poll it with sleep loops. The critic
   is yours to call (`S critique`), and `S deliver <p> --critic` archives the cut.
@@ -95,8 +107,8 @@ picks (a few lines, a silhouette, a colour pair, a puppet). Never put the pictur
 (filtered, cut out, auto-traced), in the video. Afterwards use `work/cast.md`, not the pictures.
 
 Think of three genuinely different concepts (one from the story, one from the song's structure or sound, one wild;
-agents can each take an angle), then commit to one. Write `work/concept.md` (the critic judges against it, every agent
-reads it word for word):
+agents can each take an angle), then commit to one. (Starting from a picked pitch: it is the concept to push further,
+not one of three.) Write `work/concept.md` (the critic judges against it, every agent reads it word for word):
 - the idea in two sentences, and why it belongs to *this* song
 - the visual language: marks / shapes / figures, palette, typography (fonts in `assets/fonts`, all OFL / Apache, licences
   there), motion rules, camera (or none); one deliberate rupture
@@ -218,7 +230,9 @@ needs. Fan out where ideas multiply, not where tokens multiply:
   signature moment, alternative style frames or motifs; once the look is in shared code, a rig, a model, an engine or
   a scene built to a clear spec; a chore that needs some judgment (a timing table from your song notes). **Not**:
   several agents reading the same song folder, looking at the same render, or babysitting the same command; anything
-  that needs your judgment of the whole film.
+  that needs your judgment of the whole film. **Competing concepts**: in an interactive session, suggest a pitch round
+  to the user rather than fanning out concept agents (each pitch proves its idea on the song, the critic compares
+  them, the user picks); in an autonomous run, fan out concept agents when that makes the idea bolder.
 - **Mechanical stages are commands, not thinking**: rendering, assembling, the checks and the eyes run as plain Bash
   in the background (they queue anyway), not through an agent.
 - **How**: the Agent tool, in the background with `run_in_background: true` (you're told when it finishes; work on,

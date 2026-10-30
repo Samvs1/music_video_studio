@@ -104,11 +104,13 @@ def print_cmd(model=None, effort=None, tools=("Read",), max_usd=None, args=()):
     return cmd + list(args)
 
 
-def claude_print(prompt, cwd, model=None, effort=None, tools=("Read",), timeout=1200, max_usd=None, args=(), env=None):
+def claude_print(prompt, cwd, model=None, effort=None, tools=("Read",), timeout=1200, max_usd=None, args=(), env=None,
+                 on_start=None):
     """One headless print-mode call with read-only tools. The answer's text is "text" (the json "result"; the raw
     stdout when it isn't json), "json" the parsed reply ({} if none). Raises RuntimeError only when Claude Code is
     missing or doesn't answer in time; a call that ran but failed comes back with ok False and its stderr.
-    A CLI that doesn't know --max-budget-usd is asked again without it (and says so in "warnings")."""
+    A CLI that doesn't know --max-budget-usd is asked again without it (and says so in "warnings").
+    on_start(proc): called with the process once it runs (a caller in another thread can end it: kill_tree)."""
     tools = list(tools)
     warnings = []
     # a call started from inside a Claude Code session (an interactive director running the critic) is a session of
@@ -121,6 +123,8 @@ def claude_print(prompt, cwd, model=None, effort=None, tools=("Read",), timeout=
         proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding="utf-8", errors="replace", env=env,
                                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        if on_start:
+            on_start(proc)
         try:
             out, err = proc.communicate(prompt, timeout=timeout)
         except subprocess.TimeoutExpired:

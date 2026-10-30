@@ -13,7 +13,7 @@ What I want: a full music video like a real official music video, with a lot of 
 - You can't hear the audio. Don't say you listened to or watched something you didn't. When you say something looks right, it's because you looked at frames.
 - No rapid bright flashing that could affect photosensitive viewers.
 - Before you finish, check that the file plays to the end and that the visuals are in sync with the song file.
-- Then write report.md: what you made and the idea behind it, how you made it, what you checked, and what you're unsure about, including timestamps a human should check by ear.
+- Then write report.md: what you made and the idea behind it, how you made it, what you checked, and what you're unsure about, including timestamps a human should check by ear.{{pitch}}
 
 ---
 Notes from the studio (how this machine works):

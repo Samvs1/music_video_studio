@@ -4,7 +4,9 @@ Carried over from aftermovie-studio's server (jobs, range requests, project file
   python tools/studio.py serve            -> http://127.0.0.1:8765/
 
 Pages: Song & brief (upload, notes, reference pictures, delivery format, lyrics) · Analyse (ingest with progress) ·
-The song (the song viewer) · Story (draft with Claude, edit) · Direct (the autonomous run: one director with full
+The song (the song viewer) · Story (draft with Claude, edit) · Pitch round (optional: several directors pitch from
+different angles, the critic compares, you pick the one the director builds; each pitch a card with its proof, the
+song, "▶ live" and the critic's notes, the verdict, "Build this one") · Direct (the autonomous run: one director with full
 reign, agents its choice, ultracode and a cost cap optional; live progress: the live log, the critic's notes; or the
 interactive command; "▶ play the scenes live" during a run) · Watch (each version above the song lanes, notes with N, the report,
 the checks and the critic's notes, "Ask the critic"; and "▶ live": the project's scenes played in the browser with the
@@ -30,7 +32,15 @@ API (JSON):
                                                                           revise, critic_model, ultracode, max_usd, nudge}
   POST /api/p/<p>/critique {version | video, model}                       (the critic looks at a version or a video: job "critique";
                                                                            a version's notes land in final/critic_vN.md)
-  POST /api/p/<p>/stop (the running job)                                 POST /api/p/<p>/note {version, t, text}
+  POST /api/p/<p>/pitch {n, budget, model, effort, critic_model, seed_notes, max_usd, auto, direct_budget}
+                                        (the pitch round: job "pitch", `studio.py pitch`; auto: the critic's pick is built
+                                         at once by a director run of direct_budget minutes on the Direct form's settings)
+  GET  /api/p/<p>/pitches               (the pitch rounds, newest first: round.json with the URLs of each pitch's files and
+                                         what its card's live player plays; the running one; the Direct form's settings)
+  POST /api/p/<p>/pitch-pick {round, k} (Build this one: job "direct", `studio.py direct --pitch round-K/pN` with the
+                                         Direct form's saved settings)
+  POST /api/p/<p>/stop (the running job; a director or a pitch round      POST /api/p/<p>/note {version, t, text}
+                        wraps up cleanly)
                                                                           (a live note: version "live", scene, timeline)
   POST /api/p/<p>/note-edit {id, done | delete | text}                  POST /api/p/<p>/deliver
 """
@@ -190,7 +200,8 @@ def project_state(name):
     return {"name": name, "studio": STUDIO, "project": pj, "song": song_info(name, d), "story": story_state(d),
             "versions": versions_state(name, d, pj), "notes": jload(os.path.join(d, "review", "notes.json"), []),
             "files": files, "job": job_state(name), "director": director_state(name, brief=False), "formats": FORMATS,
-            "status": jload(os.path.join(d, "cache", "status.json"), {}), "critiques": critiques_state(name, d)}
+            "status": jload(os.path.join(d, "cache", "status.json"), {}), "critiques": critiques_state(name, d),
+            "pitch": pitch_summary(d)}
 
 
 def director_state(name, brief=True):
@@ -203,7 +214,7 @@ def director_state(name, brief=True):
                                                "started", "deadline", "elapsed_s", "wall_s", "cost_usd", "turns", "version",
                                                "stop_reason", "result", "final_exists", "messages_sent", "claude_version",
                                                "critic_model", "critic_cost_usd", "version_critique", "ultracode", "max_usd",
-                                               "budget_hit", "agents", "model_usage", "background", "working")}
+                                               "budget_hit", "agents", "model_usage", "background", "working", "pitch")}
     out["critiques"] = [dict(c, url=f"/p/{name}/{c['file']}") for c in st.get("critiques") or [] if c.get("file")]
     import director                          # the costs per model, labelled as in report.md; the total with the critic
     out["costs"], out["total_usd"] = director.cost_rows(out), director.total_cost(out)
@@ -291,27 +302,45 @@ def job_state(name):
     except Exception:
         tail = []
     out = {"running": rc is None, "job": j["job"], "returncode": rc, "log": tail, "elapsed": round(time.time() - j["started"])}
-    if st.get("job") == j["job"]:
+    mine = float(st.get("started") or 0) >= j["started"] - 1          # written by this job, not left by the last one
+    chained = mine and j["job"] == "pitch" and st.get("job") == "direct"
+    if mine and st.get("job") == j["job"] or chained:     # (pitch --auto: the round, then the director run it started, in one job)
         out.update(steps=st.get("steps"), i=st.get("i"), state=st.get("state"), error=st.get("error"), warnings=st.get("warnings", []))
+    if chained:
+        out["chained"] = "direct"
     return out
 
 
 def stop_job(name):
+    from mv.claude import kill_tree
     j = JOBS.get(name)
     if not j or j["proc"].poll() is not None:
+        import director, pitch
+        d = pdir(name)
+        if director.run_active(d) or pitch.round_active(d):     # started from the command line: asked the same way
+            director.request_stop(d)
+            return {"ok": True, "stopping": "asked it to stop (it was started from the command line): it wraps up cleanly"}
         return {"ok": True, "running": False}
-    if j["job"] == "direct":                 # the runner wraps up cleanly (archive, checks, report); force it if it hangs
-        import director
+    if j["job"] in ("direct", "pitch"):      # the runner wraps up cleanly (archive, checks, report); force it if it hangs
+        import director                      # (a pitch round: each pitch ends; the critic and the verdict on what exists)
         director.request_stop(pdir(name))
 
         def force():
-            time.sleep(180)
+            import pitch
+            time.sleep(180 if j["job"] == "direct" else 900)
+            t_end = time.time() + 3600
+            while j["job"] == "pitch" and j["proc"].poll() is None and time.time() < t_end:
+                r = pitch.round_active(pdir(name))       # the critic and the verdict on what exists (round.json fresh):
+                if not r or r.get("stage") in (None, "pitching", "done"):           # let them finish; a round still
+                    break                                                           # pitching 15 min on is stuck
+                time.sleep(20)
             if j["proc"].poll() is None:
-                j["proc"].terminate()
+                kill_tree(j["proc"])         # with the sessions it started: they'd keep spending
         threading.Thread(target=force, daemon=True).start()
-        return {"ok": True, "stopping": "the director wraps up within a minute or two"}
+        director_now = j["job"] == "direct" or job_state(name).get("chained") == "direct"    # (pitch --auto: its director run)
+        return {"ok": True, "stopping": "the director wraps up within a minute or two" if director_now else
+                "each pitch wraps up; the critic and the verdict look at what exists"}
     if j["job"] == "critique":               # with the critic.py and the claude call it started: they'd keep spending
-        from mv.claude import kill_tree
         kill_tree(j["proc"])
         return {"ok": True}
     j["proc"].terminate()
@@ -321,29 +350,43 @@ def stop_job(name):
 # ------------------------------------------------------------------ writes
 BRIEF_KEYS = {"title", "about", "mood", "ideas", "avoid", "lyrics"}
 DIRECTOR_KEYS = ("model", "effort", "budget", "critic_model", "critic_effort", "ultracode", "max_usd")
+PITCH_KEYS = ("n", "budget", "model", "effort", "critic_model", "max_usd", "auto", "direct_budget")
 OLD_DIRECTOR_KEYS = ("mode", "planner_effort", "builders", "builder_model", "builder_effort")     # the removed pipeline's
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 MODEL_RE = re.compile(r"[A-Za-z0-9._\[\]-]{1,60}")
 
 
+def budget_of(x, default):
+    """A time budget from a form: minutes ("90" -> "90m") or as the studio reads it ("1h30m")."""
+    budget = str(x or default).strip()
+    return budget + "m" if re.fullmatch(r"\d+", budget) else budget
+
+
+def cap_of(x):
+    """A cost cap in dollars from a form ("25", "$25"), or 0 for none (anything out of range too)."""
+    try:
+        cap = float(str(x or "").strip().lstrip("$") or 0)
+    except ValueError:
+        cap = 0
+    return cap if 0 < cap <= 10000 else 0
+
+
+def on(x):
+    return x is True or str(x).lower() in ("1", "true", "on")
+
+
 def direct_args(name, body):
     """The Direct page's form -> `studio.py direct`: one director (effort default max), the critic, ultracode (the
     Workflow tool: more tokens), an optional cost cap in dollars. Anything out of range is left to the defaults."""
-    budget = str(body.get("budget") or "90m")
-    if re.fullmatch(r"\d+", budget):
-        budget += "m"
-    args = ["direct", name, "--budget", budget, "--effort", body.get("effort") if body.get("effort") in EFFORTS else "max"]
+    args = ["direct", name, "--budget", budget_of(body.get("budget"), "90m"),
+            "--effort", body.get("effort") if body.get("effort") in EFFORTS else "max"]
     for key, flag in (("model", "--model"), ("critic_model", "--critic-model")):
         if MODEL_RE.fullmatch(str(body.get(key) or "")):
             args += [flag, str(body[key])]
-    if body.get("ultracode") is True or str(body.get("ultracode")).lower() in ("1", "true", "on"):
+    if on(body.get("ultracode")):
         args.append("--ultracode")
-    try:
-        cap = float(str(body.get("max_usd") or "").strip().lstrip("$") or 0)
-    except ValueError:
-        cap = 0
-    if 0 < cap <= 10000:
-        args += ["--max-usd", f"{cap:g}"]
+    if cap_of(body.get("max_usd")):
+        args += ["--max-usd", f"{cap_of(body['max_usd']):g}"]
     if str(body.get("seed_notes") or "").strip():
         args += ["--seed-notes", str(body["seed_notes"])[:4000]]
     if body.get("revise"):
@@ -351,6 +394,144 @@ def direct_args(name, body):
     if body.get("nudge") is False:                  # not on the page (tests, scripts): no early-finish nudge
         args.append("--no-nudge")
     return args
+
+
+def saved_direct(pj):
+    """The Direct form's saved settings (project.json "director") as the form would send them; its effort counts only
+    when this form saved it (it always saves ultracode: the old forms saved "high" each time)."""
+    d = pj.get("director") or {}
+    body = {k: d.get(k) for k in ("budget", "model", "critic_model", "ultracode", "max_usd")}
+    body["effort"] = d.get("effort") if "ultracode" in d and d.get("effort") in EFFORTS else "max"
+    body["budget"] = body["budget"] or "90"
+    return body
+
+
+# ------------------------------------------------------------------ the pitch round (optional: several directors pitch, you pick)
+def pitch_args(name, body):
+    """The Pitch round page's form -> `studio.py pitch`: how many pitches (2-5), the minutes per pitch, the model, the
+    effort (default high), the critic (the judge: never off), notes for the round, a cost cap per pitch; "let the critic
+    pick and go straight on" = --auto with a director run of direct_budget minutes on the Direct form's saved settings
+    (the model, the effort, ultracode, the cap; the round's critic)."""
+    d = pdir(name)
+    try:
+        n = int(body.get("n") or 3)
+    except (TypeError, ValueError):
+        raise ValueError("how many pitches? 2 to 5")
+    if not 2 <= n <= 5:
+        raise ValueError(f"{n} pitches: a pitch round has 2 to 5")
+    args = ["pitch", name, "--n", str(n), "--budget", budget_of(body.get("budget"), "20m"),
+            "--effort", body.get("effort") if body.get("effort") in EFFORTS else "high"]
+    if MODEL_RE.fullmatch(str(body.get("model") or "")):
+        args += ["--model", str(body["model"])]
+    cm = str(body.get("critic_model") or "")
+    if cm == "off":
+        raise ValueError("the pitch round needs the critic: it looks at every proof, and the verdict is its call")
+    if MODEL_RE.fullmatch(cm):
+        args += ["--critic-model", cm]
+    if cap_of(body.get("max_usd")):
+        args += ["--max-usd", f"{cap_of(body['max_usd']):g}"]
+    if str(body.get("seed_notes") or "").strip():
+        args += ["--seed-notes", str(body["seed_notes"])[:4000]]
+    if on(body.get("auto")):
+        sd = saved_direct(jload(os.path.join(d, "project.json"), {}))
+        args += ["--auto", "--direct-budget", budget_of(body.get("direct_budget") or sd["budget"], "90m"), "--direct-effort", sd["effort"]]
+        if MODEL_RE.fullmatch(str(sd.get("model") or "")):
+            args += ["--direct-model", str(sd["model"])]
+        if cap_of(sd.get("max_usd")):
+            args += ["--direct-max-usd", f"{cap_of(sd['max_usd']):g}"]
+        if on(sd.get("ultracode")):
+            args.append("--ultracode")
+    return args
+
+
+def pitch_live(d, rd, p):
+    """What a pitch card's "▶ live" plays: its draft plan (the live state's timeline "pitch:round-K/pN") when it has
+    one, and the scene its proof was rendered from (the proof's sidecar), else its first scene."""
+    side = jload(os.path.join(d, p["proof"] + ".mv.json"), None) if p.get("proof") else None
+    scene = (side or {}).get("scene") if isinstance(side, dict) else None
+    if not (isinstance(scene, str) and scene.lower().endswith((".js", ".mjs", ".html", ".htm")) and os.path.isfile(os.path.join(d, scene))):
+        scene = next((x for x in p.get("scenes") or [] if x.lower().endswith((".js", ".mjs", ".html", ".htm"))
+                      and "/scenes/lib/" not in x), None)
+    tl = f"pitch:{os.path.basename(rd)}/p{p['k']}" if p.get("plan") else None
+    return {"timeline": tl, "scene": scene} if tl or scene else None
+
+
+def pitch_summary(d):
+    """The project's pitch rounds in short (the step list, the Direct page): how many, the newest, any picked."""
+    import pitch
+    try:
+        rs = [r for r in pitch.rounds(d) if r.get("state") != "dry-run"]
+    except Exception:
+        rs = []
+    if not rs:
+        return None
+    r = rs[0]
+    import director                          # a director run started after the round: its pitches were passed over
+    later = float((director.current(d) or {}).get("started") or 0) > float(r.get("updated") or r.get("started") or 0)
+    return {"rounds": len(rs), "round": r.get("round"), "state": r.get("state"), "winner": (r.get("verdict") or {}).get("winner"),
+            "picked": r.get("picked"), "running": bool(pitch.round_active(d)), "any_picked": any(x.get("picked") for x in rs),
+            "delivered": sum(1 for p in r.get("pitches") or [] if p.get("pitch")), "run_since": later}
+
+
+def pitches_state(name):
+    """GET /api/p/<p>/pitches: every pitch round, newest first (tools/pitch.py: round.json), with the URLs of what each
+    pitch made (pitch.md, the proof with the song, the style frames, the critic's notes, the verdict) and what its
+    card's live player plays; the running round; the angles; the Direct form's saved settings (Build this one)."""
+    import pitch
+    d = pdir(name)
+    pj = jload(os.path.join(d, "project.json"), {})
+    active = pitch.round_active(d)
+    out = []
+    for r in pitch.rounds(d):
+        if r.get("state") == "dry-run":                  # (`pitch --dry-run`: briefs written, nothing pitched)
+            continue
+        rd = os.path.join(d, *(r.get("dir") or f"work/pitches/round-{r.get('round')}").split("/"))
+        r["running"] = bool(active) and active.get("round") == r.get("round")
+        r["cut_off"] = r.get("state") == "running" and not r["running"]       # its runner stopped writing round.json
+        v = r.get("verdict") or {}
+        if v.get("file"):
+            v["url"] = file_url(name, d, v["file"])
+        for p in r.get("pitches") or []:
+            p["urls"] = {k: file_url(name, d, p.get(k)) for k in ("pitch", "proof", "proof_av")}
+            p["style_urls"] = [u for u in (file_url(name, d, x) for x in p.get("style") or []) if u]
+            c = p.get("critic") or {}
+            if c.get("file"):
+                c["url"] = file_url(name, d, c["file"])
+            p["live"] = pitch_live(d, rd, p)
+        out.append(r)
+    return {"rounds": out, "running": bool(active), "now": time.time(), "job": job_state(name), "ideas": pitch.has_ideas(pj),
+            "angles": [{"key": k, "name": a[0]} for k, a in pitch.ANGLES.items()],
+            "order": list(pitch.ORDER_IDEAS if pitch.has_ideas(pj) else pitch.ORDER), "direct": saved_direct(pj),
+            "settings": pj.get("pitch") or {}}
+
+
+def pick_pitch(name, body):
+    """A pitch card's "Build this one": the director starts from that pitch (`studio.py direct --pitch round-K/pN`: it is
+    put in place first, and the director, with full reign, is told to go further) with the Direct form's saved
+    settings (budget, model, effort, critic, ultracode, cap), as the background job "direct"."""
+    import pitch
+    d = pdir(name)
+    try:
+        K, k = int(body.get("round")), int(body.get("k"))
+    except (TypeError, ValueError):
+        raise ValueError("which pitch? {round, k}")
+    r = pitch.load_round(d, K)
+    if not isinstance(r, dict):
+        raise ValueError(f"no pitch round {K}")
+    if pitch.round_active(d) and pitch.round_active(d).get("round") == K:
+        raise ValueError(f"pitch round {K} is still running: pick a pitch when it's done")
+    rec = next((p for p in r.get("pitches") or [] if p.get("k") == k), None)
+    if not rec:
+        raise ValueError(f"round {K} has no p{k}")
+    if not rec.get("pitch") or not os.path.isfile(os.path.join(d, rec["pitch"])):
+        raise ValueError(f"p{k} has no pitch.md: it can't be built (pick another pitch)")
+    sd = saved_direct(jload(os.path.join(d, "project.json"), {}))
+    for key in ("seed_notes", "nudge"):                 # (nudge: not on the page; tests, scripts)
+        if key in body:
+            sd[key] = body[key]
+    args = direct_args(name, sd) + ["--pitch", f"round-{K}/p{k}"]
+    start_job(name, "direct", args)
+    return {"ok": True, "args": args[2:]}
 
 
 def save_brief(name, body):
@@ -390,6 +571,9 @@ def update_brief(d, body):
         pj["format"] = new
         if old.get("fps") and old.get("fps") != new["fps"] and os.path.exists(os.path.join(d, "song", "frames.json")):
             pj.setdefault("status", {})["frames_stale"] = True          # frames.json is per fps: remake it
+    if isinstance(body.get("pitch"), dict):                         # the Pitch round page's last choices (merged)
+        pj["pitch"] = dict(pj.get("pitch") or {}, **{k: v if isinstance(v, bool) else str(v)[:40] for k, v in body["pitch"].items()
+                                                     if k in PITCH_KEYS})
     if isinstance(body.get("director"), dict):                      # the Direct page's last choices (merged)
         pj["director"] = dict({k: v for k, v in (pj.get("director") or {}).items() if k not in OLD_DIRECTOR_KEYS},
                               **{k: v if isinstance(v, bool) else str(v)[:40] for k, v in body["director"].items() if k in DIRECTOR_KEYS})
@@ -763,6 +947,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json(director_state(parts[2]) or {})
             if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "live":
                 return self.send_json(live_state(parts[2]))
+            if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "pitches":
+                return self.send_json(pitches_state(parts[2]))
             if parts[:2] == ["api", "doctor"]:
                 r = subprocess.run([PY, os.path.join(TOOLS, "studio.py"), "doctor"], capture_output=True, text=True, encoding="utf-8",
                                    errors="replace", cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
@@ -821,6 +1007,11 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json({"ok": True})
                 if act == "critique":
                     return self.send_json(start_critique(name, body))
+                if act == "pitch":
+                    start_job(name, "pitch", pitch_args(name, body))
+                    return self.send_json({"ok": True})
+                if act == "pitch-pick":
+                    return self.send_json(pick_pitch(name, body))
                 if act == "stop":
                     return self.send_json(stop_job(name))
                 if act == "note":

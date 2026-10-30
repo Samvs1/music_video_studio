@@ -254,6 +254,39 @@ video{max-height:58vh}
 .lv-st .slow b,.lv-st .slow{color:var(--acc)}
 .lv-st .bad{color:var(--bad)}
 a.lv-go{font-weight:700;white-space:nowrap}
+/* the pitch round (optional): the form or skip it, the running round, the rounds as cards */
+nav.steps .dot.opt{background:transparent;border:1.5px dashed #55555c}
+nav.steps .dot.opt.done{background:var(--ok);border:0}
+nav.steps .opt-l{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:99px;padding:0 6px}
+.tag.opt{font:12px system-ui;vertical-align:middle;margin:0 0 0 8px;letter-spacing:0}
+.pv-run{border-color:#4a3d12}
+.pv-row{border-top:1px solid var(--line);padding:8px 0 4px;font-size:13px}
+.pv-row pre.log{max-height:96px;margin:6px 0 0;font-size:11.5px}
+.pv-round{margin-top:16px}
+.pv-verdict{background:#151517;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0 14px;font-size:14px}
+.pv-verdict ol,.pv-verdict ul{margin:6px 0;padding-left:20px}
+.pv-verdict li{margin:2px 0}
+.pv-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.pv-card{background:#151517;border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.pv-card.win{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.pv-card.picked{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok)}
+.pv-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+.pv-k{font:13px SpaceMono,monospace;color:var(--acc)}
+.pv-angle{color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-size:11.5px}
+.pv-badge{font-size:12px;padding:2px 9px;border-radius:99px;background:var(--acc);color:#111;font-weight:700}
+.pv-badge.ok{background:var(--ok)}
+.pv-title{font:24px/1.15 Anton,Impact,sans-serif;letter-spacing:.01em}
+.pv-idea{margin:0;color:#d6d6da;font-size:14px}
+.pv-style{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.pv-style img{width:100%;object-fit:cover;border-radius:6px;background:#000;cursor:zoom-in;display:block}
+.pv-media video{max-height:none}
+.pv-lvbar{gap:8px;margin-top:6px;font-size:13px}
+.pv-lvbar .t{font:12.5px SpaceMono,monospace;white-space:nowrap}
+.pv-lvbar input[type=range]{flex:1;min-width:80px;padding:0}
+.pv-crit{font-size:13px;border-top:1px solid var(--line);padding-top:8px}
+.pv-crit p{margin:4px 0}
+.pv-crit .pr{color:var(--mut);margin:3px 0}
+.pv-acts{gap:8px 12px;font-size:13px}
 </style>
 </head>
 <body>
@@ -276,13 +309,14 @@ const fmt = t => { t = Math.max(0, t); return Math.floor(t / 60) + ":" + String(
 const dur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m ${String(x).padStart(2, "0")}s`; };
 
 let S = null, step = "song", poll = null, dpoll = null;
-const STEPS = [["song", "Song & brief"], ["analyse", "Analyse"], ["listen", "The song"], ["story", "Story"], ["direct", "Direct"], ["watch", "Watch & review"]];
+const STEPS = [["song", "Song & brief"], ["analyse", "Analyse"], ["listen", "The song"], ["story", "Story"], ["pitch", "Pitch round", true],
+               ["direct", "Direct"], ["watch", "Watch & review"]];     // (true: optional, a choice, not a stage)
 
 function go(hash) { location.hash = hash; }
 window.onhashchange = route;
 async function route() {
   clearInterval(poll); clearInterval(dpoll); clearInterval(lxPoll);
-  lxRestore(); svStop(); lvStop(); document.onkeydown = document.onkeyup = null;
+  lxRestore(); svStop(); lvStop(); pvClose(); document.onkeydown = document.onkeyup = null;
   const h = location.hash.slice(1).split("/");
   if (!h[0]) return home();
   step = STEPS.some(s => s[0] === h[1]) ? h[1] : "song";
@@ -311,12 +345,13 @@ async function load(name) {
   S = await api("/api/p/" + name);
   $("#crumb").innerHTML = "/ " + esc(S.project.title || name);
   const openNotes = S.notes.filter(n => !n.done).length;
-  const done = {song: !!S.song.file, analyse: !!S.song.map, listen: !!S.song.map, story: S.story.written,
+  const done = {song: !!S.song.file, analyse: !!S.song.map, listen: !!S.song.map, story: S.story.written, pitch: !!(S.pitch && S.pitch.any_picked),
                 direct: S.versions.length > 0, watch: S.versions.length > 0 && !openNotes};
-  $("#main").innerHTML = `<div class="layout"><nav class="steps">${STEPS.map(([k, l], i) =>
-      `<div class="${k === step ? "on" : ""}" onclick="go('${name}/${k}')"><span class="dot ${done[k] ? "done" : ""}">${done[k] ? "&#10003;" : i + 1}</span>${l}${k === "watch" && openNotes ? ` <span class="tag" style="margin:0">${openNotes} notes</span>` : ""}</div>`).join("")}</nav>
+  let num = 0;                                  // (the optional step has no number: the steps around it count on)
+  $("#main").innerHTML = `<div class="layout"><nav class="steps">${STEPS.map(([k, l, opt]) => { if (!opt) num++;
+      return `<div class="${k === step ? "on" : ""}" onclick="go('${name}/${k}')"${opt ? ' title="optional: your choice, never a required step"' : ""}><span class="dot ${done[k] ? "done" : ""} ${opt ? "opt" : ""}">${done[k] ? "&#10003;" : opt ? "" : num}</span>${l}${opt ? ` <span class="opt-l">optional</span>` : ""}${k === "watch" && openNotes ? ` <span class="tag" style="margin:0">${openNotes} notes</span>` : ""}</div>`; }).join("")}</nav>
     <section class="panel" id="pane"></section></div>`;
-  ({song: vBrief, analyse: vAnalyse, listen: vListen, story: vStory, direct: vDirect, watch: vWatch})[step]();
+  ({song: vBrief, analyse: vAnalyse, listen: vListen, story: vStory, pitch: vPitch, direct: vDirect, watch: vWatch})[step]();
 }
 const refresh = () => load(S.name);
 
@@ -415,19 +450,22 @@ async function startJob(kind, body, onDone) {
 }
 async function stopJob() { const r = await post(`/api/p/${S.name}/stop`); toast(r.stopping || "Stopping"); }
 let jobKinds = [];
+const isJob = (j, k) => !!j && (j.job === k || j.chained === k);     // (pitch --auto: the round, then its director run)
+const directing = j => !!(j && j.running && isJob(j, "direct"));
 function renderJob(j) {
   lastJob = j;
   jobKinds.forEach(k => {
     const g = $("#go-" + k), st = $("#stop-" + k);
     if (g) g.disabled = !!j.running || g.dataset.off === "1";
-    if (st) st.style.display = j.running && j.job === k ? "" : "none";
+    if (st) st.style.display = j.running && isJob(j, k) ? "" : "none";
   });
-  if (!j.job || !jobKinds.includes(j.job)) return;
-  const sl = $("#sl-" + j.job), lg = $("#lg-" + j.job), wn = $("#wn-" + j.job);
+  const kind = jobKinds.find(k => j.job === k) || jobKinds.find(k => j.chained === k);
+  if (!kind) return;
+  const sl = $("#sl-" + kind), lg = $("#lg-" + kind), wn = $("#wn-" + kind);
   if (sl && j.steps) sl.innerHTML = j.steps.map((s, i) => `<li class="${i < j.i || j.state === "done" ? "done" : i === j.i && j.running ? "now" : ""}">${i < j.i || j.state === "done" ? "&#10003;" : i === j.i && j.running ? '<span class="spin"></span>' : "&middot;"} ${esc(s)}</li>`).join("");
-  if (wn && j.warnings && j.warnings.length) wn.innerHTML = `<ul class="qa" style="color:var(--acc)">${j.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`;
+  if (wn) wn.innerHTML = (j.warnings && j.warnings.length ? `<ul class="qa" style="color:var(--acc)">${j.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "")
+    + (j.state === "error" && j.error ? `<p style="color:var(--bad)">${esc(j.error)}</p>` : "");      // (drawn whole each time: nothing piles up)
   if (lg && j.log && j.log.length) { lg.style.display = ""; lg.textContent = j.log.join("\n"); lg.scrollTop = 1e9; }
-  if (wn && j.state === "error" && j.error) wn.innerHTML += `<p style="color:var(--bad)">${esc(j.error)}</p>`;
 }
 let sawRunning = false;
 function watchJob(kinds, onDone) {
@@ -436,7 +474,7 @@ function watchJob(kinds, onDone) {
   const tick = async () => {
     const j = await api(`/api/p/${S.name}/job`);
     renderJob(j);
-    if (j.running) { if (jobKinds.includes(j.job)) sawRunning = true; return; }
+    if (j.running) { if (jobKinds.some(k => isJob(j, k))) sawRunning = true; return; }
     clearInterval(poll);
     if (sawRunning) {
       sawRunning = false;
@@ -530,6 +568,223 @@ function draftStory() {
 async function saveStory() { try { await post(`/api/p/${S.name}/story`, {text: $("#st-text").value}); toast("Story saved"); refresh(); } catch (e) { toast(e.message); } }
 function storyPreview() { const el = $("#st-prev"); el.style.display = ""; el.innerHTML = mdHtml($("#st-text").value); }
 
+// ---------------------------------------------------------------- 4b. the pitch round (optional: a choice, not a stage)
+// Several directors pitch the video at the same time, each from its own angle, each proving its idea on the same short
+// window of the song; the critic looks at every proof and one verdict ranks them, ambition first (the safe option never
+// wins); you pick the one the director builds ("Build this one": `direct --pitch`, with the Direct form's settings), or
+// you skip it all. GET /api/p/<p>/pitches (tools/pitch.py: round.json). A card's "▶ live" plays the pitch's scenes over
+// the proof window (livePlayer with window [t0, t1]); closing it destroys the player.
+const PV = {R: null, sig: "", player: null, card: null, keep: null, last: 0};
+const PSTATE = {starting: "starting", done: "delivered", "no proof": "no proof", failed: "failed", stopped: "stopped", "dry-run": "dry run"};
+const yes = x => x === true || ["1", "true", "on"].includes(String(x).toLowerCase());
+const pvWindow = w => w && w.t1 ? `${fmt(w.t0)}–${fmt(w.t1)} of the song (${w.seconds} s, bar:beat ${esc(w.pos0)} to ${esc(w.pos1)})` : "";
+const pvDirectText = d => `${parseInt(d.budget) || 90} min, ${d.model || "opus"}, effort ${d.effort || "max"}, ${d.critic_model === "off" ? "no critic" : `the critic ${d.critic_model || "sonnet"}`}${yes(d.ultracode) ? ", ultracode" : ""}${d.max_usd ? `, cap $${d.max_usd}` : ""}`;
+function vPitch() {
+  const st = S.project.pitch || {}, d = S.project.director || {}, pre = (k, x) => st[k] != null && st[k] !== "" ? st[k] : x;
+  const crit = pre("critic_model", d.critic_model && d.critic_model !== "off" ? d.critic_model : "sonnet"), again = !!(S.pitch && S.pitch.rounds);
+  $("#pane").innerHTML = `<h2>Pitch round <span class="tag opt">optional</span></h2>
+  <p class="mut">Several directors pitch from different angles; the critic compares; you pick which one the director builds. Skip it and the director starts from your notes.</p>
+  <div id="pv-run" style="margin-bottom:16px"></div>
+  <div id="pv-rounds" style="margin-bottom:16px"></div>
+  <div class="cards2"><div class="box"><div class="hand">a few bold ideas first</div><h2 style="font-size:24px">${again ? "Hold another pitch round" : "Hold a pitch round"}</h2>
+    <p class="mut">Each director gets its own angle and knows the others pitch at the same time from theirs: it has to be unmistakably different, and as bold as it can make well. Each proves its idea on the same short window around the song's biggest moment: a proof you watch with the song, style frames and a one-page pitch. The critic looks at every proof; its verdict weighs ambition highest and never rewards the safe option. It's advice: you pick.</p>
+    <div class="two"><div><label>How many pitches</label><select id="p-n">${opts([2, 3, 4, 5], pre("n", 3))}</select></div>
+      <div><label>Minutes per pitch</label><input id="p-budget" type="number" min="3" value="${parseInt(pre("budget", 20)) || 20}"></div></div>
+    <p class="hint" id="p-angles"></p>
+    <div class="two"><div><label>Model</label><input id="p-model" value="${esc(pre("model", d.model || "opus"))}"></div>
+      <div><label>Effort</label><select id="p-effort">${opts(EFFORTS, pre("effort", "high"))}</select></div></div>
+    <div class="two"><div><label>Critic (the judge)</label><select id="p-critic">${opts(["sonnet", "haiku", "opus"], crit)}</select></div>
+      <div><label>Cost cap per pitch in $ (optional)</label><input id="p-cap" type="number" min="0" step="1" value="${esc(pre("max_usd", ""))}" placeholder="no cap"></div></div>
+    <p class="hint">The pitches are full directors on the top model, agents their own choice: the idea is what you're choosing. The critic, a cheaper model with fresh eyes, does the image-heavy looking at the proofs and judges the round.</p>
+    <label>Notes for this round (optional)</label><textarea id="p-seed" placeholder="e.g. one of you, try it with nothing but type"></textarea>
+    <label style="text-transform:none;letter-spacing:0;color:var(--fg);margin-top:12px"><input type="checkbox" id="p-auto" ${yes(st.auto) ? "checked" : ""} style="width:auto"> Let the critic pick and go straight on with a
+      <input id="p-dbudget" type="number" min="5" value="${parseInt(pre("direct_budget", d.budget || 90)) || 90}" style="width:76px;padding:4px 7px"> -minute director run</label>
+    <p class="hint" style="margin-top:2px">That director uses your Direct settings (model, effort, ultracode, cap) and this round's critic. Leave it off to watch the proofs and pick yourself.</p>
+    <p class="hint" id="p-cost"></p>
+    <div class="row" style="margin-top:12px"><button id="go-pitch" onclick="startPitch()" ${S.song.map ? "" : "disabled"}>Start the pitch round</button><button class="ghost small" id="stop-pitch" onclick="stopJob()" style="display:none">Stop it (each pitch wraps up)</button></div>
+    ${S.song.map ? "" : `<p class="hint" style="color:var(--bad)">Analyse the song first.</p>`}
+    <ul class="steplist" id="sl-pitch"></ul><div id="wn-pitch"></div><pre class="log" id="lg-pitch" style="display:none"></pre></div>
+  <div class="box"><div class="hand">or straight on</div><h2 style="font-size:24px">Skip it</h2>
+    <p class="mut">The director starts from your notes and the story, exactly as without a round, with the whole budget for one idea. Either way it has full reign: a pitch you pick is where it starts, not where it stops, and it's told to go further than the pitch.</p>
+    <p class="mut">A round is worth it when you'd like to see really different ideas on your song before one of them gets the time. It costs a few short director sessions on your Claude plan.</p>
+    <button class="ghost" onclick="go('${S.name}/direct')">Go to Direct &rarr;</button></div></div>`;
+  PV.sig = ""; pvAngles();
+  ["#p-n", "#p-budget"].forEach(id => $(id).addEventListener("input", pvAngles));
+  watchJob("pitch", () => pvLoad(true));
+  pvLoad(true); clearInterval(dpoll); dpoll = setInterval(pvLoad, 3000);
+}
+function pvAngles() {                 // which angles the pitches get, what the round takes
+  const n = +(($("#p-n") || {}).value) || 3, m = parseInt(($("#p-budget") || {}).value) || 20, R = PV.R, el = $("#p-angles"), c = $("#p-cost");
+  if (el && R) {
+    const names = Object.fromEntries(R.angles.map(a => [a.key, a.name]));
+    el.innerHTML = `Their angles: ${R.order.slice(0, n).map(k => `<b>${esc(names[k])}</b>`).join(", ")}${R.ideas ? " (your ideas first: you wrote some)" : ""}.`;
+  }
+  if (c) c.textContent = `The ${n} pitches work at the same time for ${m} min (their proof renders take turns), then the critic and the verdict take a few minutes: about ${m + 5} min in all, and about what ${n} director sessions of ${m} min cost on your plan.`;
+}
+async function startPitch() {
+  const v = id => $(id).value;
+  const body = {n: +v("#p-n"), budget: v("#p-budget"), model: v("#p-model").trim(), effort: v("#p-effort"), critic_model: v("#p-critic"),
+                max_usd: v("#p-cap").trim(), seed_notes: v("#p-seed"), auto: $("#p-auto").checked, direct_budget: v("#p-dbudget")};
+  const keep = {n: body.n, budget: body.budget, model: body.model, effort: body.effort, critic_model: body.critic_model, max_usd: body.max_usd,
+                auto: body.auto, direct_budget: body.direct_budget};
+  try { S.project = await post(`/api/p/${S.name}/brief`, {pitch: keep}); } catch (e) { return toast(e.message); }
+  await startJob("pitch", body, () => pvLoad(true));
+  setTimeout(() => pvLoad(true), 1500);
+}
+async function pvLoad(force) {
+  if (step !== "pitch" || !$("#pv-rounds")) return clearInterval(dpoll);
+  const was = PV.R && (PV.R.running || (PV.R.job || {}).running);
+  if (!force && !was && Date.now() - PV.last < 15000) return;           // nothing at work: look again now and then
+  PV.last = Date.now();
+  let R; try { R = await api(`/api/p/${S.name}/pitches`); } catch (e) { return; }
+  if (step !== "pitch" || !$("#pv-rounds")) return;
+  PV.R = R; pvAngles();
+  $("#pv-run").innerHTML = pvRun(R);
+  const done = R.rounds.filter(r => !r.running), sig = JSON.stringify(done);
+  if (sig !== PV.sig) {                                                 // (unchanged: the videos and a live player play on)
+    PV.sig = sig; pvClose();
+    $("#pv-rounds").innerHTML = done.map(r => pvRound(r, R)).join("");     // (none yet: the choice below says it all)
+  }
+  const busy = R.running || !!(R.job && R.job.running);
+  document.querySelectorAll(".pv-build").forEach(b => { b.disabled = busy || b.dataset.ok !== "1"; b.title = busy ? "something is running on this project: wait for it to finish" : ""; });
+}
+function pvRun(R) {                   // the round at work: per pitch its angle, state, time, cost, agents, last lines
+  const r = R.rounds.find(x => x.running), j = R.job || {}, mine = j.running && j.job === "pitch";
+  if (!r) {
+    if (mine && j.chained === "direct") {
+      const last = R.rounds[0] || {}, v = last.verdict || {}, p = (last.pitches || []).find(x => x.k === v.winner) || {};
+      return `<div class="box pv-run" id="pv-chain"><div class="row"><b>Round ${last.round} is done</b><span class="pv-badge">&#9733; the critic's pick: p${v.winner}</span><span class="mut">${esc(p.title || "")}</span></div>
+        <p style="margin:8px 0 0">The director is building it now, with full reign: the pitch is its starting point, and it was told to go further. <a href="#${S.name}/direct">Follow it on the Direct page &rarr;</a></p></div>`;
+    }
+    return mine ? `<div class="box pv-run"><span class="spin"></span> the pitch round is starting (the proof window, each pitch's brief)&hellip;</div>` : "";
+  }
+  const left = r.deadline - R.now, judging = r.stage !== "pitching";
+  const what = {pitching: `<b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: the pitches wrap up"}</b>`, proofs: "the proofs get the song's audio",
+                critic: "the critic is looking at each proof", verdict: "the verdict compares them"}[r.stage] || esc(r.stage);
+  return `<div class="box pv-run" id="pv-live-round"><div class="row"><b>Round ${r.round}</b><span class="tag" style="margin:0;background:var(--acc);color:#111">${judging ? "judging" : "pitching"}</span>
+      <span class="mut">${r.n} pitches &middot; ${esc(r.model)} &middot; effort ${esc(r.effort)} &middot; ${esc(r.budget)} each &middot; the critic ${esc(r.critic_model)}${r.max_usd ? ` &middot; cap $${r.max_usd} each` : ""}${r.auto ? " &middot; then the critic's pick is built" : ""}</span>
+      <span class="sp" style="flex:1"></span><span class="mut">${dur(R.now - r.started)} in, ${what} &middot; ${usd(r.cost_usd)}</span>${mine ? "" : `<button class="ghost small" onclick="stopJob()" title="started from the command line: it is asked to stop the same way">Stop it</button>`}</div>
+    ${judging ? "" : `<div class="prog"><div style="width:${Math.min(100, Math.max(0, (R.now - r.started) / r.budget_s * 100))}%"></div></div>`}
+    ${r.proof ? `<p class="hint">The proof window, the same for every pitch: ${pvWindow(r.proof)}${r.proof.why ? `: ${esc(r.proof.why)}` : ""}.</p>` : ""}
+    ${(r.pitches || []).map(p => pvRunRow(p, R)).join("")}
+    ${r.stop_reason ? `<p class="hint" style="color:var(--acc)">${esc(r.stop_reason)}: each pitch wraps up; the critic and the verdict look at what exists.</p>` : ""}</div>`;
+}
+function pvRunRow(p, R) {
+  const ag = p.agents || [], work = ag.filter(a => a.state === "running"), t = p.ended ? p.elapsed_s : R.now - p.started;
+  const state = p.state === "running" ? (p.working ? "at work" : "between turns") : PSTATE[p.state] || p.state;
+  const lines = (p.log || []).join("\n").split("\n").filter(x => x.trim()).slice(-5);
+  return `<div class="pv-row" data-k="${p.k}"><div class="row" style="gap:6px 10px"><span class="pv-k">p${p.k}</span><b>${esc(p.angle_name)}</b>
+      <span class="ast ${p.state === "running" ? "on" : p.state === "done" ? "ok" : ["failed", "no proof"].includes(p.state) ? "no" : ""}">${esc(state)}</span>
+      <span class="mut">${dur(t || 0)} &middot; ${usd(p.cost_usd)}${ag.length ? ` &middot; ${ag.length} agent${ag.length > 1 ? "s" : ""}${work.length ? `, at work: ${esc(work.map(a => `${a.description} (${a.model})`).join(", "))}` : ""}` : ""}</span>
+      ${p.title ? `<span>&ldquo;${esc(p.title)}&rdquo;</span>` : ""}${p.critic && p.critic.scores ? scoreChips(p.critic.scores) : ""}</div>
+    ${lines.length ? `<pre class="log">${esc(lines.join("\n"))}</pre>` : ""}</div>`;
+}
+function pvRound(r, R) {              // a round: its window, costs, the verdict, a card per pitch
+  const c = r.costs || {}, ps = r.pitches || [], st = r.cut_off ? "cut off" : r.state, pk = r.picked;
+  const title = k => { const p = ps.find(x => x.k === k); return p && p.title ? ` &ldquo;${esc(p.title)}&rdquo;` : ""; };
+  return `<div class="box pv-round" id="pv-r${r.round}"><div class="row"><h2 style="font-size:24px;margin:0">Round ${r.round}</h2><span class="tag" style="margin:0;${st === "done" ? "" : "background:#4a1d18;color:#ffb0a6"}">${esc(st)}</span>
+      <span class="mut">${r.n} pitches &middot; ${esc(r.model)} &middot; effort ${esc(r.effort)} &middot; ${esc(r.budget)} each &middot; the critic ${esc(r.critic_model)} &middot; ${esc(new Date(r.started * 1000).toLocaleString())}</span><span class="sp" style="flex:1"></span>
+      <span class="mut" title="each pitch's session (its agents included), the critic on each proof, the verdict">pitches ${usd(c.pitches)} + the critic ${usd(c.critic)} + the verdict ${usd(c.verdict)} = <b style="color:var(--fg)">${usd(c.total)}</b></span></div>
+    ${r.proof ? `<p class="hint">Each proved its idea on the same window: ${pvWindow(r.proof)}${r.proof.why ? `: ${esc(r.proof.why)}` : ""}.</p>` : ""}
+    ${r.cut_off ? `<p class="hint" style="color:var(--bad)">This round's runner stopped writing (its window was closed, or the machine slept): what it made is here.</p>` : ""}
+    ${pk ? `<p class="hint" style="color:var(--ok)">${pk.by === "auto" ? "The critic's pick was built" : "You picked"}: p${pk.k}${title(pk.k)}${pk.at ? ` (${esc(pk.at)})` : ""}${pk.run ? `, director run ${pk.run} (<a href="#${S.name}/direct">the Direct page</a>)` : ""}.</p>` : ""}
+    ${pvVerdict(r, R)}
+    <div class="pv-cards">${ps.map(p => pvCard(p, r, R)).join("")}</div>
+    ${(r.warnings || []).length ? `<ul class="qa" style="color:var(--acc)">${r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}</div>`;
+}
+const pvVscores = sc => sc ? ` <span class="mut">ambition ${sc.ambition ?? "?"} &middot; song fit ${sc.song_fit ?? "?"} &middot; buildable ${sc.buildable ?? "?"} &middot; craft ${sc.craft ?? "?"}</span>` : "";
+function pvVerdict(r, R) {            // the verdict: the critic's pick, why, the ranking, the ideas worth grafting (advice: you pick)
+  const v = r.verdict, ps = r.pitches || [];
+  const name = k => { const p = ps.find(x => x.k === k); return `p${k}${p && p.title ? ` &ldquo;${esc(p.title)}&rdquo;` : ""}`; };
+  const build = `<p class="hint" style="margin:8px 0 0">&ldquo;Build this one&rdquo; starts the director on that pitch with your Direct settings: ${esc(pvDirectText(R.direct || {}))} (<a href="#${S.name}/direct">change them</a>). It has full reign, as always: the pitch is where it starts, not where it stops.</p>`;
+  if (!v || !v.winner) return `<div class="pv-verdict"><b>The critic's verdict</b> <span class="mut">${esc((v && v.error) || (r.state === "stopped" ? "none: the round was stopped" : "none"))}</span>${build}</div>`;
+  return `<div class="pv-verdict" id="pv-v${r.round}"><div class="row" style="gap:6px 10px"><b>The critic's verdict</b><span class="pv-badge">&#9733; ${name(v.winner)}</span><span class="mut">${v.by && v.by !== "the verdict" ? esc(v.by) + " &middot; " : ""}${esc(v.model || "")}${v.cost_usd ? ` &middot; ${usd(v.cost_usd)}` : ""}</span><span class="sp" style="flex:1"></span>${v.url ? `<a href="${v.url}" target="_blank">the whole verdict</a>` : ""}</div>
+    ${v.verdict ? `<p style="margin:8px 0 4px">${esc(v.verdict)}</p>` : ""}${v.why ? `<p class="mut" style="margin:4px 0">${esc(v.why)}</p>` : ""}
+    ${v.error ? `<p class="hint" style="color:var(--acc)">${esc(v.error)}</p>` : ""}
+    ${(v.ranking || []).length > 1 ? `<div><b style="font-size:13px">The ranking</b><ol>${v.ranking.map(k => `<li>${name(k)}${pvVscores((v.scores || {})[k])}</li>`).join("")}</ol></div>` : ""}
+    ${(v.graft || []).length ? `<div><b style="font-size:13px">Ideas worth grafting into the winner</b><ul>${v.graft.map(g => `<li>from ${name(g.from)}: ${esc(g.idea)}${g.where ? ` <span class="mut">(${esc(g.where)})</span>` : ""}</li>`).join("")}</ul></div>` : ""}
+    ${(v.push || []).length ? `<div><b style="font-size:13px">What the winner's director should push</b><ul>${v.push.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+    <p class="hint" style="margin:6px 0 0">The verdict weighs ambition highest, then the fit to this song, then whether it can be built well here, then craft; it never rewards the safe option. It's advice: watch the proofs with the sound and pick the one you want built.</p>
+    ${build}</div>`;
+}
+function pvCard(p, r, R) {            // a pitch: its title, angle, idea, style frames, the proof with the song, ▶ live, the critic, Build this one
+  const v = r.verdict || {}, win = v.winner === p.k, rank = (v.ranking || []).indexOf(p.k) + 1, picked = r.picked && r.picked.k === p.k;
+  const c = p.critic || {}, id = `${r.round}-${p.k}`, f = S.project.format || {}, ar = f.width && f.height ? `${f.width}/${f.height}` : "16/9";
+  const u = p.urls || {}, busy = R.running || !!(R.job && R.job.running);
+  const media = u.proof_av || u.proof
+    ? `<video controls preload="metadata" src="${u.proof_av || u.proof}" style="aspect-ratio:${ar}"></video>${u.proof_av ? "" : `<div class="hint">(the proof without the song: its audio couldn't be added)</div>`}`
+    : `<p class="hint">No proof: ${esc(p.error || "it didn't show its idea on the window")}</p>`;
+  return `<div class="pv-card ${win ? "win" : ""} ${picked ? "picked" : ""}" id="pv-c${id}">
+    <div class="pv-head"><span class="pv-k">p${p.k}</span><span class="pv-angle">${esc(p.angle_name)}</span>${win ? `<span class="pv-badge">&#9733; the critic's pick</span>` : rank ? `<span class="tag" style="margin:0">#${rank}</span>` : ""}${picked ? `<span class="pv-badge ok">${r.picked.by === "auto" ? "built" : "your pick"}${r.picked.run ? `: run ${r.picked.run}` : ""}</span>` : ""}
+      <span class="sp" style="flex:1"></span><span class="mut">${usd(p.cost_usd)} &middot; ${dur(p.elapsed_s || 0)}${(p.agents || []).length ? ` &middot; ${p.agents.length} agent${p.agents.length > 1 ? "s" : ""}` : ""}</span></div>
+    <div class="pv-title">${esc(p.title || (p.pitch ? "(no title)" : "no pitch"))}</div>
+    ${p.idea ? `<p class="pv-idea">${esc(p.idea)}</p>` : ""}
+    ${(p.style_urls || []).length ? `<div class="pv-style">${p.style_urls.map(x => `<img src="${x}" loading="lazy" style="aspect-ratio:${ar}" onclick="pvZoom('${x}')" alt="a style frame">`).join("")}</div>` : ""}
+    <div class="pv-media" id="pv-m${id}">${media}</div>
+    <div class="row pv-acts">${p.live ? `<button class="small ghost pv-lvb" onclick="pvLive(${r.round},${p.k})" title="its scenes in your browser with the song, over the proof window: no render">&#9654; live</button>` : ""}${u.pitch ? `<a href="${u.pitch}" target="_blank">the whole pitch</a>` : ""}${c.url ? `<a href="${c.url}" target="_blank">the critic's notes</a>` : ""}</div>
+    ${pvCrit(c)}
+    ${p.error && (u.proof || u.proof_av) ? `<p class="hint" style="color:var(--acc)">${esc(p.error)}</p>` : ""}
+    <div class="row" style="margin-top:auto"><button class="pv-build" data-ok="${p.pitch ? 1 : 0}" onclick="pvBuild(${r.round},${p.k})" ${p.pitch && !busy ? "" : "disabled"}>Build this one</button></div></div>`;
+}
+function pvCrit(c) {                  // the critic on a proof: its scores, its verdict, where it plays safe, its worst problems
+  if (!c || (!c.scores && !c.verdict && !c.error)) return "";
+  if (!c.scores && !c.verdict) return `<div class="pv-crit"><span class="mut">The critic: ${esc(c.error)}</span></div>`;
+  const pr = (c.problems || []).slice(0, 3).map(x => `<div class="pr">${x.t0 != null ? `<span class="v">${fmt(x.t0)}${x.t1 != null ? "–" + fmt(x.t1) : ""}</span> ` : ""}${esc(x.what || "")}${x.push ? ` &rarr; <i>${esc(x.push)}</i>` : ""}</div>`).join("");
+  return `<div class="pv-crit"><div class="row" style="gap:6px"><b>The critic on its proof</b>${scoreChips(c.scores)}</div>
+    ${c.verdict ? `<p>${esc(c.verdict)}</p>` : ""}${(c.safe || []).length ? `<p class="mut">Where it plays safe: ${esc(c.safe.slice(0, 3).join("; "))}</p>` : ""}${pr}</div>`;
+}
+function pvZoom(u) { const d = document.createElement("div"); d.className = "lb"; d.innerHTML = `<div class="lbin"><img src="${u}" alt="a style frame"></div>`; d.onclick = () => d.remove(); document.body.appendChild(d); }
+async function pvBuild(K, k) {        // the director starts from this pitch, with the Direct form's settings: watch it on the Direct page
+  try { await post(`/api/p/${S.name}/pitch-pick`, {round: K, k}); } catch (e) { return toast(e.message); }
+  toast(`The director starts from p${k}`); dirWant = Date.now(); pvClose(); go(`${S.name}/direct`);
+}
+async function pvLive(K, k) {         // the pitch's scenes (its draft plan, or its proof's scene) live over the proof window, with the song
+  const id = `${K}-${k}`, again = PV.card === id;
+  pvClose();
+  if (again) return;                                                     // (its button again: closed)
+  const r = ((PV.R || {}).rounds || []).find(x => x.round === K), p = r && (r.pitches || []).find(x => x.k === k);
+  if (!p || !p.live || !$(`#pv-m${id}`)) return;
+  let L; try { L = await api(`/api/p/${S.name}/live`); } catch (e) { return toast(e.message); }
+  const box = $(`#pv-m${id}`); if (!box || step !== "pitch" || PV.card) return;
+  const tl = p.live.timeline && L.timelines.find(x => x.source === p.live.timeline);
+  let layers = tl && tl.layers.length ? tl.layers : null;
+  const sc0 = layers ? null : L.scenes.find(x => x.path === p.live.scene);
+  if (sc0) layers = [{id: `p${k}`, kind: "scene", label: sc0.path, scene: sc0.path, src: sc0.src, slots: [[0, L.n]], transparent: false, mode: "normal", opacity: 1, version: sc0.version}];
+  if (!layers || !L.song) return toast("Nothing of this pitch plays live (no web scene): watch its proof");
+  const w = r.proof, sc = lvScaleNow();
+  box.querySelectorAll("video").forEach(x => x.pause());
+  PV.keep = box.innerHTML; PV.card = id;
+  box.innerHTML = `<div class="pv-lv"></div><div class="row pv-lvbar"><button class="small" id="pv-play" onclick="pvToggle()" style="min-width:84px">&#9654; Play</button><span class="t" id="pv-t">${fmt(w.t0)}</span>
+      <input type="range" id="pv-seek" min="${w.t0}" max="${w.t1}" step="0.05" value="${w.t0}"><button class="ghost small" onclick="pvClose()" title="close the live view: its scenes stop">&#10005; close</button></div>
+    <div class="hint" id="pv-what">${tl ? `its draft plan for the whole song (${tl.layers.length} layer${tl.layers.length > 1 ? "s" : ""})` : esc(sc0.path)}, live in your browser with the song over the proof window: no render${(tl && tl.warnings || []).length ? ` &middot; ${esc(tl.warnings[0])}` : ""}</div>
+    <div class="lv-st" id="pv-st"></div><audio id="pv-au" preload="auto" src="${L.song}"></audio>`;
+  const au = $("#pv-au"), seek = $("#pv-seek"), btn = $("#pv-play");
+  const start = () => { if (au.currentTime < w.t0 || au.currentTime > w.t1) au.currentTime = w.t0; };
+  au.addEventListener("loadedmetadata", start); start();
+  au.addEventListener("play", () => { btn.innerHTML = "&#10074;&#10074; Pause"; });
+  au.addEventListener("pause", () => { btn.innerHTML = "&#9654; Play"; });
+  au.addEventListener("timeupdate", () => { const e = $("#pv-t"); if (e) e.textContent = `${fmt(au.currentTime)} of ${fmt(w.t0)}–${fmt(w.t1)}`; if (document.activeElement !== seek) seek.value = au.currentTime; });
+  seek.addEventListener("input", () => { if (PV.player) PV.player.seek(+seek.value); });
+  PV.player = livePlayer(box.querySelector(".pv-lv"), {base: L.base, delivery: L.delivery, n: L.n, size: L.sizes[sc], scale: sc, layers, audio: au,
+                                                       offset: lvOffset, window: [w.t0, w.t1], onStatus: pvStatus, onClick: pvToggle});
+}
+function pvToggle() { const a = $("#pv-au"); if (!a || !PV.player) return; if (a.paused) PV.player.play(); else PV.player.pause(); }
+function pvStatus(layers, P) {        // a line per loaded layer: how it keeps up
+  const el = $("#pv-st"); if (!el) return;
+  el.innerHTML = layers.filter(l => l.el).map(l => {
+    const s = l.st || {};
+    const what = l.kind !== "scene" ? esc(l.note || l.kind) : !s.ready ? (s.nerr ? "" : "setting up&hellip;") : s.catching_up > 0 ? `catching up ${Math.round(s.catching_up * 100)}%`
+      : l.on && P.playing ? `<b>${s.fps}</b> of ${Math.round(s.need || 0)} fps` : l.on ? "ready" : "waiting for its slot";
+    return `<div class="${s.nerr ? "bad" : l.on ? "on" : ""}"><b>${esc(l.id)}</b><span class="mut lv-k">${esc(l.label === l.id ? "" : l.label)}</span><span>${what}${s.nerr ? ` <span class="bad">${esc((s.errors || []).slice(-1)[0] || "")}</span>` : ""}</span></div>`;
+  }).join("");
+}
+function pvClose() {                  // the card's live view closes: the player destroyed, the song stopped, the proof back
+  if (PV.player) { PV.player.destroy(); PV.player = null; }
+  const a = $("#pv-au"); if (a) { a.pause(); a.removeAttribute("src"); a.load(); }
+  const box = PV.card && $(`#pv-m${PV.card}`); if (box && PV.keep != null) box.innerHTML = PV.keep;
+  PV.card = PV.keep = null;
+}
+
 // ---------------------------------------------------------------- 5. direct
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const opts = (list, cur) => list.map(o => { const [v, l] = [].concat(o); return `<option value="${esc(v)}" ${String(cur) === String(v) ? "selected" : ""}>${esc(l ?? v)}</option>`; }).join("");
@@ -552,6 +807,7 @@ function vDirect() {
         <p class="hint" style="margin-top:2px">the director may orchestrate multi-agent workflows: more tokens</p></div></div>
     <p class="hint">The critic is a cheaper model with fresh eyes: it looks at every preview the director makes and at the final, and reports back in text, ambition first, then craft. The director decides what to take. Looking at pictures is where the tokens go, so the expensive model doesn't do it. A cost cap ends the run when the director's session (its agents included) has spent that much.</p>
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
+    ${pitchHint()}
     ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
     ${open.length || liveOpen.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto"> Review round: address my ${[open.length ? `${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n}` : "", liveOpen.length ? `${liveOpen.length} note${liveOpen.length > 1 ? "s" : ""} from the live view` : ""].filter(Boolean).join(" and ")} and make v${latest.n + 1}</label>` : ""}
     <div class="row" style="margin-top:12px"><button id="go-direct" onclick="startDirect()" ${S.song.map ? "" : "disabled"}>Start the director</button><button class="ghost small" id="stop-direct" onclick="stopJob()" style="display:none">Stop it (wraps up cleanly)</button></div>
@@ -560,16 +816,28 @@ function vDirect() {
     <p class="mut">Open Claude Code in the studio folder and run the skill. The same director's workflow, but you can talk along; the critic it asks for leaves its notes here too.</p>
     <code class="cmd" style="font-size:12px">${esc(S.studio)}</code><code class="cmd">${esc(cmd)}</code><button class="small" onclick="navigator.clipboard.writeText('${cmd}');toast('Copied')">Copy command</button></div></div>
   <div id="dir-live" style="margin-top:16px"></div>`;
+  ["#d-budget", "#d-effort", "#d-model", "#d-critic", "#d-cap", "#d-ultra"].forEach(id => $(id).addEventListener("change", () => dirSave()));
   watchJob("direct", refresh);
   dirLive(); clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
 }
-async function startDirect() {
+function dirForm() {
   const v = id => $(id).value;
-  const body = {budget: v("#d-budget"), model: v("#d-model"), effort: v("#d-effort"), critic_model: v("#d-critic"),
-                ultracode: $("#d-ultra").checked, max_usd: v("#d-cap").trim(), seed_notes: v("#d-seed"),
-                revise: !!($("#d-revise") && $("#d-revise").checked)};
-  await post(`/api/p/${S.name}/brief`, {director: {model: body.model, effort: body.effort, budget: body.budget, critic_model: body.critic_model,
-                                                   ultracode: body.ultracode, max_usd: body.max_usd}});
+  return {budget: v("#d-budget"), model: v("#d-model"), effort: v("#d-effort"), critic_model: v("#d-critic"), ultracode: $("#d-ultra").checked, max_usd: v("#d-cap").trim()};
+}
+async function dirSave() {           // the form's settings kept as they change (a pitch card's "Build this one" uses them too)
+  try { S.project = await post(`/api/p/${S.name}/brief`, {director: dirForm()}); } catch (e) { toast(e.message); }
+}
+function pitchHint() {               // the optional pitch round, as a choice: a round with pitches to pick from, or one at work
+  const p = S.pitch;
+  if (directing(S.job) || ["running", "finishing"].includes((S.director || {}).state)) return "";     // (a run at work: Build this one, or the form)
+  if (!p) return `<p class="hint">Want to see a few really different ideas first? A <a href="#${S.name}/pitch">pitch round</a> (optional) lets several directors pitch from different angles; you pick which one the director builds.</p>`;
+  if (p.running) return `<p class="hint" style="color:var(--acc)">A <a href="#${S.name}/pitch">pitch round</a> is at work: the director can start when it's done (from the pitch you pick, or from your notes).</p>`;
+  if (p.delivered && !p.picked && !p.run_since) return `<p class="hint">Pitch round ${p.round} has ${p.delivered} pitch${p.delivered > 1 ? "es" : ""} to choose from: <a href="#${S.name}/pitch">pick one</a> and the director starts from it, or start here and it starts from your notes.</p>`;
+  return "";
+}
+async function startDirect() {
+  const body = {...dirForm(), seed_notes: $("#d-seed").value, revise: !!($("#d-revise") && $("#d-revise").checked)};
+  await dirSave();
   dirWant = Date.now();
   startJob("direct", body);
   clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
@@ -583,7 +851,7 @@ async function dirLive() {
   el.innerHTML = d && d.run ? runView(d) : "";
   const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
   const running = d && ["running", "finishing"].includes(d.state);
-  const jobOn = lastJob && lastJob.running && lastJob.job === "direct";
+  const jobOn = directing(lastJob);
   if (!running && !jobOn && Date.now() - dirWant > 300000) clearInterval(dpoll);
 }
 function runHead(d, extra) {
@@ -596,7 +864,9 @@ function runHead(d, extra) {
 }
 const evLog = d => esc((d.events || []).map(e => String(e.text).split("\n").map((l, i) => `${i ? "".padStart(8) : dur(e.t).padStart(8)}  ${l}`).join("\n")).join("\n"));
 function runView(d) {                 // a run: its settings, the live log (the director's work, its agents' lines), its agents, the critic's notes, the costs
+  const pt = d.pitch, running = ["running", "finishing"].includes(d.state);
   return `<div class="box">${runHead(d, `${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)}${d.ultracode ? " &middot; ultracode" : ""}${d.max_usd ? ` &middot; cap $${esc(d.max_usd)}${d.budget_hit ? " (reached)" : ""}` : ""} &middot; budget ${esc(d.budget)}${d.critic_model && d.critic_model !== "off" ? ` &middot; critic ${esc(d.critic_model)}` : ""}`)}
+    ${pt ? `<p class="hint" id="dir-pitch" style="margin:4px 0 0">${running ? "Starting" : "Started"} from pitch <a href="#${S.name}/pitch">${esc(pt.ref)}</a>${pt.title ? `: <b style="color:var(--fg)">${esc(pt.title)}</b>` : ""} <span class="mut">(${esc(pt.angle || "")}; ${pt.by === "auto" ? "the critic's pick" : "your pick"}). The pitch is its starting point, not its ceiling: the director has full reign and was told to go further.</span></p>` : ""}
     <pre class="log" id="dir-ev" style="max-height:420px">${evLog(d)}</pre>
     ${agentsBox(d)}
     ${(d.critiques || []).length ? `<div class="crit" id="dir-crit"><b>The critic's notes in this run</b>
@@ -620,6 +890,7 @@ function costsBox(d) {                // the cost per model (the director's, its
   const rows = d.costs || [], crit = d.critic_model && d.critic_model !== "off";
   return `<div class="row costs" id="dir-costs"><b>Costs</b>${rows.length ? rows.map(r => `<span class="sc" title="${esc(r.model)}">${esc(r.name)} <b>${usd(r.cost_usd)}</b>${r.who ? " " + esc(r.who) : ""}</span>`).join("")
       : `<span class="sc">the director's session <b>${usd(d.cost_usd)}</b></span>`}${crit ? `<span class="sc">the critic ${esc(d.critic_model)} <b>${usd(d.critic_cost_usd)}</b></span>` : ""}<span class="sc">total <b>${usd(runTotal(d))}</b></span>
+      ${d.pitch && d.pitch.round_cost_usd != null ? `<span class="sc" title="the pitches, the critic on their proofs and the verdict, before this run">the pitch round <b>${usd(d.pitch.round_cost_usd)}</b></span>${d.pitch.chained ? `<span class="sc" title="the pitch round and this run, one job (let the critic pick and go straight on)">the round and this run <b>${usd(runTotal(d) + +d.pitch.round_cost_usd)}</b></span>` : ""}` : ""}
     <span class="hint" style="margin:0">as Claude Code reports them at the end of each of the director's turns</span></div>`;
 }
 
@@ -644,7 +915,7 @@ async function vWatch() {
   if (wsel === "live") return vLive(L);
   if (!S.versions.length) {
     let j = {}; try { j = await api(`/api/p/${S.name}/job`); } catch (e) { /* no news */ }
-    const run = j.running && j.job === "direct";
+    const run = directing(j);
     $("#pane").innerHTML = `<h2>Watch &amp; review</h2><p class="mut">${run ? "No video yet, and no scene yet: the director is at work. Once it has written a scene, it plays here live, with the song (this page looks again every few seconds)."
       : "No video yet. Start the director on the Direct page: once it has written a scene, you can play the scenes here live, with the song."}</p>`;
     clearTimeout(LVS.wait); if (run) LVS.wait = setTimeout(() => { if (step === "watch" && !S.versions.length && !LVS.player) vWatch(); }, 5000);
@@ -985,7 +1256,7 @@ function lvAddNote() {
     } catch (e) { return toast(e.message); }
     $("#nbox").innerHTML = ""; LVS.notes = ""; lvNotes();
     let j = {}; try { j = await api(`/api/p/${S.name}/job`); } catch (e) { /* no news */ }
-    toast(j.running && j.job === "direct" ? "Note saved: the director gets it as soon as it can act on it (while the final renders: in the next review round)"
+    toast(directing(j) ? "Note saved: the director gets it as soon as it can act on it (while the final renders: in the next review round)"
                                          : "Note saved: no run is going; the next run gets it in its brief");
   };
   $("#ntx").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#nsave").click(); e.stopPropagation(); };

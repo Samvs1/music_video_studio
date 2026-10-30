@@ -18,7 +18,8 @@
     (what it critiques, and not a cut that has or is getting a critique); the plan tools (tools/plan.py): validate
     good, old and bad plans, render the segments (and again from the cache), the cache key following a lib import,
     assemble a preview (its cut marked pending while the critic looks), the render queue, eyes next to a segment;
-    Blender scenes importing shared code (work/scenes/lib/, work/kit/) and rendering again when it changes
+    Blender scenes importing shared code (work/scenes/lib/, work/kit/, a pitch's own scenes/lib/) and rendering again
+    when it changes
  6d. the session plumbing (messages sent while a turn runs join it: one result, as on the real CLI; a background agent
     keeps the session working, then it starts a turn of its own; the costs as running totals; the cost cap) and the
     runner in-process (no reminder, nudge or closing while agents work; live notes; the cap; the run settings)
@@ -28,6 +29,19 @@
     director that deploys an agent and uses the plan tools, with --ultracode and --max-usd (the runner waits for the
     agent, the agent in status.json and the live log, the costs per model, the critic once per cut, a live note), and
     `direct --dry-run` (the defaults: effort max, the agent tools, no Workflow, no cap)
+ 7c. the pitch round with the stand-in (tests/fake_claude.py's pitch and verdict roles): `pitch --n 2` (the proof
+    window, each pitch's brief and sandbox: the deny rules keep it out of the other's folder and the project's files;
+    proof_av.mp4 with the song's audio at the window; the critic on each proof; the verdict; the costs from the
+    sessions' running totals), then `direct --pitch round-K/p2` (the promotion: the concept, the scenes with their lib,
+    the style frames, the draft plan with its paths moved; backups; the brief's "go further" section; delivered), the
+    promotion into an empty work/ and the same pitch picked again (nothing the director changed overwritten), a draft
+    plan playing the pitch's own scenes live, and `pitch --auto` (the verdict's winner built in the same job)
+ 7d. a pitch's turns on a simulated clock (the reminders; the push to go further only for a delivered pitch; a session
+    still running after its input closed stopped 20 s after the deadline plus the grace, and after a stop), the
+    verdict's json read leniently, a pick kept by the round's next save, a dry-run round not hiding a running one
+ 7e. a round that goes wrong, in-process (a pitch that keeps running, one with only its pitch.md, one with nothing; the
+    verdict without its json: the critic's scores rank them; round.json fresh while the verdict works; a stop during
+    the verdict ends its call)
 The project is projects/_smoke (internal, git-ignored); --keep leaves it for a look. Exit code 0 = everything passed.
 """
 import argparse, glob, json, os, re, shutil, subprocess, sys, time, urllib.request
@@ -292,6 +306,9 @@ def main():
         say("PASS" if sum(f.startswith("music-video_v") for f in files) >= 3 else "FAIL", "earlier versions kept", ", ".join(files))
         agents_run_check(env)
         flags_check()
+        pitch_check(env)
+        pitch_step_check()
+        pitch_trouble_check()
     return finish(a, t_start)
 
 
@@ -1155,6 +1172,27 @@ def blender_shared_check(no_blender):
         os.remove(os.path.join(PDIR, f))
     for dd in ("work/kit", "work/scenes/bshared"):
         shutil.rmtree(os.path.join(PDIR, dd), ignore_errors=True)
+    # a pitch's Blender scene imports the lib next to its folder (the pitch's scenes/lib/), and its cache key follows it
+    from mv.common import scene_inputs
+    rd0 = os.path.join(PDIR, "work", "pitches", "round-0")
+    pd = os.path.join(rd0, "p1", "scenes")
+    for sub in ("lib", "bproof"):
+        os.makedirs(os.path.join(pd, sub), exist_ok=True)
+    open(os.path.join(pd, "lib", "plook.py"), "w", encoding="utf-8").write("COLOR = (0.2, 0.5, 0.9, 1.0)\n")
+    open(os.path.join(pd, "bproof", "scene.py"), "w", encoding="utf-8").write(
+        "import bpy\nimport plook                    # the pitch's scenes/lib/\n\n\ndef build(mv):\n"
+        "    bpy.ops.mesh.primitive_cube_add(size=1.0)\n    m = bpy.data.materials.new('m')\n    m.diffuse_color = plook.COLOR\n"
+        "    bpy.context.active_object.data.materials.append(m)\n"
+        "    bpy.ops.object.camera_add(location=(0, -6, 2), rotation=(1.3, 0, 0))\n    mv.scene.camera = bpy.context.active_object\n")
+    sc = os.path.join(pd, "bproof", "scene.py")
+    ins = [os.path.relpath(x, PDIR).replace("\\", "/") for x in scene_inputs(sc, PDIR)]
+    r = studio("run", P, "blender/run.py", "work/pitches/round-0/p1/scenes/bproof/scene.py", "--still", "0.1", "--engine", "workbench",
+               "--out", "work/pitches/round-0/p1/style", check=False)
+    pics = glob.glob(os.path.join(rd0, "p1", "style", "*.png"))
+    say("PASS" if r.returncode == 0 and pics and "work/pitches/round-0/p1/scenes/lib/plook.py" in ins else "FAIL",
+        "a pitch's Blender scene imports its own scenes/lib/ (the lib next to its folder is on its path, and in its cache key)",
+        f"exit {r.returncode}; {len(pics)} still(s); inputs {ins}" + ("" if r.returncode == 0 else (r.stdout + r.stderr)[-800:]))
+    shutil.rmtree(rd0, ignore_errors=True)
 
 
 def agents_run_check(env):
@@ -1285,6 +1323,410 @@ def flags_check():
         and "the looking is the critic's" not in reign.lower() else "FAIL",
         "direct --dry-run with the critic off: the brief leaves the looking to the director, not to a critic it would "
         "have to call", reign[:300])
+
+
+def pitch_check(env):
+    """The pitch round with the stand-in for Claude Code (its <!-- mv:pitch --> and <!-- mv:verdict --> roles): two
+    pitches at once, then the proofs with the song's audio, the critic on each, the verdict, the costs; the sandbox on
+    each pitch's command line; then `direct --pitch` promotes the winner over the agents run's work (backups) and
+    delivers; a promotion into an empty work/ in-process; and `pitch --auto` builds the winner in the same job."""
+    print("== 7c. the pitch round (stand-in for Claude Code)", flush=True)
+    import numpy as np
+    import pitch as pitches
+    import director
+    from mv.common import decode_audio, probe, song_file
+    from mv.song import Song
+    t0 = time.time()
+    r = studio("pitch", P, "--n", "2", "--budget", "3m", "--model", "fake", "--critic-model", "fake", check=False, env=env,
+               timeout=1800)
+    K = max(pitches.round_numbers(PDIR) or [0])
+    rd = os.path.join(PDIR, "work", "pitches", f"round-{K}")
+    R = json.load(open(os.path.join(rd, "round.json"), encoding="utf-8")) if K else {}
+    ps, w = R.get("pitches") or [], R.get("proof") or {}
+    S = Song(PDIR)
+    fps = w.get("fps") or 30
+    on_db = bool(w) and min(abs(int(round(d * fps)) - w["a"]) for d in S.downbeats) <= 1 or w.get("a") == 0
+    say("PASS" if r.returncode == 0 and R.get("state") == "done" and len(ps) == 2 and all(p["state"] == "done" for p in ps)
+        and all(p.get("pitch") and p.get("proof") and p.get("proof_av") and len(p.get("style") or []) == 2 for p in ps)
+        and w and 12 <= w["seconds"] <= 24.05 and on_db and 0 <= w["t0"] and w["t1"] <= S.duration + 0.05
+        and ps[0]["angle"] != ps[1]["angle"] and ps[0]["agents"] and ps[0]["agents"][0]["state"] == "done"
+        and not R.get("warnings") else "FAIL",
+        "studio.py pitch --n 2: both pitches delivered (pitch.md, style frames, proof.mp4), each its own angle, one with an "
+        "agent; the proof window 12-24 s on a downbeat, inside the song",
+        f"round {K}: {R.get('state')}; {[(p['k'], p['angle'], p['state'], p.get('error')) for p in ps]}; warnings {R.get('warnings')}; window "
+        f"{w.get('t0')}-{w.get('t1')} ({w.get('seconds')} s): {w.get('why')}; {time.time() - t0:.0f} s"
+        + ("" if r.returncode == 0 else (r.stdout + r.stderr)[-1500:]))
+    # proof_av.mp4: the proof's video, the song's audio at the window
+    sr, au = 48000, []
+    for p in ps:
+        if not p.get("proof_av"):
+            au.append(None)
+            continue
+        av = os.path.join(PDIR, p["proof_av"])
+        st = {x["codec_type"]: x for x in probe(av)["streams"]}
+        a_ = decode_audio(av, sr=sr, mono=True)
+        b_ = decode_audio(song_file(PDIR), sr=sr, mono=True, start=w["t0"], dur=w["seconds"])
+        c_ = decode_audio(song_file(PDIR), sr=sr, mono=True, start=w["t0"] + 1.0, dur=w["seconds"])
+        m = min(len(a_), len(b_), len(c_))
+        x, y, z = a_[:m].astype(np.float64), b_[:m].astype(np.float64), c_[:m].astype(np.float64)
+        nfft = 1 << int(np.ceil(np.log2(2 * m)))
+        cc = np.fft.irfft(np.fft.rfft(x, nfft) * np.conj(np.fft.rfft(y, nfft)), nfft)
+        lim = sr // 20
+        k = int(np.argmax(np.r_[cc[:lim], cc[-lim:]]))
+        lag = k if k < lim else k - 2 * lim
+        xs, ys = (x[lag:], y[:m - lag]) if lag >= 0 else (x[:m + lag], y[-lag:])
+        corr = float(np.dot(xs, ys) / (np.linalg.norm(xs) * np.linalg.norm(ys) + 1e-12))
+        other = float(np.dot(x, z) / (np.linalg.norm(x) * np.linalg.norm(z) + 1e-12))
+        frames = int(probe(os.path.join(PDIR, p["proof"]))["streams"][0].get("nb_frames") or 0)
+        au.append((st.get("video", {}).get("codec_name"), st.get("audio", {}).get("codec_name"), round(len(a_) / sr, 3),
+                   lag, round(corr, 4), round(other, 3), frames))
+    say("PASS" if au and all(x and x[0] == "h264" and x[1] == "aac" and abs(x[2] - w["seconds"]) <= 0.06 and abs(x[3]) <= sr // 1000
+                             and x[4] > 0.98 and x[5] < x[4] - 0.1 and abs(x[6] - (w["b"] - w["a"])) <= 1 for x in au) else "FAIL",
+        "proof_av.mp4: the proof's video with the song's audio at the window (AAC, the window's length, no offset, the song "
+        "itself, not another stretch of it)", f"(video, audio, seconds, lag, correlation, vs 1 s later, proof frames) {au}; "
+        f"the window {w.get('seconds')} s")
+    # the critic on each proof, the verdict, the costs
+    crit = [json.load(open(os.path.join(rd, f"p{p['k']}", "critic.json"), encoding="utf-8"))
+            if os.path.exists(os.path.join(rd, f"p{p['k']}", "critic.json")) else {} for p in ps]
+    cprompt = open(os.path.join(rd, "p1", "prompt.md"), encoding="utf-8").read() if os.path.exists(os.path.join(rd, "p1", "prompt.md")) else ""
+    v = R.get("verdict") or {}
+    vprompt = open(os.path.join(rd, "verdict-prompt.md"), encoding="utf-8").read() if os.path.exists(os.path.join(rd, "verdict-prompt.md")) else ""
+    vmd = open(os.path.join(rd, "verdict.md"), encoding="utf-8").read() if os.path.exists(os.path.join(rd, "verdict.md")) else ""
+    say("PASS" if all(c.get("scores") for c in crit) and f"(from `work/pitches/round-{K}/p1/pitch.md`)" in cprompt
+        and "a pitch's proof clip" in cprompt and "style frame" in cprompt and v.get("winner") == 2 and v.get("ranking") == [2, 1]
+        and v.get("graft") and v["graft"][0]["from"] == 1 and "# Verdict" in vmd and "<!-- mv:verdict -->" in vprompt
+        and "Ambition, highest of all" in vprompt and "Never reward the safe option" in vprompt
+        and vprompt.count("#### Its pitch.md") == 2 and "/style/" in vprompt and "## This machine" in vprompt else "FAIL",
+        "the critic on each proof (against its pitch.md, with its style frames) and the verdict (ambition highest, never the "
+        "safe option; every pitch.md, the style frames and the critiques in its prompt): a ranking, the winner, ideas to graft",
+        f"critiques {[c.get('scores') for c in crit]}; verdict {v.get('winner')} {v.get('ranking')} graft {v.get('graft')}")
+    costs_ok, got = True, []
+    for p in ps:
+        evs = os.path.join(PDIR, p["session"], "events.jsonl")
+        res = [json.loads(x) for x in open(evs, encoding="utf-8") if '"result"' in x] if os.path.exists(evs) else []
+        res = [x for x in res if x.get("type") == "result"]
+        got.append((p["k"], p["cost_usd"], [x["total_cost_usd"] for x in res], p["critic_cost_usd"]))
+        costs_ok &= bool(res) and p["cost_usd"] == res[-1]["total_cost_usd"] and p["critic_cost_usd"] == 0.0123
+    c = R.get("costs") or {}
+    costs_ok &= c.get("total") == round(sum(p["cost_usd"] for p in ps) + sum(p["critic_cost_usd"] for p in ps) + v.get("cost_usd", 0), 4) \
+        and c.get("verdict") == 0.0211 and R.get("cost_usd") == c.get("total") and any(len(x[2]) > 1 for x in got)
+    say("PASS" if costs_ok else "FAIL", "the round's costs: each pitch's session from its latest running total (not a sum), "
+        "the critic's, the verdict's, the round's total", f"{got}; {c}")
+    # each pitch's sandbox (its command line) and its brief
+    s1 = os.path.join(rd, "sessions", "p1")
+    deny = (json.load(open(os.path.join(s1, "settings.json"), encoding="utf-8")).get("permissions") or {}).get("deny") or []
+    cmd = json.load(open(os.path.join(s1, "command.json"), encoding="utf-8"))["cmd"]
+    rp = director.rule_path
+    want = [f"{t}({rp(os.path.join(rd, 'p2'))}/**)" for t in ("Edit", "Write")] + \
+        [f"Write({rp(os.path.join(PDIR, *x.split('/')))})" for x in ("work/concept.md", "work/plan.json", "project.json", "report.md")] + \
+        [f"Write({rp(os.path.join(PDIR, *x.split('/')))}/**)" for x in ("final", "work/scenes", "work/kit", "song", "review")] + \
+        [f"Write({rp(os.path.join(rd, 'sessions'))}/**)", f"Write({rp(os.path.join(rd, 'round.json'))})",
+         f"Write({rp(os.path.join(STUDIO, 'tools'))}/**)"]
+    mine = rp(os.path.join(rd, "p1"))
+    brief = open(os.path.join(s1, "brief.md"), encoding="utf-8").read()
+    tools = cmd[cmd.index("--allowedTools") + 1:cmd.index("--disallowedTools")]
+    miss = [x for x in want if x not in deny]
+    say("PASS" if not miss and not [x for x in deny if mine in x] and cmd[cmd.index("--settings") + 1] == os.path.join(s1, "settings.json")
+        and "Agent" in tools and "Write" in tools and "work/pitches/round-" in cmd[cmd.index("--append-system-prompt") + 1]
+        and "<!-- mv:pitch -->" in brief and f"--frames {w.get('a')}:{w.get('b')}" in brief and "unmistakably different" in brief
+        and "The safe option never wins" in brief and "the wild card (p2)" in brief and "**the story**" in brief
+        and f"work/pitches/round-{K}/p1/" in brief and "## Be honest about what it takes" in brief else "FAIL",
+        "each pitch's sandbox (its own settings file): writes into the other pitch's folder, the project's own files, the "
+        "round's files and the studio's tools refused, its own folder not; its brief: its angle and the others', the proof "
+        "window as --frames, bold and unmistakably different, honest about the render time",
+        f"missing deny rules {miss}; rules on its own folder {[x for x in deny if mine in x]}")
+    # the draft plan plays the pitch's own scenes live (it names their final place, work/scenes/<id>/, where the project
+    # has a scene of that name from the agents run)
+    from mv import live
+    tl = next((t for t in live.state(PDIR)["timelines"] if t["source"] == f"pitch:round-{K}/p2"), {})
+    own = [x.get("scene") for x in tl.get("layers") or []]
+    clash = os.path.exists(os.path.join(PDIR, "work", "scenes", "s1", "scene.js"))
+    say("PASS" if own and all(str(x).startswith(f"work/pitches/round-{K}/p2/scenes/") for x in own) else "FAIL",
+        "a pitch's draft plan plays its own scenes live, not the project's of the same name", f"{own}; work/scenes/s1 there: {clash}")
+    # direct --pitch: the promotion over the agents run's work (work/concept.md, work/scenes/, work/plan.json there)
+    cp, pp = os.path.join(PDIR, "work", "concept.md"), os.path.join(PDIR, "work", "plan.json")
+    old_concept = open(cp, encoding="utf-8").read() if os.path.exists(cp) else None
+    old_plan = open(pp, encoding="utf-8").read() if os.path.exists(pp) else None
+    old_s1 = open(os.path.join(PDIR, "work", "scenes", "s1", "scene.js"), "rb").read() \
+        if os.path.exists(os.path.join(PDIR, "work", "scenes", "s1", "scene.js")) else None
+    r = studio("direct", P, "--pitch", f"round-{K}/p2", "--budget", "4m", "--effort", "low", "--model", "fake",
+               "--critic-model", "off", check=False, env=env, timeout=1800)
+    pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
+    last = (pj.get("runs") or [{}])[-1]
+    rdir = os.path.join(PDIR, "work", "director", f"run-{last.get('run')}")
+    rb = open(os.path.join(rdir, "brief.md"), encoding="utf-8").read() if os.path.exists(os.path.join(rdir, "brief.md")) else ""
+    R2 = json.load(open(os.path.join(rd, "round.json"), encoding="utf-8"))
+    dest = os.path.join(PDIR, "work", "scenes", f"pitch-{K}-2")
+    plan = json.load(open(pp, encoding="utf-8")) if os.path.exists(pp) else {}
+    backs = {k: sorted(glob.glob(os.path.join(PDIR, "work", pat))) for k, pat in (("concept", "concept_before_pitch_*.md"),
+                                                                                  ("plan", "plan_before_pitch_*.json"))}
+    rep_md = open(os.path.join(PDIR, "report.md"), encoding="utf-8").read() if os.path.exists(os.path.join(PDIR, "report.md")) else ""
+    p2md = open(os.path.join(rd, "p2", "pitch.md"), encoding="utf-8").read()
+    ok = (r.returncode == 0 and last.get("version") and (last.get("pitch") or {}).get("ref") == f"round-{K}/p2"
+          and open(cp, encoding="utf-8").read() == p2md and old_concept is not None and backs["concept"]
+          and open(backs["concept"][-1], encoding="utf-8").read() == old_concept
+          and old_plan is not None and backs["plan"] and open(backs["plan"][-1], encoding="utf-8").read() == old_plan
+          and [x.get("scene") for x in plan.get("segments") or []] == [f"work/scenes/pitch-{K}-2/s1/scene.js", f"work/scenes/pitch-{K}-2/s2/scene.js"]
+          and all(os.path.exists(os.path.join(dest, *x.split("/"))) for x in ("lib/look.js", "proof/scene.js", "s1/scene.js", "s2/scene.js"))
+          and (old_s1 is None or open(os.path.join(PDIR, "work", "scenes", "s1", "scene.js"), "rb").read() == old_s1)
+          and sorted(os.listdir(os.path.join(PDIR, "work", "style-frames"))) == sorted(os.path.basename(x) for x in R["pitches"][1]["style"])
+          and (R2.get("picked") or {}).get("k") == 2 and R2["picked"].get("by") == "the user" and R2["picked"].get("run") == last.get("run")
+          and "## The pitch I picked: go further" in rb and R["pitches"][1]["title"] in rb and "go further than the pitch" in rb
+          and "Ideas worth grafting from the other pitches" in rb and "from p1" in rb and f"work/scenes/pitch-{K}-2/" in rb
+          and "You have full reign" in rb and f"Started from pitch round-{K}/p2" in rep_md and "picked by the user" in rep_md)
+    say("PASS" if ok else "FAIL", "direct --pitch: the pitch put in place before the run (its pitch as work/concept.md, the old "
+        "one kept; its scenes and lib next to the existing ones in work/scenes/pitch-K-N/; its style frames; its draft plan "
+        "with the paths moved, the old plan kept), round.json's picked, the brief's 'go further' section with the critic's "
+        "notes and the graft ideas; delivered",
+        f"run {last.get('run')}: v{last.get('version')}, pitch {last.get('pitch')}; backups {backs}; plan "
+        f"{[x.get('scene') for x in plan.get('segments') or []]}; picked {R2.get('picked')}"
+        + ("" if r.returncode == 0 else (r.stdout + r.stderr)[-1500:]))
+    # the promotion into a project with no work yet: everything lands in its place (no backups)
+    scratch = os.path.join(PDIR, "cache", "_promote")
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.makedirs(os.path.join(scratch, "work", "pitches"))
+    shutil.copytree(rd, os.path.join(scratch, "work", "pitches", f"round-{K}"))
+    info = pitches.promote(scratch, f"round-{K}/p2", log=lambda x: None)
+    pl = json.load(open(os.path.join(scratch, "work", "plan.json"), encoding="utf-8"))
+    ok = (info["scenes"] == "work/scenes" and not info["concept_backup"] and not info["plan_backup"] and not info["notes"]
+          and [x["scene"] for x in pl["segments"]] == ["work/scenes/s1/scene.js", "work/scenes/s2/scene.js"]
+          and all(os.path.exists(os.path.join(scratch, "work", "scenes", *x.split("/"))) for x in ("lib/look.js", "proof/scene.js", "s1/scene.js"))
+          and not glob.glob(os.path.join(scratch, "work", "scenes", "**", "*.mp4"), recursive=True)
+          and open(os.path.join(scratch, "work", "concept.md"), encoding="utf-8").read() == p2md)
+    # the same pitch picked again after the director changed its scenes: nothing it changed is overwritten
+    rd_ = lambda f: open(f, encoding="utf-8").read() if os.path.exists(f) else ""      # noqa: E731
+    proof_js = os.path.join(scratch, "work", "scenes", "proof", "scene.js")
+    open(proof_js, "a", encoding="utf-8").write("\n// the director's change\n")
+    i2 = pitches.promote(scratch, f"round-{K}/p2", log=lambda x: None)        # -> work/scenes/pitch-K-2/ (work/scenes/ changed)
+    mine = os.path.join(scratch, "work", "scenes", f"pitch-{K}-2", "proof", "scene.js")
+    open(mine, "a", encoding="utf-8").write("\n// the director's change there\n")
+    i3 = pitches.promote(scratch, f"round-{K}/p2", log=lambda x: None)        # again: that folder kept, the pitch's own back
+    i4 = pitches.promote(scratch, f"round-{K}/p2", log=lambda x: None)        # and again, unchanged: nothing copied
+    back = os.path.join(scratch, *str(i3.get("scenes_backup") or "x").split("/"), "proof", "scene.js")
+    again = (i2["scenes"], i2["scenes_backup"], i3["scenes_backup"], i4["already"], i4["scenes_backup"])
+    ok_again = (i2["scenes"] == f"work/scenes/pitch-{K}-2" and not i2["scenes_backup"] and "director's change" in rd_(proof_js)
+                and i3["scenes_backup"] and "change there" in rd_(back) and "change there" not in rd_(mine) and rd_(mine)
+                and i4["already"] and not i4["scenes_backup"])
+    shutil.rmtree(scratch, ignore_errors=True)
+    say("PASS" if ok else "FAIL", "the promotion into a project with no work yet: the scenes and their lib in work/scenes/, "
+        "the plan's paths as the pitch named them, the concept; no backups", f"{ {k: info[k] for k in ('scenes', 'concept_backup', 'plan_backup', 'notes')} }")
+    say("PASS" if ok_again else "FAIL", "the same pitch picked again after the director changed its scenes: work/scenes/ kept "
+        "(the pitch's go to work/scenes/pitch-K-N/), then that folder kept as pitch-K-N_before_pitch_<time>/ when it changed; "
+        "unchanged, nothing copied", f"{again}")
+    # pitch --auto: the verdict's winner built in the same job
+    runs0 = last.get("run")
+    r = studio("pitch", P, "--n", "2", "--budget", "3m", "--model", "fake", "--critic-model", "fake", "--auto",
+               "--direct-budget", "4m", "--direct-effort", "low", "--direct-model", "fake", check=False, env=env, timeout=2400)
+    K2 = max(pitches.round_numbers(PDIR))
+    R3 = json.load(open(os.path.join(PDIR, "work", "pitches", f"round-{K2}", "round.json"), encoding="utf-8"))
+    pj = json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8"))
+    last = (pj.get("runs") or [{}])[-1]
+    st = json.load(open(os.path.join(PDIR, "work", "director", f"run-{last.get('run')}", "status.json"), encoding="utf-8")) \
+        if last.get("run") else {}
+    rep_md = open(os.path.join(PDIR, "report.md"), encoding="utf-8").read() if os.path.exists(os.path.join(PDIR, "report.md")) else ""
+    deny2 = (json.load(open(os.path.join(PDIR, "work", "pitches", f"round-{K2}", "sessions", "p1", "settings.json"),
+                            encoding="utf-8")).get("permissions") or {}).get("deny") or []
+    pt = st.get("pitch") or {}
+    say("PASS" if r.returncode == 0 and K2 == K + 1 and R3.get("state") == "done" and last.get("run") != runs0
+        and last.get("version") and pt.get("ref") == f"round-{K2}/p2" and pt.get("by") == "auto" and pt.get("chained")
+        and pt.get("round_cost_usd") == R3.get("cost_usd") and (R3.get("picked") or {}).get("by") == "auto"
+        and (R3.get("picked") or {}).get("run") == last.get("run") and "picked by the round's verdict" in rep_md
+        and "the round and this run together" in rep_md and f"Write({rp(rd)}/**)" in deny2 else "FAIL",
+        "pitch --auto: the verdict's winner is built by a director run in the same job (its run settings name the pitch, "
+        "the round's cost next to the run's); a later round's pitches can't write into an earlier round",
+        f"round {K2}: {R3.get('state')}, picked {R3.get('picked')}; run {last.get('run')} v{last.get('version')} pitch {pt}"
+        + ("" if r.returncode == 0 else (r.stdout + r.stderr)[-1500:]))
+
+
+def pitch_step_check():
+    """A pitch's turns on a simulated clock (pitch.Pitch.step with a scripted session): one that delivers nothing gets
+    the studio's reminders (three, then its session is closed), never "your pitch is delivered"; a delivered one with
+    its style frames gets the push to go further once; one without style frames a reminder, not the push; one that
+    keeps running after its input closed (at the end of a turn) is stopped 20 s after the deadline plus the grace, and
+    after the user's stop too. And: the verdict's json read leniently (a ranking as one number or a string, a winner
+    as 2.0); a pick written while the round saves is kept; a dry-run round doesn't hide the round running before it."""
+    print("== 7d. a pitch's turns, the verdict's json, the round's file (in-process)", flush=True)
+    import threading, types
+    import pitch as pitches
+    from mv.common import jsave
+    root = os.path.join(PDIR, "cache", "_pitchstep")
+    shutil.rmtree(root, ignore_errors=True)
+    rd = os.path.join(root, "work", "pitches", "round-1")
+    t0 = time.time()
+    R = types.SimpleNamespace(pdir=root, rdir=rd, k=1, n=5, deadline=t0 + 1200, grace=120, window={"a": 0, "b": 600},
+                              budget_s=1200, started=t0 - 1, max_usd=None)
+
+    class Linger(FakeSession):               # its input closed, the process still there
+        def alive(self):
+            return self.proc.poll() is None
+
+    def make(k, files=(), session=None):
+        p = pitches.Pitch(R, k, "story")
+        for f in files:
+            fp = os.path.join(p.dir, *f.split("/"))
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            open(fp, "wb").write(b"x")
+        p.s, p.state = session or FakeSession(), "running"
+        return p
+
+    def turns(p, n):
+        for i in range(n):
+            p.s.over()
+            p.step(t0 + 60 + 60 * i)
+        return p.s.whys(), p.s.closed
+    out, procs = {}, []
+    try:
+        out["nothing"] = turns(make(1), 4)
+        out["delivered"] = turns(make(2, ("pitch.md", "proof.mp4", "style/a.png")), 2)
+        out["no style"] = turns(make(3, ("pitch.md", "proof.mp4")), 2)
+        for k, stop in ((4, False), (5, True)):
+            proc = subprocess.Popen([PY, "-c", "import time; time.sleep(300)"])
+            procs.append(proc)
+            s = Linger()
+            s.proc, s.closed = proc, True
+            p = make(k, session=s)
+            at = t0 + 100
+            if stop:
+                p.user_stop(at)
+            end = p.deadline + p.grace
+            out["stopped" if stop else "lingers"] = (p.step(end + 1), p.step(end + 10), p.step(end + 22), proc.poll() is not None,
+                                                     p.stop_reason, [e["text"] for e in s.status["events"]][-1:])
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+    ok_turns = (out["nothing"] == (["something missing"] * 3, True) and out["delivered"] == (["push it further"], True)
+                and out["no style"] == (["no style frames"], True)
+                and out["lingers"][:4] == (True, True, False, True) and "time ran out" in out["lingers"][4]
+                and "didn't end within 20 s" in str(out["lingers"][5])
+                and out["stopped"][:4] == (True, True, False, True) and out["stopped"][4] == "stopped by the user")
+    # the verdict's json, read leniently
+    v1 = pitches.read_verdict({"winner": 2.0, "ranking": 2}, [1, 2], [1, 2])
+    v2 = pitches.read_verdict({"winner": "p3", "ranking": "3, 1 > 2", "graft": "from p1", "scores": []}, [1, 2, 3], [1, 2, 3])
+    v3 = pitches.read_verdict({"ranking": {"a": 1}}, [1, 2], [1, 2])
+    out["verdict"] = (v1 and (v1["winner"], v1["ranking"]), v2 and (v2["winner"], v2["ranking"], v2["graft"]), v3,
+                      pitches.pnum(2.5), pitches.pnum(True))
+    ok_verdict = out["verdict"] == ((2, [2, 1]), (3, [3, 1, 2], []), None, None, None)
+    # a pick written while the round runs is kept by its next save
+    os.makedirs(rd, exist_ok=True)
+    jsave(os.path.join(rd, "round.json"), {"round": 1, "picked": {"k": 2, "by": "the user"}})
+    fake_round = types.SimpleNamespace(lock=threading.Lock(), data=lambda: {"round": 1, "state": "running", "picked": None},
+                                       rdir=rd, picked=None)
+    saved = pitches.Round.save(fake_round)
+    out["picked"] = (saved.get("picked"), pitches.load_round(root, 1).get("picked"))
+    ok_picked = out["picked"] == ({"k": 2, "by": "the user"}, {"k": 2, "by": "the user"})
+    # a dry-run round (its briefs written while one runs) doesn't hide the round running before it
+    jsave(os.path.join(rd, "round.json"), {"round": 1, "state": "running", "updated": time.time()})
+    jsave(os.path.join(root, "work", "pitches", "round-2", "round.json"), {"round": 2, "state": "dry-run", "updated": time.time()})
+    act = pitches.round_active(root)
+    jsave(os.path.join(rd, "round.json"), {"round": 1, "state": "running", "updated": time.time() - pitches.FRESH_S - 5})
+    out["active"] = ((act or {}).get("round"), pitches.round_active(root))
+    ok_active = out["active"] == (1, None)
+    shutil.rmtree(root, ignore_errors=True)
+    bad = [k for k, v in (("the turns", ok_turns), ("the verdict's json", ok_verdict), ("the pick kept", ok_picked),
+                          ("round_active", ok_active)) if not v]
+    say("FAIL" if bad else "PASS", "a pitch's turns: nothing delivered -> three reminders, then closed (never the push); delivered -> "
+        "the push once; no style frames -> a reminder; a session still running after its input closed is stopped 20 s after "
+        "the deadline plus the grace, and after a stop; the verdict's json read leniently; a pick kept by the round's next "
+        "save; a dry-run round doesn't hide a running one", ("failed: " + "; ".join(bad) + f" {out}")[:2500] if bad else "")
+
+
+def pitch_trouble_check():
+    """A round where the pitches go wrong, in-process with the stand-in (FAKE_PITCH) and a short clock (25 s, a 10 s
+    grace): one keeps running after its input closed (the studio stops it 20 s after the deadline plus the grace and the
+    round goes on), one delivers only its pitch.md, one nothing; the verdict answers without its json (the critic's
+    scores rank the two with a pitch.md, and verdict.md says so); round.json stays fresh while a slow verdict works."""
+    print("== 7e. a round that goes wrong (in-process, the stand-in)", flush=True)
+    import threading
+    import pitch as pitches
+    from mv.claude import kill_tree
+    keys = ("MV_CLAUDE", "FAKE_PITCH", "FAKE_VERDICT", "FAKE_VERDICT_S")
+    was = {k: os.environ.get(k) for k in keys}
+    os.environ.update(MV_CLAUDE=os.path.join(TESTS, "fake_claude.py"), FAKE_PITCH="1:linger,2:md,3:fail", FAKE_VERDICT="nojson",
+                      FAKE_VERDICT_S="12")
+    samples, forced, R, d, took, err = [], [], None, {}, 0.0, ""
+    stop = threading.Event()
+    try:
+        R = pitches.Round(PDIR, n=3, budget="2m", model="fake", effort="low", critic_model="fake", log=lambda x: None)
+        R.budget_s, R.deadline, R.grace = 25, R.started + 25, 10     # (each pitch's first turn ends, and is closed, at once)
+        for p in R.pitches:
+            p.deadline, p.grace = R.deadline, R.grace
+
+        def watch():
+            t = time.time()
+            while not stop.wait(1):
+                x = pitches.load_round(PDIR, R.k) or {}
+                samples.append((round(time.time() - t), x.get("stage"), round(time.time() - float(x.get("updated") or 0), 1)))
+                if time.time() - t > 240 and not forced:       # a pitch nobody stops: the test mustn't hang on it
+                    forced.append(True)
+                    for p in R.pitches:
+                        if p.s and p.s.alive():
+                            kill_tree(p.s.proc)
+        threading.Thread(target=watch, daemon=True).start()
+        t0 = time.time()
+        d = R.run()
+        took = time.time() - t0
+    except BaseException as ex:
+        err = f"{type(ex).__name__}: {ex}"
+    finally:
+        stop.set()
+        for k, v in was.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        for p in (R.pitches if R else []):
+            if p.s and p.s.alive():
+                kill_tree(p.s.proc)
+    # a stop while the verdict works ends its call (no claude -p left running on its own)
+    seen, quick, vv = [], None, {}
+    if R and not err:
+        orig = pitches.claude_print
+
+        def spy(*a, **k):
+            then = k.get("on_start")
+            k["on_start"] = lambda proc: (seen.append(proc), then and then(proc))
+            return orig(*a, **k)
+        pitches.claude_print = spy
+        os.environ.update(MV_CLAUDE=os.path.join(TESTS, "fake_claude.py"), FAKE_VERDICT_S="60")
+        try:
+            R.stop_at = None
+            threading.Timer(4, pitches.request_stop, args=(PDIR,)).start()
+            t1 = time.time()
+            vv = R.make_verdict()
+            quick = round(time.time() - t1, 1)
+        finally:
+            pitches.claude_print = orig
+            for k, x in was.items():
+                if x is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = x
+            if os.path.exists(os.path.join(PDIR, pitches.STOP)):
+                os.remove(os.path.join(PDIR, pitches.STOP))
+    ps = {p["k"]: p for p in d.get("pitches") or []}
+    v = d.get("verdict") or {}
+    rd = R.rdir if R else ""
+    vmd = open(os.path.join(rd, "verdict.md"), encoding="utf-8").read() if rd and os.path.exists(os.path.join(rd, "verdict.md")) else ""
+    ev1 = [e.get("text") for e in (R.pitches[0].status.get("events") or [])] if R else []
+    during = [x for x in samples if x[1] == "verdict"]
+    ok = (not err and not forced and took < 25 + 10 + 20 + 50 and d.get("state") == "done"
+          and (ps.get(1) or {}).get("state") == "no proof" and "time ran out" in (ps.get(1) or {}).get("error", "")
+          and any("didn't end within 20 s" in str(x) for x in ev1)
+          and (ps.get(2) or {}).get("state") == "no proof" and (ps.get(3) or {}).get("state") == "failed"
+          and "no pitch.md" in (ps.get(3) or {}).get("error", "")
+          and ((ps.get(1) or {}).get("critic") or {}).get("error") == "no proof to look at"
+          and v.get("winner") == 1 and v.get("ranking") == [1, 2] and "the critic's scores" in str(v.get("by"))
+          and "there was no readable json block" in str(v.get("error")) and "the verdict couldn't be read" in vmd
+          and len(during) >= 3 and max(x[2] for x in during) < 8 and not R.procs
+          and quick is not None and quick < 15 and seen and seen[0].poll() is not None and "its call was ended" in str(vv.get("error")))
+    say("PASS" if ok else "FAIL", "a round that goes wrong: a pitch still running after its input closed is stopped (the round "
+        "ends by the deadline plus the grace plus 20 s, then judges), one with only its pitch.md, one with nothing (their "
+        "states and errors); the verdict without its json falls back to the critic's scores; round.json stays fresh while "
+        "the verdict works; a stop during the verdict ends its call",
+        f"{err}; {took:.0f} s; stopped verdict after {quick} s (its process ended: {bool(seen) and seen[0].poll() is not None}, {vv.get('error')}){' (a pitch had to be killed by the test)' if forced else ''}; state {d.get('state')}; "
+        f"{[(k, p.get('state'), p.get('error')) for k, p in ps.items()]}; verdict {v.get('winner')} {v.get('ranking')} "
+        f"{v.get('by')} {v.get('error')}; during the verdict (t, stage, age of round.json) {during}; p1's log {ev1[-3:]}")
 
 
 def finish(a, t_start):
