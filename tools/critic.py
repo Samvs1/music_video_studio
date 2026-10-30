@@ -435,6 +435,22 @@ def checks_about(pdir, video):
     return "### The studio's checks on this cut (only the verdicts and what didn't pass)\n" + body
 
 
+def last_pick(pdir):
+    """When the newest pitch was put in place (round.json "picked": its concept replaced the one before), as a time, and
+    which ("round-K/pN"); (0, None) when none was."""
+    best = (0.0, None)
+    for rp in glob.glob(os.path.join(pdir, "work", "pitches", "round-*", "round.json")):
+        r = jload(rp, None)
+        pk = r.get("picked") if isinstance(r, dict) else None
+        try:
+            t = time.mktime(time.strptime(str(pk.get("at")), "%Y-%m-%d %H:%M:%S")) if isinstance(pk, dict) else 0.0
+        except (ValueError, OverflowError):
+            t = 0.0
+        if t > best[0]:
+            best = (t, f"{os.path.basename(os.path.dirname(rp))}/p{pk.get('k')}")
+    return best
+
+
 def previous(pdir, out, video):
     if out:
         return "(none for this one: it is judged on its own)"
@@ -442,6 +458,13 @@ def previous(pdir, out, video):
     # the newest critique of this cut or of one made before it: asked about v1 after v2, the critic compares v1 with
     # what came before v1, not with v2 (an older cut can't have "fixed" a newer one's problems)
     cs = [d for d in critiques(pdir) if d.get("size") == size or (d.get("mtime") or 0) < vm - 1]
+    picked_at, ref = last_pick(pdir)
+    if picked_at and vm > picked_at:             # a cut of the picked pitch: the critiques before it were of another concept
+        before = [d for d in cs if (d.get("mtime") or 0) <= picked_at and d.get("size") != size]
+        cs = [d for d in cs if d not in before]
+        if before and not cs:
+            return (f"(none of this concept yet: the critiques before were of the video before pitch {ref} was put in "
+                    f"place, a different concept; `fixed_since_last` stays empty)")
     if not cs:
         return "(none earlier: this is the first critique of this cut or of one before it; `fixed_since_last` stays empty)"
     d = cs[-1]

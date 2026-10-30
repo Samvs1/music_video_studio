@@ -36,9 +36,11 @@ API (JSON):
                                         (the pitch round: job "pitch", `studio.py pitch`; auto: the critic's pick is built
                                          at once by a director run of direct_budget minutes on the Direct form's settings)
   GET  /api/p/<p>/pitches               (the pitch rounds, newest first: round.json with the URLs of each pitch's files and
-                                         what its card's live player plays; the running one; the Direct form's settings)
+                                         what its card's live player plays; the running one; director_running: a director
+                                         run from a terminal; the Direct form's settings)
   POST /api/p/<p>/pitch-pick {round, k} (Build this one: job "direct", `studio.py direct --pitch round-K/pN` with the
-                                         Direct form's saved settings)
+                                         Direct form's saved settings; it, POST direct and POST pitch are refused while a
+                                         director run or a pitch round this web app didn't start is going on)
   POST /api/p/<p>/stop (the running job; a director or a pitch round      POST /api/p/<p>/note {version, t, text}
                         wraps up cleanly)
                                                                           (a live note: version "live", scene, timeline)
@@ -274,6 +276,21 @@ def live_state(name):
 
 
 # ------------------------------------------------------------------ background jobs (one per project)
+def busy_elsewhere(name):
+    """A director run or a pitch round going on in this project that this web app didn't start (`studio.py direct` or
+    `pitch` from a terminal): said, so a second one isn't started over it. None when there is none (a job of this web
+    app's own is refused by start_job)."""
+    import director, pitch
+    j, d = JOBS.get(name), pdir(name)
+    if j and j["proc"].poll() is None:
+        return None
+    if director.run_active(d):
+        return "a director run is going on in this project (not started here): let it finish, or stop it first"
+    if pitch.round_active(d):
+        return "a pitch round is going on in this project (not started here): let it finish, or stop it first"
+    return None
+
+
 def start_job(name, job, args):
     with LOCK:
         j = JOBS.get(name)
@@ -499,7 +516,9 @@ def pitches_state(name):
                 c["url"] = file_url(name, d, c["file"])
             p["live"] = pitch_live(d, rd, p)
         out.append(r)
-    return {"rounds": out, "running": bool(active), "now": time.time(), "job": job_state(name), "ideas": pitch.has_ideas(pj),
+    import director
+    return {"rounds": out, "running": bool(active), "director_running": bool(director.run_active(d)), "now": time.time(),
+            "job": job_state(name), "ideas": pitch.has_ideas(pj),
             "angles": [{"key": k, "name": a[0]} for k, a in pitch.ANGLES.items()],
             "order": list(pitch.ORDER_IDEAS if pitch.has_ideas(pj) else pitch.ORDER), "direct": saved_direct(pj),
             "settings": pj.get("pitch") or {}}
@@ -525,6 +544,9 @@ def pick_pitch(name, body):
         raise ValueError(f"round {K} has no p{k}")
     if not rec.get("pitch") or not os.path.isfile(os.path.join(d, rec["pitch"])):
         raise ValueError(f"p{k} has no pitch.md: it can't be built (pick another pitch)")
+    busy = busy_elsewhere(name)
+    if busy:
+        raise ValueError(busy)
     sd = saved_direct(jload(os.path.join(d, "project.json"), {}))
     for key in ("seed_notes", "nudge"):                 # (nudge: not on the page; tests, scripts)
         if key in body:
@@ -1002,6 +1024,8 @@ class H(BaseHTTPRequestHandler):
                     return self.send_json({"ok": True})
                 if act == "story":
                     return self.send_json(save_story(name, body))
+                if act in ("direct", "pitch") and busy_elsewhere(name):
+                    raise ValueError(busy_elsewhere(name))
                 if act == "direct":
                     start_job(name, "direct", direct_args(name, body))
                     return self.send_json({"ok": True})

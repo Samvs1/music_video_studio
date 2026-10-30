@@ -73,7 +73,9 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    plan are put in place, and the director, with full reign as always, is told to go further than the pitch. The
    pitches are full directors on the top model (the idea is what you're choosing); the critic's cheaper model does the
    looking. From the command line: `studio.py pitch <project>`, then `studio.py direct <project> --pitch round-K/pN`
-   (`--auto`: the verdict picks and the director starts at once).
+   (`--auto`: the verdict picks and the director starts at once). To build it together instead: `/musicvideo
+   <project>` in Claude Code, and say which pitch (it runs `studio.py pitch-pick <project> round-K/pN`, which puts it
+   in place the same way and prints what the run's brief would say about it).
 5. **Direct**: set a time budget (e.g. 90 min), the model (Opus by default), the effort (max), the critic (Sonnet by
    default; Haiku is cheaper, Opus sharper, or off), **Ultracode** (off by default: the director may also orchestrate
    multi-agent workflows; more tokens), optionally a cost cap in dollars (a hard stop for the director's session, its
@@ -105,19 +107,22 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `song <p>` · `curves <p> [--fps N]` | remake the song folder · remake the per-frame files for another fps |
 | `story <p> [--model M]` | Claude drafts `song/song-story.md` (headless, read-only) |
 | `align-lyrics <p> [--in lines.json]` | the lyric lines placed where Whisper hears them (`cache/lyrics/aligned.json`; the timing editor's button) |
-| `pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--proof "chorus 1"\|24-44] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N] [--auto [--direct-budget 90m] [--direct-effort max] [--ultracode]] [--dry-run]` | the pitch round, optional: N directors pitch at once from different angles, each proving its idea on the same window of the song (`work/pitches/round-K/`); proof_av.mp4 (the proof with the song), the critic on each proof, one verdict (ambition first) with graft ideas, the costs; `--auto`: the verdict's winner is built at once |
-| `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-max 6] [--pitch round-K/pN]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final; `--pitch`: it starts from that pitch (put in place first) and goes further |
-| `critique <p> <video \| vN> [--model sonnet] [--effort medium] [--focus "..."] [--max-usd 2] [--pictures a.png,b.png]` | the critic: a cheaper model with fresh eyes looks at a video, reports back in text (`work/critic/`; a version also `final/critic_vN.md`) |
+| `pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--critic-effort E] [--proof "chorus 1"\|24-44] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N] [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N] [--ultracode]] [--dry-run]` | the pitch round, optional: N directors pitch at once from different angles, each proving its idea on the same window of the song (`work/pitches/round-K/`); proof_av.mp4 (the proof with the song), the critic on each proof, one verdict (ambition first) with graft ideas, the costs; `--auto`: the verdict's winner is built at once |
+| `pitch-pick <p> round-K/pN [--dry-run]` | put a picked pitch in place for an interactive director (`/musicvideo`), as `direct --pitch` does first, and print what's where, the critic's notes on its proof and the verdict's graft ideas |
+| `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-effort medium] [--critic-max 6] [--pitch round-K/pN]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final; `--pitch`: it starts from that pitch (put in place first) and goes further |
+| `critique <p> <video \| vN> [--model sonnet] [--effort medium] [--focus "..."] [--max-usd 2] [--pictures a.png,b.png] [--concept PATH] [--out DIR] [--no-look]` | the critic: a cheaper model with fresh eyes looks at a video, reports back in text (`work/critic/`; a version also `final/critic_vN.md`) |
 | `plan validate\|status <p>` | the optional plan tools (`work/plan.json`, a scene list): check it (exit 1 with what to fix) · each scene's renders, the previews with the critic's scores, the final's estimated render time here, the render queue |
 | `plan render <p> [--preview\|--final] [--only s1,s3]` · `plan assemble <p> [--preview\|--final] [--no-critic]` | each segment over its own frame range (unchanged ones from the cache) · join, layer, mux → `work/previews/preview_N.mp4` or `final/music-video.mp4`, then the eyes, the checks and the critic on the whole film |
 | `clock <p>` · `stop <p>` | time left in a running budget (a director's or a pitch round's) · ask a running director or pitch round to stop cleanly |
 | `note-done <p> <id> ["what changed"] [--undo]` | mark the user's note done with a one-line fix (how a director answers a note: `review/notes.json` is written safely, since the web app writes it too) |
 | `check <p> [video]` | every check on the final (spec, flashes, text, sync) |
-| `deliver <p> [--critic]` · `versions <p>` | archive `final/music-video.mp4` as the next version (+ checks; `--critic`: + the critic's notes) · list versions |
-| `permtest <p> [--pitch]` | check the director's sandbox, and an agent's, with the real Claude Code (a few cents with Haiku); `--pitch`: a pitch's (its own folder writable, another pitch's and the project's files refused) |
+| `deliver <p> [--critic [--critic-model M]]` · `versions <p>` | archive `final/music-video.mp4` as the next version (+ checks; `--critic`: + the critic's notes) · list versions |
+| `permtest <p> [--pitch] [--model haiku]` | check the director's sandbox, and an agent's, with the real Claude Code (a few cents with Haiku); `--pitch`: a pitch's (its own folder writable, another pitch's and the project's files refused) |
 | `run <p> <tool.py> [args]` | run any tool inside a project (`eyes.py`, `songq.py`, `compose.py`, `web-engine/render.py`, `blender/run.py`, `checks.py`, ...) |
 | `serve [--port 8765]` · `doctor` · `benchmark [--quick]` · `smoke` | web app · install check · render speeds · the end-to-end smoke test |
-The tools are documented in **`tools/README.md`** (with `tools/web-engine/README.md` and `tools/blender/README.md`).
+Every command's `--help` lists all its options. The tools are documented in **`tools/README.md`** (with
+`tools/web-engine/README.md` and `tools/blender/README.md`); the studio's own side (the runner, the sessions, the pitch
+round's files, the live server) in `tools/INTERNALS.md`.
 
 ## How it works
 - **The song folder** (`projects/<p>/song/`): `README.md` (how to read it), `song-map.md` (at a glance, sections,
@@ -192,7 +197,8 @@ The tools are documented in **`tools/README.md`** (with `tools/web-engine/README
   all (per pitch: angle, state, the session's latest running cost, agents, title, idea, proof, critic; the verdict;
   the costs; `picked`). `direct --pitch round-K/pN` puts the pick in place (pitch.md → `work/concept.md`, its scenes
   and `lib/` → `work/scenes/`, or `work/scenes/pitch-K-N/` when there are scenes already, its style frames, its draft
-  plan with the paths moved; whatever was there is kept as a `_before_pitch_<time>` copy) and the brief gets a short
+  plan with the paths moved; whatever was there is kept as a `_before_pitch_<time>` copy, `work/live.json` too) and
+  the brief gets a short
   section: the user picked this pitch, build it and go further, the critic's notes on its proof, the verdict's
   graft ideas and the round's notes (written for the pitchers: context, not a rule); full reign as always. A review
   round never starts from a pitch.
@@ -449,7 +455,9 @@ director how they look, so it can draw them; the pictures never appear in the vi
   session's own cost or agents: the Direct page shows autonomous runs.
 - One song per project; the whole song, always.
 - A Blender scene's render cache follows its own folder, `work/scenes/lib/` and `work/kit/` (files of 20 MB or more by
-  size and date): a file it loads from anywhere else isn't followed (render with `--fresh` then).
+  size and date): a file it loads from anywhere else isn't followed (render with `--fresh` then). A web scene's follows
+  its folder, what it imports (and `new URL(...)`s), and `work/kit/` when its code names a `kit/` path: a file it
+  fetches from anywhere else isn't followed either.
 - The render queue is per machine (a file in the studio folder): two studio installs on one PC don't see each other's
   renders. A render that holds the queue for more than 6 h is taken over (a hung one would block it for good): a
   longer final render then shares the machine with the next one.
@@ -476,8 +484,10 @@ director how they look, so it can draw them; the pictures never appear in the vi
   `requestAnimationFrame` and `setTimeout`; the tests poll from Python instead.
 
 ## Ideas for next
-- A **storyboard view** in the web app: the director's style frames and section plan as cards before the full render.
-- **Style-frame approval** as an optional checkpoint in autonomous runs (the director pauses for one decision).
+- A **storyboard view** of the running director's own style frames and section plan in the web app (the pitch round
+  shows them per pitch before a run; a run's own aren't shown until its previews).
+- **Approving a running director's style frames** mid-run (the pitch round is the checkpoint before a run; within a
+  run there is none).
 - **Beat-grid editing** in the song viewer (drag bar 0, fix a downbeat) written to project.json like `lyrics_fix`.
 - A **choreography helper**: rigged 2D / 3D figures driven by the beat grid for "a lot of dance".
 - Loudness-matched **share copies** (720p, vertical crops) next to the master.

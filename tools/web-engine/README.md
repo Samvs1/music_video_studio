@@ -71,8 +71,10 @@ the song folder and the project folder.
 - `.mp4`: chunks on a global grid (2 s), each encoded without B-frames, joined frame-exact by stream copy. A re-run
   with the same scene version reuses finished chunks (a crash, a section render followed by the whole song); any change in
   the scene's folder, or in a file it reaches by a relative `import` (static or dynamic, followed through the files it
-  imports, outside its folder too: a shared `work/scenes/lib/`), renders them again; a sibling scene in its own folder
-  doesn't. `--fresh` starts over. Keep each scene in its own folder: a scene loose in `work/scenes/` hashes everything
+  imports, outside its folder too: a shared `work/scenes/lib/`), or anywhere in `work/kit/` when its code names a
+  `kit/` path (an asset loaded with `fetch` or a loader), renders them again; a sibling scene in its own folder
+  doesn't. A file loaded at run time from anywhere else isn't followed: load it with
+  `new URL("../lib/x.json", import.meta.url)` (followed like an import) or render with `--fresh`. `--fresh` starts over. Keep each scene in its own folder: a scene loose in `work/scenes/` hashes everything
   below it.
 - One render at a time per machine: a video render waits for the render queue (`waiting for the render queue: <who>
   since <time>`; see `tools/README.md`). `--still` doesn't wait.
@@ -88,27 +90,10 @@ The Watch page's **▶ live** view plays a project's scenes in the user's browse
 can hear gets their ears in early, while the director still works. It is the same runtime in **live mode**
 (`__MV_CONFIG.live`, set only by the live shell; a render never has it, and without it nothing in `mv.js` behaves any
 differently: the smoke test renders frames with and without the live block and compares them pixel for pixel):
-- The page the live server sends is the renderer's own (`/_mv/live.html?scene=<path from the project>&scale=0.5`: the
-  same shell, fonts, import map and URL space; an HTML scene is served at its own URL with the same head), at the
-  delivery size × the size the user picks (¼, ½, full; default ½).
-- The web app owns the clock (the song's `<audio>`): it posts `{type: "mv-clock", t, playing, rate, seek}` on every
-  frame while it plays and on a seek, a pause or a rate change. The page shows frame `round(t × fps)` of that clock as it
-  is now, on the browser's real `requestAnimationFrame`, and renders only when that frame changed and the last render
-  is done: **a scene slower than real time drops frames, the timing stays true** (what you see is where the song is).
-- Stateful scenes step on one frame at a time; a jump pre-rolls exactly as a render does (from 0, or `preroll` seconds
-  before), in slices that let the browser breathe ("catching up 40%"), and a new seek cancels a catch-up under way. A
-  jump *back* in a stateful scene without `preroll` reloads the page first (its state must start from `setup()` again).
-  So a live frame is the renderer's frame, pixel for pixel (checked by the smoke test, stateful scenes included). A step
-  back that isn't a seek (the clock correcting itself: a pause, a play, a new sound delay, a switch of stems) holds the
-  frame until the clock passes it, so pausing never restarts a simulation.
-- While it plays, a stateful scene that can't render every frame as fast as the clock runs (a catch-up that doesn't
-  gain on the clock) skips to the clock's frame instead, like a stateless one: it stays on time, and its state is then
-  close to the render's, not exact (`approx`, said in the live view), until a jump back starts it again. Paused, a
-  catch-up is always exact.
-- The page posts `{type: "mv-live", frame, fps (achieved), ms (per render), need, ready, catching_up, approx, errors}`
-  to the web app ~4 times a second (errors at once); the live view shows it per layer: "24 of 30 fps · slower than real
-  time here", "catching up 40%", "skipping frames to keep time", the scene's error.
-- The per-frame text list is cleared every frame (no leak); texts aren't collected live (the checks read renders).
+A scene slower than real time **drops frames, the timing stays true** (the page shows the frame of the song's
+clock as it is now); a stateful scene pre-rolls on a jump exactly as a render does, so a live frame is the renderer's
+frame, pixel for pixel (one too slow to keep up skips frames and says its state is then only close to the render's).
+Pausing never restarts a simulation. (How the page and the web app talk: `tools/INTERNALS.md`.)
 
 **What plays live**: web scenes (JS modules and HTML pages) as they are on disk (the live server sends `no-store`: a
 scene that changed reloads within 5 s, its imports and the lib included), stateful ones too; transparent overlays over

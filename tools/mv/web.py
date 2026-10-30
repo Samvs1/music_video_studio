@@ -13,7 +13,7 @@ Used by tools/web-engine/render.py (the CLI) and the benchmark. Pieces:
 """
 import base64, glob, hashlib, json, mimetypes, os, re, shutil, subprocess, time, urllib.parse
 
-from .common import STUDIO, FONTS_DIR, ROOT, ffmpeg, h264_args, delivery, jsave, jload
+from .common import STUDIO, FONTS_DIR, ROOT, ffmpeg, h264_args, delivery, jsave, jload, tree_files
 
 ENGINE = os.path.join(STUDIO, "tools", "web-engine")
 RUNTIME = os.path.join(ENGINE, "runtime")
@@ -285,11 +285,28 @@ def reached(scene_path, project, most=500):
     return sorted(seen)
 
 
+CODE_EXT = (".js", ".mjs", ".html", ".htm", ".css")
+_KIT_REF = re.compile(r"""\bkit/""")
+
+
+def names_kit(files):
+    """Any of these code files names a path in the shared kit (work/kit/: "../../kit/city/look.json")."""
+    for f in files:
+        if f.lower().endswith(CODE_EXT):
+            try:
+                if _KIT_REF.search(open(f, encoding="utf-8", errors="replace").read()):
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def scene_key(scene_path, project, cfg):
     """What decides a chunk's pixels: the scene's folder (its code and assets; renders and caches excluded), every
     file it reaches by a relative import (the shared lib, wherever it is: a lib change renders again, a sibling
-    segment's change in its own folder doesn't), the runtime, the song data, the render settings. Any change renders
-    the scene's chunks again."""
+    segment's change in its own folder doesn't), the whole of work/kit/ when its code names a kit/ path (an asset
+    loaded at run time, by fetch or a loader, isn't an import reached() can follow), the runtime, the song data, the
+    render settings. Any change renders the scene's chunks again."""
     h = hashlib.sha1()
     d = os.path.dirname(os.path.abspath(scene_path))
     files = {os.path.abspath(scene_path)}
@@ -301,6 +318,9 @@ def scene_key(scene_path, project, cfg):
         if root == d and os.path.abspath(d) in (os.path.abspath(project), os.path.abspath(os.path.join(project, "work"))):
             break                                    # a scene loose in the project / work folder: don't hash everything below
     files.update(reached(scene_path, project))
+    kit = os.path.join(project, "work", "kit")
+    if os.path.isdir(kit) and names_kit(files):
+        files.update(tree_files(kit))
     for f in sorted(files):
         try:
             if os.path.getsize(f) < 50e6:

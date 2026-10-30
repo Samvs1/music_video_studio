@@ -47,18 +47,12 @@ the studio the clock, the render queue, the checks, the versions, the costs (and
   finish you get a turn of your own. At the deadline plus a grace it ends the session, archives the cut as the next
   version, runs the checks and appends the run settings (models and their costs, agents, ultracode) to report.md.
   `S clock <p>` prints the time left.
-- **A pitch round** (optional, and the user's choice: the web app's **Pitch round** page, or `S pitch <p>`; an
-  autonomous director never starts one): before a run, several directors pitch the video at once from different
-  angles, each proving its idea on the same short window around the song's biggest moment; the critic looks at every
-  proof and a verdict ranks them, ambition first.
-  If the run's brief says the user picked a pitch (`direct --pitch round-K/pN`), its pitch is your `work/concept.md`,
-  its scenes, style frames and draft plan are in place, and the brief has the critic's notes on its proof and the
-  verdict's ideas worth grafting from the other pitches. It's your starting point, not your ceiling: the proof is a
-  first draft of one window, made in twenty minutes; build the whole song from it and go further, graft what makes it
-  bolder, rewrite the concept where it gets stronger. Full reign as always. Interactively, when the user is torn
-  between directions or asks for options, suggest a pitch round (the Pitch round page, or `S pitch <p> --n 3 --budget
-  20m`: several short sessions on their plan; they watch the proofs with the song and pick) rather than fanning out
-  concept agents yourself.
+- **A pitch round** (optional, the user's choice; an autonomous director never starts one): several directors pitch
+  at once from different angles, each proving its idea on one window of the song; the critic and a verdict rank them,
+  the user picks. Interactively, when the user is torn or asks for options, suggest one (the Pitch round page, or
+  `S pitch <p> --n 3 --budget 20m`) rather than fanning out concept agents. A picked pitch (the brief says so, or
+  interactively `S pitch-pick <p> round-K/pN`, which puts it in place and prints the same) is your starting point,
+  not your ceiling: build the whole song from it, go further, graft what makes it bolder.
 - **Interactive runs** (`/musicvideo`): the same steps. Run anything over about two minutes **in the background**
   (Bash `run_in_background`) and keep working: you're told when it ends. Don't poll it with sleep loops. The critic
   is yours to call (`S critique`), and `S deliver <p> --critic` archives the cut.
@@ -69,6 +63,9 @@ the studio the clock, the render queue, the checks, the versions, the costs (and
   user's notes per version), `ls final/`, and `S plan status <p>` if there is a `work/plan.json`.
 - No `song/song-map.json` → `studio.py ingest <p>` first (a few minutes; progress in `cache/status.json`).
 - Open notes (`done: false`) on the newest version → **Review round** (below).
+- A finished pitch round (`work/pitches/round-*/round.json`, `state` done) with no pick (`picked`) and no run since →
+  tell the user in a line (the verdict's winner, the other titles) and ask which to build, or whether to start from
+  their notes; then `S pitch-pick <p> round-K/pN` and step 3 starts from that pitch.
 - Otherwise continue from the first unfinished step; say in one line where you pick up.
 
 **Efficiency (usage is the user's money):** read each big file once, in order, and write your own digest
@@ -128,7 +125,7 @@ not one of three.) Write `work/concept.md` (the critic judges against it, every 
   enough that each can still surprise. Add to it rather than change it once scenes use it (a change renders them
   all again).
 - **Style frames**: 2-4 stills at the signature moments at full size (`web-engine/render.py <scene> --still
-  61.2,83.0 --out work/style-frames/a.png` or `blender/run.py <scene> --still ...`), into `work/style-frames/`. Look
+  61.2,83.0 --out work/style-frames`: a folder, one PNG per time; or `blender/run.py <scene> --still ...`). Look
   at each. Ask: is this a default? would any song have produced it? is the type readable (contrast ≥ 3:1, ≥ 34 px at
   1080p)? Redo weak ones before building. (They are also the best reference to give an agent: two or three, not more.)
 
@@ -139,14 +136,14 @@ not one of three.) Write `work/concept.md` (the critic judges against it, every 
   `MV.wordAt(t)`, `MV.cue(t)`, seeded `MV.rand(key)` and `MV.noise(x, y, z)`. Blender scenes get the same through
   `mv.song`, and import shared code from their own folder, `work/scenes/lib/` and `work/kit/` (`tools/blender/README.md`).
 - **Deterministic**: render(f) depends only on f. Simulations set `stateful: true` (pre-rolled). No wall-clock time.
-  Fast enough to play near real time at half size where it can (the user plays your scenes live): heavy work in setup.
 - Text: mark DOM text `data-mv-text="lyric|lyric-word|title|credit|label|deco"`; canvas/WebGL text calls
   `MV.text(str, {x, y, w, h, color, size, role})` every frame it shows. Black or frozen on purpose: `MV.intent('black',
   t0, t1, 'why')` (or `work/intent.json`). Otherwise the checks flag them.
 - Layers: render a 3D pass and a transparent 2D/type pass separately (`--transparent`) and composite with
   `compose.py layer`. Join sections with `compose.py concat` (frame-exact). Add the song with `compose.py mux`. With a
   plan, `S plan assemble` does all three ("The plan tools (optional)", below).
-- Render only what changed: chunks of an unchanged web scene are reused (its folder and what it imports are its key);
+- Render only what changed: chunks of an unchanged web scene are reused (its folder, what it imports, and `work/kit/`
+  when its code names a `kit/` path, are its key: load other files with `new URL("../lib/x.json", import.meta.url)`);
   `S plan render` skips a segment whose scene, shared code and settings are unchanged; Blender renders follow the
   scene's folder and the shared folders too.
 
@@ -172,8 +169,9 @@ first meets ears. So:
 - Previews: the whole film at half size (same fps: sync checks still hold): `S plan assemble <p> --preview`, or
   render at `--preview` and `compose.py mux <picture> -o work/previews/preview_N.mp4` (that folder and name: the
   studio's critic looks for them). A section at a time while building, then the whole song.
-- **The critic does the looking** (cheap model, fresh eyes, 2-4 min). Autonomous runs: it looks at every new
-  `work/previews/*.mp4` and the final by itself and its notes arrive as a message: don't run it twice. Interactive:
+- **The critic does the looking** (cheap model, fresh eyes, 2-4 min). Autonomous runs: it looks at the newest new
+  `work/previews/*.mp4` and the final by itself (up to a per-run cap, the last kept for the final: it tells you when
+  it's used up) and its notes arrive as a message: don't run it twice. Interactive:
   `S critique <p> work/previews/preview_N.mp4` in the background after each full preview, and build on while it looks
   (`plan assemble` runs it for you). `--focus "the chorus 2 type"` aims it. It runs the eyes, opens the pictures
   itself, judges them against `work/concept.md`, the song and the user's notes, ambition first, then the craft rules,
@@ -261,7 +259,9 @@ needs. Fan out where ideas multiply, not where tokens multiply:
   the run's** (report.md lists it per model; the web app's run view shows each agent and the costs).
 - **Ultracode** (autonomous runs with `--ultracode` or the web form's checkbox; interactively, the user's own
   setting): the Workflow tool for larger orchestrations, by the same rules. It multiplies tokens: worth it where
-  ideas multiply.
+  ideas multiply. In a workflow script give each agent its `model` in its options (and `effort: 'low'` for a
+  mechanical one); renders, assembles and checks stay plain Bash in the background, not workflow agents; the looking
+  goes to `S critique` (several at once on different videos is fine), never to reviewer agents on the top model.
 - The point of fanning out is a bolder video, not a safer consensus: never let agents average an idea down. When
   variants compete, pick the most ambitious one that can be made well in the time, and graft the best of the others.
   Keep for yourself the concept, the shared look, the scenes the arc turns on, and what to do with the critic's notes.
@@ -276,11 +276,9 @@ final in one command. Without a plan, render and compose by hand (step 5); both 
                "scene": "work/scenes/s1/scene.js"}, ...],
  "overlays": [{"id": "type", "scene": "work/scenes/type/type.html", "transparent": true}]}
 ```
-Segments in song order, following on with no gap, the first `from` 0, the last `to` the song's end, cut on downbeats
-(boundaries become frames: `round(t × fps)`); each scene in its **own folder** `work/scenes/<id>/` (the render cache
-follows a scene's folder and its imports, so a change in one segment doesn't render another); shared code in
-`work/scenes/lib/` (and `work/kit/`). Overlays (the type, a grain) are transparent passes layered over the joined
-segments. Other fields are your own notes. plan.json is also the timeline the user plays live: keep it current.
+Segments in song order with no gaps, cut on downbeats, each scene in its **own folder** `work/scenes/<id>/`, shared
+code in `work/scenes/lib/` (and `work/kit/`); overlays (the type, a grain) are transparent passes over the joined
+segments; other fields are your own notes. plan.json is also the timeline the user plays live: keep it current.
 
 | command | takes | what comes back |
 |---|---|---|
@@ -290,9 +288,8 @@ segments. Other fields are your own notes. plan.json is also the timeline the us
 | `S plan assemble <p> --preview` | what changed + 3-6 min: **background** | `work/previews/preview_N.mp4` (half size; a segment without a scene is a labelled slate), the eyes, the flash and text checks, then the critic's report on the whole film (read it first) |
 | `S plan assemble <p> --final` | the final's estimate + ~5 min: **background** | `final/music-video.mp4` (every scene needed), every check, the critic on the final |
 
-`plan assemble` runs the critic on its own cut, and an autonomous run's critic doesn't look at that cut again: don't
-critique it twice. `--no-critic` skips that critique interactively; in an autonomous run the studio's critic then looks
-at the cut by itself and its notes come as a message.
+`--no-critic` skips `plan assemble`'s critique (in an autonomous run the studio's critic then looks at the cut by
+itself, and its notes come as a message).
 
 ## Craft rules (from real review rounds; they never bend, the look always can)
 1. **Everything lands on a musical event**: every cut, flash, hit, reveal, camera move start and type entrance on a beat,

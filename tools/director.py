@@ -311,9 +311,9 @@ def looking(critic, project, python, tools):
 
 
 def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadline=None, critic=None, ultracode=False,
-                pitch_text=""):
+                pitch_text="", pitch_ref=None):
     """The run's brief (templates/director-brief.md, or revise-brief.md for a review round). pitch_text: the short
-    section on the pitch the run starts from (pitch.brief_section), "" without one."""
+    section on the pitch the run starts from (pitch.brief_section), "" without one; pitch_ref its "round-K/pN"."""
     pj = load_pj(pdir)
     d = delivery(pj)
     sf = song_file(pdir)
@@ -327,6 +327,8 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
             "refs": refs_brief(pdir, pj), "ultracode": ULTRACODE_LINE if ultracode else "", "pitch": pitch_text}
     vals["critic"] = critic_brief(critic, name, vals["python"], tools)
     vals["looking"], vals["looking_short"] = looking(critic, name, vals["python"], tools)
+    vals["previews"] = ("get the studio's critic's notes on them (below)" if critic else
+                        "look at them with the eyes tools")
     notes = user_notes(pj, seed_notes)
     if revise:
         from mv.song import Song
@@ -335,7 +337,8 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
         vn = vs[-1]["n"] if vs else 1
         rows = []
         for nt in sorted([n for n in jload(os.path.join(pdir, "review", "notes.json"), []) or []
-                          if not n.get("done") and (str(n.get("version", "")).lstrip("v") == str(vn) or n.get("version") == "live")],
+                          if not n.get("done") and (str(n.get("version", "")).lstrip("v") == str(vn)
+                                                    or n.get("version") == "live" and for_this_run(n))],
                          key=lambda n: (n.get("version") == "live", n["t"])):
             a = S.at(float(nt["t"]))
             m, s_ = divmod(float(nt["t"]), 60)
@@ -349,15 +352,30 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
                     direction=("\nMy notes on the song (as before):\n" + notes) if notes else "")
         text = fill(open(os.path.join(TEMPLATES, "revise-brief.md"), encoding="utf-8").read(), vals)
     else:
-        vals["direction"] = (("\n" + notes + "\n") if notes else "") + live_brief(pdir)
+        vals["direction"] = (("\n" + notes + "\n") if notes else "") + live_brief(pdir, pitch_ref)
         text = fill(open(os.path.join(TEMPLATES, "director-brief.md"), encoding="utf-8").read(), vals)
     return text
 
 
-def live_brief(pdir):
+def note_pitch(nt):
+    """The pitch ("round-K/pN") whose scenes a live note was left on (its timeline "pitch:round-K/pN", or a scene in that
+    pitch's folder), or None."""
+    tl, sc = str(nt.get("timeline") or ""), str(nt.get("scene") or "").replace("\\", "/")
+    m = re.fullmatch(r"pitch:(round-\d+/p\d+)", tl) or re.search(r"work/pitches/(round-\d+/p\d+)/", sc)
+    return m.group(1) if m else None
+
+
+def for_this_run(nt, pitch_ref=None):
+    """A live note this run's brief takes: not one on another pitch's scenes (from a pitch round: not this video's)."""
+    q = note_pitch(nt)
+    return q is None or q == pitch_ref
+
+
+def live_brief(pdir, pitch_ref=None):
     """A first run's brief: the user's live notes still open (left while no run was going, e.g. after a stopped one),
-    with the song context and their ids; "" when there are none. A review round lists them with the other notes."""
-    open_ = open_live_notes(pdir)
+    with the song context and their ids; "" when there are none. Notes on a pitch's scenes go only to the run that
+    builds that pitch. A review round lists them with the other notes."""
+    open_ = [x for x in open_live_notes(pdir) if for_this_run(x, pitch_ref)]
     return LIVE_BRIEF.format(done=note_done_cmd(pdir), rows="\n".join(live_rows(pdir, open_))) if open_ else ""
 
 
@@ -429,7 +447,8 @@ class CriticWatcher:
     slot is given back). Of several ready previews only the newest; none older than a ready final, or than a cut
     critiqued (or being critiqued) elsewhere. At most `most` critiques per run, the last one kept for a final; no
     preview critique when its notes couldn't reach the director in time (`min_left`), and nothing new once the run is
-    stopping. Finished critiques wait in take() for the runner."""
+    stopping. Finished critiques wait in take() for the runner; the first preview passed over because the critiques
+    are used up waits in passed() (the director is told once: it isn't looking at full previews itself)."""
 
     def __init__(self, pdir, started, model, effort, most=6, min_left=6 * 60):
         self.pdir, self.started, self.model, self.effort, self.most = pdir, started, model, effort, most
@@ -438,6 +457,7 @@ class CriticWatcher:
         self.seen, self.handled, self.finished = {}, set(), []
         self.job, self.n, self.last = None, 0, 0.0
         self.done_at = 0.0                      # the newest cut critiqued elsewhere (its mtime)
+        self.skipped, self.told = [], False     # a preview passed over for want of critiques left (said once)
         self.lock = threading.Lock()
 
     @staticmethod
@@ -506,6 +526,9 @@ class CriticWatcher:
             self.handled.update(k for k in newest if k[2] <= cut)
             prevs = [k for k in newest if k[2] > cut]
             if prevs and (self.n >= self.most - 1 or (left is not None and left < self.min_left)):
+                if self.n >= self.most - 1 and not self.told:
+                    self.told = True
+                    self.skipped.append(rel(prevs[-1][0], self.pdir))
                 self.handled.update(prevs)          # the last critique is kept for a final; too late to reach it
                 prevs = []
             if fins and self.n >= self.most:
@@ -548,6 +571,12 @@ class CriticWatcher:
         "seen": True on one made elsewhere, whose notes the director has had)."""
         with self.lock:
             out, self.finished = self.finished, []
+        return out
+
+    def passed(self):
+        """The preview passed over because the critiques were used up (once a run), or []."""
+        with self.lock:
+            out, self.skipped = self.skipped, []
         return out
 
     def pending_final(self):
@@ -597,6 +626,12 @@ def critic_message(c, most=6000):
     pics = critic_pictures(c)
     return CRITIC_INTRO.format(model=c.get("model") or "the critic", video=c["video"]) + \
         f" (Its report is also in {c.get('file')}.)" + (f"\n{pics}" if pics else "") + "\n\n" + rep
+
+
+CRITIC_USED_UP = ("The studio's critic has used this run's preview critiques ({n}; the last one is kept for the final), so "
+                  "it won't look at {video} or a later preview. When you need eyes on one: `{python} {tools}/studio.py "
+                  "critique {project} <video> --focus \"...\"` (2-4 min), or the eyes tools yourself, one question at a "
+                  "time.")
 
 
 NUDGE_HEAD = ("You delivered a cut with {left} still on the clock: spend it making the video better, and bolder. Start "
@@ -782,6 +817,11 @@ def live_rows(pdir, notes):
         seg = next((x for x in segs if x["from"] <= t < x["to"]), None)
         if seg:
             parts.append(f"segment {seg.get('id')}" + (f" ({seg['name']})" if seg.get("name") else ""))
+        q = note_pitch(nt)
+        if q:
+            parts.append(f"on pitch {q}'s scenes, from the pitch round")
+        elif nt.get("timeline") and not str(nt["timeline"]).startswith("scene:"):
+            parts.append(f"in the timeline {nt['timeline']}")
         if nt.get("scene"):
             parts.append(f"they saw {nt['scene']}")
         rows.append("- " + " · ".join(parts) + f" · **{str(nt.get('text') or '').strip()}** (id {nt.get('id')})")
@@ -1037,6 +1077,12 @@ class Runner:
                 self.record(c, "the director ran it" if c.get("seen") else "waiting")
                 if not c.get("error") and not c.get("seen"):
                     self.unsent.append(c)
+            for v in critics.passed():                     # (it was told not to look at full previews itself)
+                self.note(f"🔍 the critic passes over {v}: its preview critiques for this run are used up")
+                if not s.closed and left > 120 and self.stop_reason is None and s.alive():
+                    self.send(CRITIC_USED_UP.format(n=critics.n, video=v, python=venv_python(self.pdir),
+                                                    tools=rel(os.path.join(STUDIO, "tools"), self.pdir),
+                                                    project=os.path.basename(self.pdir)), "critic: no more previews")
         if s.turn_over(now) and not s.closed:
             have_final = os.path.exists(self.fin) and os.path.getmtime(self.fin) > self.started
             fkey = CriticWatcher.key(self.fin) if have_final else None
@@ -1199,6 +1245,8 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     import pitch as pitches
     if not dry_run and pitches.round_active(pdir):
         raise SystemExit("a pitch round is going on in this project: let it finish (or `studio.py stop`) first")
+    if not dry_run and run_active(pdir):       # (a second run would move its work and its final out from under it)
+        raise SystemExit("a director run is going on in this project: let it finish (or `studio.py stop`) first")
     if pitch:                                  # a pitch that can't be built is refused before anything is made or moved
         pitches.promote(pdir, pitch, dry=True, log=lambda x: None)
     pj = load_pj(pdir)
@@ -1230,7 +1278,7 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     critic = {"model": critic_model, "effort": critic_effort, "max": critic_max} if use_critic else None
     text = build_brief(pdir, budget_s, seed_notes, revise, started, deadline,
                        critic=(critic_model, critic_max) if use_critic else None, ultracode=ultracode,
-                       pitch_text=pitches.brief_section(picked) if picked else "")
+                       pitch_text=pitches.brief_section(picked) if picked else "", pitch_ref=picked["ref"] if picked else None)
     open(os.path.join(rdir, "brief.md"), "w", encoding="utf-8").write(text)
     cmd = claude_args(pdir, model, effort, ultracode=ultracode, max_usd=max_usd)
     json.dump({"cmd": cmd, "cwd": pdir}, open(os.path.join(rdir, "command.json"), "w"), indent=1)

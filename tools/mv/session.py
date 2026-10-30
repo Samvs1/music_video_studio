@@ -42,7 +42,7 @@ background (tasks running now), budget_hit (a result said the --max-budget-usd c
 """
 import json, os, re, subprocess, threading, time
 
-from .claude import kill_tree
+from .claude import clean_env, kill_tree
 
 CROSS_S = 10.0                  # a message sent while busy this close before the result may have crossed it
 CROSS_SETTLE_S = 30.0           # then wait this long for the turn it may start, before the turn counts as over
@@ -152,7 +152,8 @@ class Session:
         os.makedirs(self.rdir, exist_ok=True)
         self.proc = subprocess.Popen(self.cmd, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                     env=self.env, creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+                                     env=clean_env(self.env),           # a session of its own, not a nested one
+                                     creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         self.t_start = time.time()
         self.status["pid"] = self.proc.pid
         self.raw = open(os.path.join(self.rdir, "events.jsonl"), "w", encoding="utf-8")

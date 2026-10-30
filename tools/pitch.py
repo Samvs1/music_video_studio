@@ -303,13 +303,36 @@ def speeds_text(pdir):
     return "; ".join(f"{label} ≈ {est(s)}" for label, s in rows) + " (plus the encode and the checks: a few minutes)"
 
 
-def proof_estimate(pdir, w):
-    """The proof's render time at preview size with the web engine, on its own (tools/speeds.json)."""
+def proof_seconds(pdir, w):
+    """The proof's render time in seconds at preview size with the web engine, on its own (tools/speeds.json)."""
     sp = (jload(os.path.join(HERE, "speeds.json"), {}) or {}).get("renderers") or {}
     s = ((sp.get("web2d") or {}).get("540p_preview") or {}).get("s_per_frame") or 0.45
     d = delivery(load_pj(pdir))
     px = max(0.25, (d["width"] * d["height"] / 4) / (960 * 540))
-    return est((w["b"] - w["a"]) * s * px + 20)
+    return (w["b"] - w["a"]) * s * px + 20
+
+
+def proof_estimate(pdir, w):
+    return est(proof_seconds(pdir, w))
+
+
+QUEUE_SHARE = 0.4                  # the N proofs one after another taking more of the budget than this: said at the start
+
+
+def queue_plan(n, proof_s, started, budget_s, grace):
+    """When each pitch should start its proof render at the latest: the N proofs take turns in the render queue, so the
+    last one must still end before the deadline plus the grace (a minute to spare), and never later than half-way (an
+    early proof leaves time to look at it and push it). A note when the N proofs take more than QUEUE_SHARE of the
+    budget: the round is tight (a longer budget or fewer pitches)."""
+    all_s = n * proof_s
+    latest = started + budget_s + grace - all_s - 60
+    start_by = max(started + 0.25 * budget_s, min(started + budget_s / 2, latest))
+    note = ""
+    if all_s > QUEUE_SHARE * budget_s:
+        note = (f"the {n} proofs take about {est(all_s)} in the render queue one after another (about {est(proof_s)} each "
+                f"here), {round(100 * all_s / budget_s)}% of the {D.fmt_dur(budget_s)} each pitch has: a pitch that starts "
+                f"its proof late may end without one. A longer --budget or a smaller --n gives each more room.")
+    return {"proof_s": round(proof_s), "all_s": round(all_s), "start_by": start_by, "note": note}
 
 
 def direct_budget_text(pdir, auto=None):
@@ -516,11 +539,16 @@ class Pitch:
 
     def warnings(self, now, left):
         R = self.R
+        if "proof" not in self.warned and now >= R.queue["start_by"] and left > 0:
+            self.warned.add("proof")
+            if not self.files()["proof"]:
+                self.send(f"It's {D.hm(now)}: if your proof render isn't going yet, start it now, in the background "
+                          f"(`run_in_background: true`), and carry on while it waits. The {R.n} pitches' proofs take turns in "
+                          f"the render queue (about {est(R.queue['proof_s'])} each here), and yours must be done by "
+                          f"{D.hm(self.deadline)}.", "start the proof")
         if "half" not in self.warned and now - R.started >= 0.5 * R.budget_s and left > 0:
             self.warned.add("half")
-            self.send(f"Half of your time is gone ({D.fmt_dur(left)} left, deadline {D.hm(self.deadline)})."
-                      + ("" if self.files()["proof"] else " If proof.mp4 isn't rendering yet, start it now: the render "
-                         "queue is shared with the other pitches, and your render may wait behind theirs."), "half")
+            self.send(f"Half of your time is gone ({D.fmt_dur(left)} left, deadline {D.hm(self.deadline)}).", "half")
         if "five" not in self.warned and 0 < left <= min(5 * 60, 0.25 * R.budget_s):
             self.warned.add("five")
             self.send(f"{D.fmt_dur(left)} left: finish pitch.md and the proof you have. Nothing new.", "time running out")
@@ -644,6 +672,7 @@ class Round:
         self.started = time.time()
         self.deadline = self.started + self.budget_s
         self.grace = min(300, max(90, int(0.1 * self.budget_s)))
+        self.queue = queue_plan(n, proof_seconds(self.pdir, self.window), self.started, self.budget_s, self.grace)
         self.pitches = [Pitch(self, i + 1, a) for i, a in enumerate(self.angles)]
         self.state, self.stage = ("dry-run", "dry-run") if dry_run else ("running", "pitching")
         self.stop_reason = None
@@ -671,7 +700,7 @@ class Round:
                 "frames": int(round(float(sm.get("duration") or 0) * d["fps"])), "speeds": speeds_text(self.pdir),
                 "direct_budget": direct_budget_text(self.pdir, self.auto), "budget": D.fmt_dur(self.budget_s),
                 "started": D.hm(self.started), "deadline": D.hm(self.deadline) + f" (in {D.fmt_dur(self.budget_s)})", "deadline_hm": D.hm(self.deadline),
-                "halfway": D.hm(self.started + self.budget_s / 2), "skill": rel(D.SKILL, self.pdir),
+                "start_by": D.hm(self.queue["start_by"]), "queue_est": est(self.queue["all_s"]), "skill": rel(D.SKILL, self.pdir),
                 "anti": rel(os.path.join(os.path.dirname(D.SKILL), "anti-defaults.md"), self.pdir), "refs": refs,
                 "proof_from": mmss(w["t0"]), "proof_to": mmss(w["t1"]), "proof_len": f"{w['seconds']:g}", "proof_why": w["why"],
                 "proof_pos0": w["pos0"], "proof_pos1": w["pos1"], "a": w["a"], "b": w["b"],
@@ -691,7 +720,7 @@ class Round:
         return {"round": self.k, "n": self.n, "dir": rel(self.rdir, self.pdir), "budget": D.fmt_dur(self.budget_s),
                 "budget_s": self.budget_s, "model": self.model, "effort": self.effort, "critic_model": self.critic_model,
                 "critic_effort": self.critic_effort, "max_usd": self.max_usd, "seed_notes": self.seed_notes,
-                "auto": self.auto, "proof": self.window,
+                "auto": self.auto, "proof": self.window, "queue": self.queue,
                 "angles": [{"k": p.k, "key": p.angle, "name": ANGLES[p.angle][0]} for p in self.pitches],
                 "started": self.started, "deadline": self.deadline, "grace_s": self.grace, "updated": time.time(),
                 "state": self.state, "stage": self.stage, "stop_reason": self.stop_reason,
@@ -742,7 +771,10 @@ class Round:
         self.say(f"pitch round {self.k}: {self.n} pitches ({', '.join(ANGLES[a][0] for a in self.angles)}), {self.model}, "
                  f"effort {self.effort}, {D.fmt_dur(self.budget_s)} each (until {D.hm(self.deadline)})"
                  + (f", cap ${self.max_usd:g} each" if self.max_usd else "") + f"; the critic {self.critic_model}")
-        self.say(f"the proof: {window_text(w)}")
+        self.say(f"the proof: {window_text(w)}; each pitch starts its render by {D.hm(self.queue['start_by'])} at the latest "
+                 f"(about {est(self.queue['proof_s'])} each, one at a time)")
+        if self.queue["note"]:
+            self.say("⚠ " + self.queue["note"])
         try:
             try:
                 for p in self.pitches:
@@ -1286,8 +1318,10 @@ def promote(pdir, ref, by="the user", run=None, dry=False, log=print):
     an existing work/scenes/ isn't touched: the pitch's go to work/scenes/pitch-K-N/; that folder from an earlier pick of
     the same pitch, changed since, is kept as work/scenes/pitch-K-N_before_pitch_<time>/), its style frames ->
     work/style-frames/ (the ones there before kept in work/style-frames_before_pitch_<time>/), its draft plan.json ->
-    work/plan.json with its scene paths moved with the scenes (an existing one kept as work/plan_before_pitch_<time>.json).
-    round.json records `picked`. dry: only say what it would do. Returns what the brief needs."""
+    work/plan.json with its scene paths moved with the scenes (an existing one kept as work/plan_before_pitch_<time>.json);
+    an existing work/live.json (the video before's live timeline) set aside as work/live_before_pitch_<time>.json, so
+    the live view doesn't play that video's scenes. round.json records `picked`. dry: only say what it would do.
+    Returns what the brief needs."""
     pdir = os.path.abspath(pdir)
     K, N = parse_ref(ref)
     rd = round_dir(pdir, K)
@@ -1355,6 +1389,9 @@ def promote(pdir, ref, by="the user", run=None, dry=False, log=print):
                 plan_backup = f"work/plan_before_pitch_{stamp}.json"
         else:
             notes.append(f"its {f['plan']} isn't valid JSON: not used")
+    # the live view's timeline from before (the scenes of the video before, not this pitch's)
+    lj = os.path.join(work, "live.json")
+    live_backup = f"work/live_before_pitch_{stamp}.json" if os.path.isfile(lj) else None
     if not dry:
         os.makedirs(work, exist_ok=True)
         if concept_backup:
@@ -1379,11 +1416,13 @@ def promote(pdir, ref, by="the user", run=None, dry=False, log=print):
                 shutil.copyfile(pp, os.path.join(pdir, plan_backup))
             jsave(pp, plan_new)
             did.append("work/plan.json")
+        if live_backup:
+            shutil.move(lj, os.path.join(pdir, live_backup))
         data["picked"] = {"k": N, "by": by, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "run": run, "title": title,
                           "scenes": scenes_dest if has_files(src_sc) else None}
         jsave(os.path.join(rd, "round.json"), data)
         log(f"pitch round-{K}/p{N} \"{title}\" in place: " + ", ".join(did)
-            + "".join(f"; kept {x}" for x in (concept_backup, frames_backup, plan_backup, scenes_backup) if x))
+            + "".join(f"; kept {x}" for x in (concept_backup, frames_backup, plan_backup, scenes_backup, live_backup) if x))
     v = data.get("verdict") or {}
     return {"ref": f"round-{K}/p{N}", "round": K, "k": N, "n": data.get("n"), "title": title, "idea": idea,
             "angle": rec.get("angle_name") or ANGLES.get(rec.get("angle"), ("?",))[0], "by": by, "window": data.get("proof"),
@@ -1391,7 +1430,7 @@ def promote(pdir, ref, by="the user", run=None, dry=False, log=print):
             "scenes": scenes_dest if has_files(src_sc) else None, "lib": os.path.isdir(os.path.join(src_sc, "lib")),
             "style": [f"work/style-frames/{os.path.basename(x)}" for x in f["style"]], "plan": "work/plan.json" if plan_new is not None else None,
             "concept_backup": concept_backup, "frames_backup": frames_backup, "plan_backup": plan_backup,
-            "scenes_backup": scenes_backup, "notes": notes,
+            "scenes_backup": scenes_backup, "live_backup": live_backup, "notes": notes,
             "critic": rec.get("critic") or (jload(os.path.join(pd, "critic.json"), None) or None), "verdict": v,
             "pitches": {x.get("k"): x for x in data.get("pitches") or []}, "cost_usd": data.get("cost_usd"),
             "costs": data.get("costs"), "already": already, "seed_notes": str(data.get("seed_notes") or "").strip()}
@@ -1416,6 +1455,10 @@ def brief_section(info):
         place.append("its style frames in work/style-frames/" + (f" (the earlier ones: {info['frames_backup']}/)" if info["frames_backup"] else ""))
     if info["plan"]:
         place.append("its draft plan in work/plan.json" + (f" (the earlier one: {info['plan_backup']})" if info["plan_backup"] else ""))
+    if info.get("live_backup"):
+        place.append(f"the earlier work/live.json (the video before's live timeline) is set aside as {info['live_backup']}, "
+                     f"so the user's live view doesn't play that video's scenes: write a new work/live.json when you want "
+                     f"it to play something the plan doesn't")
     L = ["", "", "## The pitch I picked: go further",
          f"Before this run, {info.get('n') or 'several'} directors pitched this video at the same time, each from its own angle, each "
          f"proving its idea on the same window of the song"

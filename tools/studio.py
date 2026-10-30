@@ -17,14 +17,20 @@
                                                                      and the critic on its previews and the final
                                                                      (--pitch: it starts from that pitch, put in place first)
   python tools/studio.py pitch <project> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet]
-                         [--proof "chorus 1" | --proof 24-44] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N]
-                         [--auto [--direct-budget 90m] [--direct-effort max] [--ultracode]]
+                         [--critic-effort E] [--proof "chorus 1" | --proof 24-44] [--angles story,wild,...]
+                         [--seed-notes "..."] [--max-usd N] [--dry-run]
+                         [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N]
+                          [--ultracode]]
                                                                      the pitch round, optional (tools/pitch.py): several directors
                                                                      pitch at once from different angles, each proving its idea on
                                                                      the same window of the song; the critic on each proof, one
                                                                      verdict (ambition first); then direct --pitch round-K/pN
                                                                      builds the one you pick (--auto: the verdict's, at once)
-  python tools/studio.py critique <project> <video | vN> [--model sonnet] [--focus "..."] [--max-usd 2] [--pictures a.png]
+  python tools/studio.py pitch-pick <project> round-K/pN [--dry-run]  put a picked pitch in place for an interactive
+                                                                     director (/musicvideo), as direct --pitch does first,
+                                                                     and print what's where, the critic's notes, the grafts
+  python tools/studio.py critique <project> <video | vN> [--model sonnet] [--effort E] [--focus "..."] [--max-usd 2]
+                         [--pictures a.png] [--concept PATH] [--out DIR] [--no-look]
                                                                      the critic: a cheaper model with fresh eyes looks at a video
                                                                      and reports back (work/critic/; vN also final/critic_vN.md)
   python tools/studio.py plan validate|status|render|assemble <project> [...]
@@ -34,13 +40,15 @@
   python tools/studio.py clock <project>                             time left in the running director's budget
   python tools/studio.py check <project> [video]                     every check on the final (spec, flashes, text, sync, audio)
   python tools/studio.py versions <project>                          the delivered versions (final/music-video_vN.mp4)
-  python tools/studio.py deliver <project> [--critic]                archive final/music-video.mp4 as the next version + checks
+  python tools/studio.py deliver <project> [--critic [--critic-model M]]
+                                                                     archive final/music-video.mp4 as the next version + checks
                                                                      (--critic: and the critic's notes on it)
   python tools/studio.py stop <project>                              ask a running autonomous director (or pitch round) to stop cleanly
   python tools/studio.py note-done <project> <id> ["what changed"] [--undo]
                                                                      mark the user's note done with a one-line fix
                                                                      (review/notes.json, safely: the web app writes it too)
-  python tools/studio.py permtest <project> [--pitch]                check the director's sandbox (and an agent's; --pitch: a pitch's)
+  python tools/studio.py permtest <project> [--pitch] [--model haiku]
+                                                                     check the director's sandbox (and an agent's; --pitch: a pitch's)
                                                                      with the real Claude Code (cents)
   python tools/studio.py run <project> <tool.py> [args]              run any tool inside a project (eyes.py, songq.py, compose.py, ...)
   python tools/studio.py serve [--port 8765] [--no-browser]          the local web app
@@ -48,9 +56,10 @@
   python tools/studio.py benchmark [--quick]                         measure render speeds -> tools/speeds.json
   python tools/studio.py smoke                                       end-to-end smoke test on a synthetic song (tests/smoke_test.py)
 
-<project> is a folder name under projects/ (or a path). Every step runs the tools with MV_PROJECT set, so they read
-and write inside that project. Started with another Python (e.g. plain `python`), it re-runs itself with the
-studio's .venv, which has the libraries. Projects whose folder starts with "_" are internal (smoke tests) and hidden.
+Each command's --help lists all its options. <project> is a folder name under projects/ (or a path). Every step runs
+the tools with MV_PROJECT set, so they read and write inside that project. Started with another Python (e.g. plain
+`python`), it re-runs itself with the studio's .venv, which has the libraries. Projects whose folder starts with "_"
+are internal (smoke tests) and hidden.
 Carried over from aftermovie-studio's studio.py (structure, Status file, run, doctor, the .venv hand-over).
 """
 import argparse, json, os, shutil, subprocess, sys, time, webbrowser
@@ -129,7 +138,8 @@ def save_project(pdir, d):
 
 
 class Status:
-    """cache/status.json, polled by the web app."""
+    """cache/status.json, polled by the web app. Bookkeeping: a write that fails (on Windows, the file held open by a
+    read a little too long) is said on stderr and never stops the job (a pitch round, a run's archive)."""
 
     def __init__(self, pdir, job, steps):
         self.path = os.path.join(pdir, "cache", "status.json")
@@ -139,10 +149,12 @@ class Status:
         self.write()
 
     def write(self):
+        from mv.common import jsave              # (the writer's own temporary file; tried again while it's being read)
         self.d["updated"] = time.time()
-        tmp = self.path + ".tmp"
-        json.dump(self.d, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
-        os.replace(tmp, self.path)
+        try:
+            jsave(self.path, self.d, indent=None)
+        except OSError as ex:
+            print(f"(cache/status.json couldn't be written: {ex})", file=sys.stderr, flush=True)
 
     def step(self, i):
         self.d.update(i=i, step=self.d["steps"][i])
@@ -352,10 +364,12 @@ def cmd_pitch(a):
 
 def cmd_critique(a):
     import re
-    import director
+    import director, pitch
     pdir = project_dir(a.project)
-    # a director run owns cache/status.json while it works (it may run this itself): the web app's job shows it then
-    st = None if director.run_active(pdir) else Status(pdir, "critique", [f"the critic looks at {a.video}"])
+    # a director run or a pitch round owns cache/status.json while it works (it, or one of its agents, may run this
+    # itself): the web app's job shows that one then
+    busy = director.run_active(pdir) or pitch.round_active(pdir)
+    st = None if busy else Status(pdir, "critique", [f"the critic looks at {a.video}"])
     extra = (["--focus", a.focus] if a.focus else []) + (["--max-usd", str(a.max_usd)] if a.max_usd else []) + \
         (["--no-look"] if a.no_look else []) + (["--concept", a.concept] if a.concept else []) + \
         (["--pictures", a.pictures] if a.pictures else [])
@@ -427,6 +441,18 @@ def cmd_permtest(a):
     sys.exit(0 if director.permission_test(project_dir(a.project), model=a.model) else 1)
 
 
+def cmd_pitch_pick(a):
+    """A picked pitch put in place for an interactive director (/musicvideo): pitch.promote, as `direct --pitch` does
+    before an autonomous run, then what that run's brief would say about it (what's where, the critic on its proof, the
+    verdict's ideas worth grafting)."""
+    import director, pitch
+    pdir = project_dir(a.project)
+    if director.run_active(pdir) or pitch.round_active(pdir):
+        sys.exit("a director run or a pitch round is going on in this project: let it finish (or `studio.py stop`) first")
+    info = pitch.promote(pdir, a.ref, by="the user", dry=a.dry_run)
+    print(pitch.brief_section(info).strip())
+
+
 def cmd_versions(a):
     import director
     for v in director.versions(project_dir(a.project)):
@@ -493,6 +519,9 @@ def main():
     p = sp.add_parser("pitch", help="the pitch round (tools/pitch.py)"); p.add_argument("project")
     import pitch as pitch_
     pitch_.add_args(p)
+    p = sp.add_parser("pitch-pick", help="put a pitch in place for an interactive director (what direct --pitch does first)")
+    p.add_argument("project"); p.add_argument("ref", help="round-K/pN")
+    p.add_argument("--dry-run", action="store_true", help="only say what it would put where")
     p = sp.add_parser("critique"); p.add_argument("project"); p.add_argument("video", help="a video in the project, or vN")
     p.add_argument("--model"); p.add_argument("--effort"); p.add_argument("--focus", default="")
     p.add_argument("--concept"); p.add_argument("--out"); p.add_argument("--max-usd", type=float)

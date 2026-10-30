@@ -52,6 +52,8 @@ FAKE_CLAUDE_CRITIC_ERROR=1 answers a critic prompt the way Claude Code reports a
         is_error true and the error as the "result" text (with a cost).
 FAKE_VERDICT=nojson answers the verdict without its json block (the studio falls back to the critic's scores);
         FAKE_VERDICT_S=<s> takes that long first (round.json must stay fresh meanwhile).
+FAKE_ENV_LOG=<file>: each call appends a line {"mode", "markers"}: which of a Claude Code session's own environment
+        variables (CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, ...) it was started with (the studio starts none as a child).
 """
 import json, os, re, sys, threading, time
 
@@ -535,8 +537,16 @@ def session(argv):
         handle(item)
 
 
+MARKERS = ("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED",
+           "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH")
+
+
 def main():
     a = sys.argv[1:]
+    if os.environ.get("FAKE_ENV_LOG") and ("-p" in a):
+        with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as f:
+            f.write(json.dumps({"mode": "session" if "stream-json" in a else "print",
+                                "markers": [k for k in MARKERS if k in os.environ]}) + "\n")
     if "--version" in a:
         print("0.0.0 (fake Claude Code for the studio's tests)")
     elif a[:2] == ["auth", "status"]:

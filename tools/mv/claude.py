@@ -14,6 +14,20 @@ import json, os, shutil, subprocess, sys, time
 
 READ_ONLY = ["Read", "Glob", "Grep"]
 NEVER = ["Write", "Edit", "Bash", "WebFetch", "WebSearch"]     # a print-mode call reads; it never writes or fetches
+# what a Claude Code session's Bash exports about that session (seen with Claude Code 2.1.312): a CLI started with
+# them takes itself for that session's child (its nesting limit, its session id, its effort)
+SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED",
+               "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH")
+
+
+def clean_env(env=None):
+    """The environment for a Claude Code call or session the studio starts: one of its own, not a child of the Claude
+    Code session it may have been started from (an interactive director running the critic or `studio.py pitch`):
+    env (default os.environ) without SESSION_ENV."""
+    out = dict(os.environ if env is None else env)
+    for k in SESSION_ENV:
+        out.pop(k, None)
+    return out
 
 
 def claude_bin():
@@ -113,10 +127,7 @@ def claude_print(prompt, cwd, model=None, effort=None, tools=("Read",), timeout=
     on_start(proc): called with the process once it runs (a caller in another thread can end it: kill_tree)."""
     tools = list(tools)
     warnings = []
-    # a call started from inside a Claude Code session (an interactive director running the critic) is a session of
-    # its own, not a nested one
-    env = dict(env or os.environ, PYTHONIOENCODING="utf-8")
-    env.pop("CLAUDECODE", None)
+    env = dict(clean_env(env), PYTHONIOENCODING="utf-8")       # a call of its own, not a nested one
     for attempt in (0, 1):
         cmd = print_cmd(model, effort, tools, max_usd, args)
         t0 = time.time()

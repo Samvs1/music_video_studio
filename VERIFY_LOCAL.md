@@ -1,4 +1,4 @@
-# VERIFY_LOCAL: check Music Video Studio on your PC (no Claude needed until step 8)
+# VERIFY_LOCAL: check Music Video Studio on your PC (Claude Code from step 4: a few cents; your plan from step 8)
 
 Built and tested in a Linux cloud VM without a GPU. These steps check what couldn't be tested there: Windows, the
 NVIDIA GPU (CUDA, NVENC, Eevee, GPU WebGL), the model downloads, and the web app in your browser. Every command below
@@ -40,7 +40,7 @@ and run doctor again; if it still says SwiftShader, tell Claude the exact render
 **Chromium `!!`** → `.venv\Scripts\python.exe -m playwright install chromium`. **Blender not found** but installed →
 `$env:MV_BLENDER="C:\Program Files\Blender Foundation\Blender 4.x\blender.exe"`. **Claude Code not logged in** → run `claude` once.
 
-## 3. Smoke test (5-15 min; the first run may download the models)
+## 3. Smoke test (15-30 min; the first run may download the models)
 ```
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
@@ -217,7 +217,8 @@ scenes (after step 8 or 8d):
   save: the toast says the director gets it within seconds. Within ~5 s the Direct page's live log shows `🎧 the user's
   live note to the director: ...` and `✉ studio → director (the user's live note (1))` (also while one of its agents
   works); the note then shows `sent to the director (run N)` and, once the director has dealt with it, `fixed: ...`
-  under it.
+  under it. The runs of 8 and 8d are over by now: do this during the 8d run, or start a short one for it (Direct:
+  budget 15, model `haiku`, critic `haiku`).
 - F12 → Console: no errors (a scene's own error shows in red on its layer's line instead). When paused, the live view
   uses little CPU (Task Manager: the browser well under one core).
 
@@ -261,6 +262,12 @@ Then "go straight on", once: a round with 2 pitches, 15 minutes, **Let the criti
 director is building it now*; the Direct page shows that run (its Stop works) and its costs add *the round and this
 run together*. (The command line does the same: `studio.py pitch <p> --n 2 --budget 15m --auto --direct-budget 60m`;
 `studio.py direct <p> --pitch round-1/p2 --budget 90m` builds a pitch.)
+Build one together, once: on a project with a finished round and no pick yet, `/musicvideo <p>` in Claude Code. It
+should say there's a pitch round to pick from (the verdict's winner and the other titles) and ask which; tell it one.
+It runs `studio.py pitch-pick <p> round-K/pN`, which prints *The pitch I picked: go further* with what's where, and
+then builds from that pitch (not from three new concepts of its own). The Pitch round page's card says *your pick*,
+and while a run started from a console goes on, its **Build this one** buttons are greyed out (so is the Direct page's
+**Start the director**).
 Stop: start a round and press **Stop it** after a few minutes: each pitch wraps up within ~2 minutes, the critic and
 the verdict still look at what exists, the round says `stopped`, no director starts (also with "go straight on"), and
 no `claude` process is left in Task Manager. Once more with a Stop while the box says *the verdict compares them*: the

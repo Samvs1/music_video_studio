@@ -666,6 +666,24 @@ def pitch_check(B, name, out, browser=True):
         e2 = requests.post(f"{B}/api/p/{name}/pitch-pick", json={"round": K, "k": 9}).json()
         say("no pitch round 99" in e1.get("error", "") and "no p9" in e2.get("error", ""), "pitch-pick refuses an unknown round "
             "or pitch", f"{e1.get('error')}; {e2.get('error')}")
+        # a director run started from a terminal (current.json fresh, not this web app's job): Build this one and
+        # Start the director are refused (the page says so: Build this one disabled), nothing is moved
+        cp = os.path.join(pdir, "work", "director", "current.json")
+        keep = open(cp, encoding="utf-8").read()
+        concept0 = open(os.path.join(pdir, "work", "concept.md"), encoding="utf-8").read()
+        try:
+            json.dump(dict(json.loads(keep), state="running", updated=time.time(), deadline=time.time() + 3000),
+                      open(cp, "w", encoding="utf-8"))
+            e3 = requests.post(f"{B}/api/p/{name}/pitch-pick", json={"round": K, "k": 1}).json()
+            e4 = requests.post(f"{B}/api/p/{name}/direct", json={"budget": 4, "model": "fake"}).json()
+            busy = requests.get(f"{B}/api/p/{name}/pitches").json().get("director_running")
+        finally:
+            open(cp, "w", encoding="utf-8").write(keep)
+        say("director run is going on" in e3.get("error", "") and "director run is going on" in e4.get("error", "") and busy
+            and not requests.get(f"{B}/api/p/{name}/job").json().get("running")
+            and open(os.path.join(pdir, "work", "concept.md"), encoding="utf-8").read() == concept0,
+            "a director run from the command line: pitch-pick and POST direct are refused (nothing moved, no job), and "
+            "the Pitch page knows a run is going (director_running)", f"{e3.get('error')}; {e4.get('error')}; busy {busy}")
         # Stop on a pitch job: each pitch wraps up, the critic and the verdict on what exists, no director
         requests.post(f"{B}/api/p/{name}/pitch", json=dict(form, auto=True, direct_budget="4"))
         t0 = time.time()

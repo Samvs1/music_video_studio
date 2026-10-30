@@ -808,10 +808,14 @@ def watcher_check():
     f.job = None
     f.poll(1010.0)
     time.sleep(0.05)
+    passed = (a.passed(), b.passed(), c.passed(), a.passed())
     say("PASS" if a.done == ["final/music-video.mp4"] and a.n == 6 and b.done == ["final/music-video.mp4", "work/previews/preview_1.mp4"]
-        and c.done == ["final/music-video.mp4"] and e.done == [] and gave_way and f.done == ["final/music-video.mp4"] else "FAIL",
+        and c.done == ["final/music-video.mp4"] and e.done == [] and gave_way and f.done == ["final/music-video.mp4"]
+        and passed == (["work/previews/preview_1.mp4"], [], [], []) else "FAIL",
         "the critic watcher: the final first (and the reserved slot), the newer preview after it, none too late or while stopping, "
-        "a running preview critique gives way to a new final", f"{a.done} {b.done} {c.done} {e.done} {f.done} gave way: {bool(gave_way)}")
+        "a running preview critique gives way to a new final; a preview passed over because the critiques are used up is "
+        "handed to the runner once (it tells the director)",
+        f"{a.done} {b.done} {c.done} {e.done} {f.done} gave way: {bool(gave_way)}; passed over {passed}")
     # a cut that has a critique already (`plan assemble` made one) isn't critiqued again; one that is being made
     # (its pending marker) waits, and is critiqued after all when the other one gave up without a critique
     import critic
@@ -1323,6 +1327,35 @@ def flags_check():
         and "the looking is the critic's" not in reign.lower() else "FAIL",
         "direct --dry-run with the critic off: the brief leaves the looking to the director, not to a critic it would "
         "have to call", reign[:300])
+    # a run going on (one started from a terminal: its runner writes current.json every second): a second `direct`
+    # (e.g. Build this one) and a pitch round are refused before anything is moved, archived or started
+    cp = os.path.join(PDIR, "work", "director", "current.json")
+    keep = open(cp, encoding="utf-8").read() if os.path.exists(cp) else None
+    stop = os.path.join(PDIR, "work", "director", "STOP")
+    vs0 = len(json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8")).get("versions") or [])
+    runs0 = sorted(x for x in os.listdir(os.path.join(PDIR, "work", "director")) if re.fullmatch(r"run-\d+", x))
+    fake = {"MV_CLAUDE": os.path.join(TESTS, "fake_claude.py")}
+    try:
+        json.dump({"run": 99, "state": "running", "started": time.time() - 60, "deadline": time.time() + 3000, "budget_s": 3600,
+                   "updated": time.time()}, open(cp, "w", encoding="utf-8"))
+        open(stop, "w").write("")                           # (the running one's STOP: not the second one's to delete)
+        r3 = studio("direct", P, "--budget", "5m", "--model", "fake", "--critic-model", "off", check=False, env=fake)
+        r4 = studio("pitch", P, "--n", "2", "--budget", "3m", "--model", "fake", "--critic-model", "fake", check=False, env=fake)
+        stop_kept = os.path.exists(stop)
+    finally:
+        if keep is None:
+            os.remove(cp)
+        else:
+            open(cp, "w", encoding="utf-8").write(keep)
+        if os.path.exists(stop):
+            os.remove(stop)
+    vs1 = len(json.load(open(os.path.join(PDIR, "project.json"), encoding="utf-8")).get("versions") or [])
+    runs1 = sorted(x for x in os.listdir(os.path.join(PDIR, "work", "director")) if re.fullmatch(r"run-\d+", x))
+    say("PASS" if r3.returncode and "a director run is going on" in r3.stderr and r4.returncode
+        and "a director run is going on" in r4.stderr and stop_kept and vs1 == vs0 and runs1 == runs0 else "FAIL",
+        "a director run going on: a second `direct` and a pitch round are refused, nothing archived, no run folder, its STOP "
+        "file left alone", f"direct: {r3.returncode} {r3.stderr.strip()[-120:]}; pitch: {r4.returncode} {r4.stderr.strip()[-120:]}; "
+        f"versions {vs0} -> {vs1}; runs {len(runs0)} -> {len(runs1)}; STOP kept {stop_kept}")
 
 
 def pitch_check(env):
@@ -1337,8 +1370,20 @@ def pitch_check(env):
     from mv.common import decode_audio, probe, song_file
     from mv.song import Song
     t0 = time.time()
-    r = studio("pitch", P, "--n", "2", "--budget", "3m", "--model", "fake", "--critic-model", "fake", check=False, env=env,
+    envlog = os.path.join(PDIR, "work", "_fake_env.jsonl")
+    if os.path.exists(envlog):
+        os.remove(envlog)
+    # started the way an interactive director would start it, from its own Bash: the session's markers in the
+    # environment, which no session or call the round starts may inherit (it would take itself for a nested child)
+    marked = dict(env, CLAUDECODE="1", CLAUDE_CODE_CHILD_SESSION="1", CLAUDE_CODE_SESSION_ID="s-test", CLAUDE_EFFORT="max",
+                  CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH="1", FAKE_ENV_LOG=envlog)
+    r = studio("pitch", P, "--n", "2", "--budget", "3m", "--model", "fake", "--critic-model", "fake", check=False, env=marked,
                timeout=1800)
+    seen = [json.loads(x) for x in open(envlog, encoding="utf-8")] if os.path.exists(envlog) else []
+    say("PASS" if {x["mode"] for x in seen} == {"session", "print"} and not any(x["markers"] for x in seen) else "FAIL",
+        "started from inside a Claude Code session, the round's sessions and print calls (the critic, the verdict) are "
+        "sessions of their own: none gets CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, ...",
+        f"{len(seen)} calls: {sorted({(x['mode'], tuple(x['markers'])) for x in seen})}")
     K = max(pitches.round_numbers(PDIR) or [0])
     rd = os.path.join(PDIR, "work", "pitches", f"round-{K}")
     R = json.load(open(os.path.join(rd, "round.json"), encoding="utf-8")) if K else {}
@@ -1554,7 +1599,8 @@ def pitch_step_check():
     rd = os.path.join(root, "work", "pitches", "round-1")
     t0 = time.time()
     R = types.SimpleNamespace(pdir=root, rdir=rd, k=1, n=5, deadline=t0 + 1200, grace=120, window={"a": 0, "b": 600},
-                              budget_s=1200, started=t0 - 1, max_usd=None)
+                              budget_s=1200, started=t0 - 1, max_usd=None,
+                              queue={"start_by": t0 + 600, "proof_s": 60, "all_s": 300, "note": ""})
 
     class Linger(FakeSession):               # its input closed, the process still there
         def alive(self):
@@ -1595,6 +1641,20 @@ def pitch_step_check():
         for proc in procs:
             if proc.poll() is None:
                 proc.kill()
+    # the render queue: a pitch without a proof by its start-by time is told once to start it (in the background);
+    # one with a proof isn't; the start-by time leaves room for N proofs one after another, said when the round is tight
+    pa, pb = make(6), make(7, ("proof.mp4",))
+    for p_ in (pa, pb):
+        p_.warnings(t0 + 605, 595)
+        p_.warnings(t0 + 610, 590)
+    q1, q2, q3 = (pitches.queue_plan(3, 267, 0, 1200, 120), pitches.queue_plan(2, 60, 0, 180, 90),
+                  pitches.queue_plan(2, 30, 0, 1200, 120))
+    out["queue"] = (pa.s.whys().count("start the proof"), "start the proof" in pb.s.whys(),
+                    round(q1["start_by"]), bool(q1["note"]), round(q2["start_by"]), bool(q2["note"]), round(q3["start_by"]), bool(q3["note"]))
+    say("PASS" if out["queue"] == (1, False, 459, True, 90, True, 600, False) else "FAIL",
+        "the render queue in a round: a pitch without a proof at its start-by time is told once to start it, one with a "
+        "proof isn't; the start-by time leaves the N proofs room before the deadline plus the grace (never later than "
+        "half-way), and a round whose proofs take over 40% of the budget says so", str(out["queue"]))
     ok_turns = (out["nothing"] == (["something missing"] * 3, True) and out["delivered"] == (["push it further"], True)
                 and out["no style"] == (["no style frames"], True)
                 and out["lingers"][:4] == (True, True, False, True) and "time ran out" in out["lingers"][4]

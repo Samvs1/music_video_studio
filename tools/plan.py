@@ -778,6 +778,9 @@ def assemble(pdir, quality="preview", log=print, look=True, check=True, critic_m
                 res["critique"] = {k: c.get(k) for k in ("file", "scores", "verdict", "cost_usd", "model")}
             elif not stopped():
                 log("   the critic couldn't run (see above)")
+        elif critic_model == "off":                # (said: the director may be counting on its notes)
+            log(f"\nno critic on this cut: it is off (this run's setting, or project.json director.critic_model). Ask it "
+                f"with `studio.py critique {os.path.basename(pdir)} {rel(out, pdir)}`, or look with the eyes tools")
     res["seconds"] = round(time.time() - t0)
     log(f"assemble ({quality}): done in {fmt_dur(res['seconds'])} -> {res['video']}")
     return res
