@@ -53,7 +53,7 @@ Several directors pitch the video at the same time from different angles; the cr
 one the director builds (`studio.py direct <p> --pitch round-K/pN`). A run without a pitch round is exactly as before.
 ```
 studio.py pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--critic-effort E]
-                    [--proof "chorus 1" | --proof 24-44] [--angles story,wild,structure,medium,against,ideas]
+                    [--proof "chorus 1" | --proof 24-44 | --proof 1:02-1:20] [--angles story,wild,structure,medium,against,ideas]
                     [--seed-notes "..."] [--max-usd N] [--dry-run]
                     [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N] [--ultracode]]
 ```
@@ -69,8 +69,15 @@ studio.py pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic
   grain; with ideas in the brief, "your ideas taken to the extreme" comes first. `--angles` picks them.
 - **The proof window** (the same for every pitch): the strongest ★★★ moment with music on both sides (a chorus start
   or a drop first, then the biggest lift, a key change, the loudest stretch), from 2 bars before it to the downbeat
-  nearest ~16 s after, 12-24 s, inside the song. `--proof "chorus 1"` takes the same rule around a section's start;
-  `--proof 24-44` exact seconds. The brief gives it as times, bar:beat and `--frames A:B` at the delivery fps.
+  nearest ~16 s after, 12-24 s, inside the song. `--proof "chorus 1"` takes the same rule around a section's start
+  (its name in any case); `--proof 24-44` or `--proof 1:02-1:20` exactly that (seconds or m:ss, at least 2 s). The
+  window's `by` is "studio" or "user"; a user's choice reads "the section the user chose" / "the part of the song the
+  user chose" in round.json, the critic and the verdict, "I chose" in the brief (the user's voice: `in_my_words`), "you
+  chose" in the web app. A spec the song can't have raises `BadWindow` (a ValueError whose message has no flag: the web
+  app shows it as it is; the command line says `--proof <spec>: ...` before any round folder exists). The web app's
+  Pitch round page picks it (`GET /api/p/<p>/proof-window?spec=&n=&budget=` -> `pitch.window_preview`: the window, its
+  render time here, the queue's note; `POST pitch {proof}` -> `--proof`, checked first; project.json `pitch.proof`
+  keeps the choice). The brief gives it as times, bar:beat and `--frames A:B` at the delivery fps.
 - **Each pitch** is a headless director at pitch scale (`mv/session.py`; agents allowed, its choice), cwd the project
   folder, the brief `templates/pitch-brief.md` (`<!-- mv:pitch -->`), the project's director model by default at
   effort high. Its sandbox: the director's plus deny rules on writes outside its own folder (`pitch.deny_rules`: the

@@ -30,7 +30,8 @@ The angles (each pitch a different start): the story, the wild card, the sound a
 its limit, against the grain; with the user's ideas in the brief, "your ideas taken to the extreme" comes first.
 The proof window, the same for every pitch, chosen by the studio: the strongest ★★★ moment with music on both sides
 (a chorus start or a drop first, then the biggest lift), from 2 bars before it to about 16 s after, on downbeats,
-12-24 s, inside the song; --proof sets it (a section name: the same rule around its start; or a-b in seconds).
+12-24 s, inside the song; --proof sets it (a section name: the same rule around its start; or a-b in seconds or m:ss),
+and so does the web app's Pitch round page (window_preview shows the window, its render time and the queue's note).
 Each pitch is a headless director at pitch scale (mv/session.py, like `direct`): the director's sandbox plus deny
 rules on writes outside its own pitch folder (the other pitches, final/, report.md, review/, project.json, song/,
 work/scenes/, work/kit/, work/plan.json, work/concept.md, ...), cwd = the project folder, its own time budget, all N at
@@ -214,32 +215,58 @@ def pos_str(S, t):
     return f"{p[0]}:{round(p[1], 1):g}" if p else "-"
 
 
+class BadWindow(ValueError):
+    """A proof window the song can't have. The message says why without the flag: the web app shows it as it is, the
+    command line puts "--proof <spec>: " in front."""
+
+
+TIME = r"(?:\d+:)?\d+(?:\.\d+)?"                 # a time in the song: seconds (62.5) or m:ss (1:02.5)
+
+
+def song_time(x):
+    """Seconds from '62.5', '1:02.5' or '1:02'; None for anything else (a minute of 60 s or more after the colon)."""
+    m = re.fullmatch(r"(?:(\d+):)?(\d+(?:\.\d+)?)", str(x).strip())
+    if not m or (m.group(1) and float(m.group(2)) >= 60):
+        return None
+    return 60 * int(m.group(1) or 0) + float(m.group(2))
+
+
+def in_my_words(why):
+    """A window's why in the brief's voice (the user's own: "the section I chose"); round.json, the critic and the
+    verdict keep "the user chose", the web app says "you chose"."""
+    return str(why or "").replace("the user chose", "I chose")
+
+
 def proof_window(pdir, spec=None):
-    """The proof window: {t0, t1, a, b, fps, seconds, pos0, pos1, moment, why, spec, sections}. spec: None (the studio
-    chooses), a section name, or 'a-b' in seconds."""
+    """The proof window: {t0, t1, a, b, fps, seconds, pos0, pos1, moment, why, spec, by, sections}. spec: None (the
+    studio chooses: by "studio"), a section name or 'a-b' in seconds or m:ss ('24-44', '1:02-1:20'): by "user". A spec
+    the song can't have raises BadWindow."""
     from mv.song import Song
     S = Song(pdir)
     fps = delivery(load_pj(pdir))["fps"]
     n = int(round(S.duration * fps))
     moment, why = None, ""
     spec = str(spec or "").strip()
-    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", spec) if spec else None
+    m = re.fullmatch(rf"({TIME})\s*[-–]\s*({TIME})", spec) if spec else None
     if m:
-        x, y = float(m.group(1)), float(m.group(2))
+        x, y = song_time(m.group(1)), song_time(m.group(2))
+        if x is None or y is None:
+            raise BadWindow("a time is seconds (62.5) or m:ss (1:02.5)")
         if not 0 <= x < y <= S.duration + 0.01:
-            raise SystemExit(f"--proof {spec}: give a window inside the song (0 to {S.duration:.2f} s), the start first")
+            raise BadWindow(f"give a window inside the song (0:00 to {mmss(S.duration)}, {S.duration:.2f} s), the start first")
         if y - x < 2:
-            raise SystemExit(f"--proof {spec}: a proof of at least 2 s, please (12-24 s is best)")
+            raise BadWindow("a proof of at least 2 s, please (12-24 s is best)")
         a, b = int(round(x * fps)), min(n, int(round(y * fps)))
         x0, x1 = x, y
-        why = "the window you asked for"
+        why = "the part of the song the user chose"
     elif spec:
         sec = next((s for s in S.sections if s["name"].lower() == spec.lower()), None)
         if not sec:
-            raise SystemExit(f"--proof {spec!r}: no such section ({', '.join(s['name'] for s in S.sections)}), or give a-b in seconds")
+            raise BadWindow(f"no section {spec!r} (the sections: {', '.join(s['name'] for s in S.sections)}), or give a-b in "
+                            f"seconds or m:ss")
         a, b, x0, x1 = window_around(S, float(sec["t0"]), fps, n)
         moment = {"t": round(float(sec["t0"]), 3), "pos": pos_str(S, float(sec["t0"])), "text": f"{sec['name']} starts"}
-        why = f"{sec['name']}, the section you asked for: it starts at {mmss(sec['t0'])}"
+        why = f"{sec['name']}, the section the user chose: it starts at {mmss(sec['t0'])}"
     else:
         last = S.beats[-1] if S.beats else S.duration
         ok = []
@@ -268,7 +295,7 @@ def proof_window(pdir, spec=None):
     secs = [s["name"] for s in S.sections if s["t1"] > t0 + 0.05 and s["t0"] < t1 - 0.05]
     return {"t0": round(t0, 3), "t1": round(t1, 3), "a": a, "b": b, "fps": fps, "seconds": round((b - a) / fps, 2),
             "pos0": pos_str(S, x0), "pos1": pos_str(S, x1), "moment": moment, "why": why, "spec": spec or None,
-            "sections": secs}
+            "by": "user" if spec else "studio", "sections": secs}
 
 
 def window_text(w):
@@ -333,6 +360,23 @@ def queue_plan(n, proof_s, started, budget_s, grace):
                 f"here), {round(100 * all_s / budget_s)}% of the {D.fmt_dur(budget_s)} each pitch has: a pitch that starts "
                 f"its proof late may end without one. A longer --budget or a smaller --n gives each more room.")
     return {"proof_s": round(proof_s), "all_s": round(all_s), "start_by": start_by, "note": note}
+
+
+def grace_of(budget_s):
+    """How long after the deadline a pitch may still wrap up before its session is ended."""
+    return min(300, max(90, int(0.1 * budget_s)))
+
+
+def window_preview(pdir, spec=None, n=3, budget="20m"):
+    """What the Pitch round page shows for a proof window before the round starts: the window (proof_window, the same
+    rule the round uses), its render time here, and the queue's note for n pitches of that budget (queue_plan). A spec
+    the song can't have raises BadWindow."""
+    w = proof_window(pdir, spec)
+    s = proof_seconds(pdir, w)
+    budget_s = max(60, D.parse_budget(budget or "20m"))
+    q = queue_plan(int(n), s, 0.0, budget_s, grace_of(budget_s))
+    return {"window": w, "proof_s": q["proof_s"], "estimate": est(s), "all_s": q["all_s"], "all": est(q["all_s"]),
+            "note": q["note"]}
 
 
 def direct_budget_text(pdir, auto=None):
@@ -664,14 +708,17 @@ class Round:
                              "--critic-model sonnet, haiku or opus")
         self.max_usd = float(max_usd) if max_usd else None
         self.seed_notes, self.auto, self.dry_run, self.log = seed_notes or "", auto, dry_run, log
-        self.window = proof_window(self.pdir, proof)
+        try:
+            self.window = proof_window(self.pdir, proof)
+        except BadWindow as e:
+            raise SystemExit(f"--proof {proof}: {e}")
         os.makedirs(os.path.join(self.pdir, PITCHES), exist_ok=True)
         self.k = 1 + max(round_numbers(self.pdir) or [0])
         self.rdir = round_dir(self.pdir, self.k)
         os.makedirs(self.rdir)
         self.started = time.time()
         self.deadline = self.started + self.budget_s
-        self.grace = min(300, max(90, int(0.1 * self.budget_s)))
+        self.grace = grace_of(self.budget_s)
         self.queue = queue_plan(n, proof_seconds(self.pdir, self.window), self.started, self.budget_s, self.grace)
         self.pitches = [Pitch(self, i + 1, a) for i, a in enumerate(self.angles)]
         self.state, self.stage = ("dry-run", "dry-run") if dry_run else ("running", "pitching")
@@ -702,7 +749,7 @@ class Round:
                 "started": D.hm(self.started), "deadline": D.hm(self.deadline) + f" (in {D.fmt_dur(self.budget_s)})", "deadline_hm": D.hm(self.deadline),
                 "start_by": D.hm(self.queue["start_by"]), "queue_est": est(self.queue["all_s"]), "skill": rel(D.SKILL, self.pdir),
                 "anti": rel(os.path.join(os.path.dirname(D.SKILL), "anti-defaults.md"), self.pdir), "refs": refs,
-                "proof_from": mmss(w["t0"]), "proof_to": mmss(w["t1"]), "proof_len": f"{w['seconds']:g}", "proof_why": w["why"],
+                "proof_from": mmss(w["t0"]), "proof_to": mmss(w["t1"]), "proof_len": f"{w['seconds']:g}", "proof_why": in_my_words(w["why"]),
                 "proof_pos0": w["pos0"], "proof_pos1": w["pos1"], "a": w["a"], "b": w["b"],
                 "proof_sections": f" ({', '.join(w['sections'])})" if w["sections"] else "",
                 "proof_est": proof_estimate(self.pdir, w)}
@@ -1577,7 +1624,8 @@ def add_args(ap):
     ap.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"], help="the pitches' effort (default high)")
     ap.add_argument("--critic-model", help="the critic on the proofs and the verdict (default: project.json, else sonnet)")
     ap.add_argument("--critic-effort")
-    ap.add_argument("--proof", help="the proof window: a section name (\"chorus 1\") or a-b in seconds (24-44); default: the studio chooses")
+    ap.add_argument("--proof", help="the proof window: a section name (\"chorus 1\") or a-b in seconds or m:ss (24-44, "
+                    "1:02-1:20); default: the studio chooses")
     ap.add_argument("--angles", help=f"the angles, comma-separated ({', '.join(ANGLES)}); default: the studio chooses")
     ap.add_argument("--seed-notes", default="", help="notes for this round (the pitches' briefs; the director that builds the "
                     "pick sees them as the round's notes)")

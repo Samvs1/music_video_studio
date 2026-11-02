@@ -5,7 +5,8 @@ Carried over from aftermovie-studio's server (jobs, range requests, project file
 
 Pages: Song & brief (upload, notes, reference pictures, delivery format, lyrics) · Analyse (ingest with progress) ·
 The song (the song viewer) · Story (draft with Claude, edit) · Pitch round (optional: several directors pitch from
-different angles, the critic compares, you pick the one the director builds; each pitch a card with its proof, the
+different angles, each proving its idea on the part of the song you choose (the studio's pick, a section, or one you
+drag on the song), the critic compares, you pick the one the director builds; each pitch a card with its proof, the
 song, "▶ live" and the critic's notes, the verdict, "Build this one") · Direct (the autonomous run: one director with full
 reign, agents its choice, ultracode and a cost cap optional; live progress: the live log, the critic's notes; or the
 interactive command; "▶ play the scenes live" during a run) · Watch (each version above the song lanes, notes with N, the report,
@@ -32,9 +33,15 @@ API (JSON):
                                                                           revise, critic_model, ultracode, max_usd, nudge}
   POST /api/p/<p>/critique {version | video, model}                       (the critic looks at a version or a video: job "critique";
                                                                            a version's notes land in final/critic_vN.md)
-  POST /api/p/<p>/pitch {n, budget, model, effort, critic_model, seed_notes, max_usd, auto, direct_budget}
-                                        (the pitch round: job "pitch", `studio.py pitch`; auto: the critic's pick is built
-                                         at once by a director run of direct_budget minutes on the Direct form's settings)
+  POST /api/p/<p>/pitch {n, budget, proof, model, effort, critic_model, seed_notes, max_usd, auto, direct_budget}
+                                        (the pitch round: job "pitch", `studio.py pitch`; proof: the part of the song
+                                         they prove it on, "" the studio's pick, a section name or a-b (`--proof`); auto:
+                                         the critic's pick is built at once by a director run of direct_budget minutes on
+                                         the Direct form's settings)
+  GET  /api/p/<p>/proof-window?spec=&n=&budget=
+                                        (the part of the song a round would prove on, before it starts: the window
+                                         {t0, t1, seconds, pos0, pos1, why, by, ...}, its render time here, the queue's
+                                         note for n pitches of that budget; a spec the song can't have: {error: why})
   GET  /api/p/<p>/pitches               (the pitch rounds, newest first: round.json with the URLs of each pitch's files and
                                          what its card's live player plays; the running one; director_running: a director
                                          run from a terminal; the Direct form's settings)
@@ -367,7 +374,7 @@ def stop_job(name):
 # ------------------------------------------------------------------ writes
 BRIEF_KEYS = {"title", "about", "mood", "ideas", "avoid", "lyrics"}
 DIRECTOR_KEYS = ("model", "effort", "budget", "critic_model", "critic_effort", "ultracode", "max_usd")
-PITCH_KEYS = ("n", "budget", "model", "effort", "critic_model", "max_usd", "auto", "direct_budget")
+PITCH_KEYS = ("n", "budget", "model", "effort", "critic_model", "max_usd", "auto", "direct_budget", "proof")
 OLD_DIRECTOR_KEYS = ("mode", "planner_effort", "builders", "builder_model", "builder_effort")     # the removed pipeline's
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 MODEL_RE = re.compile(r"[A-Za-z0-9._\[\]-]{1,60}")
@@ -424,20 +431,31 @@ def saved_direct(pj):
 
 
 # ------------------------------------------------------------------ the pitch round (optional: several directors pitch, you pick)
-def pitch_args(name, body):
-    """The Pitch round page's form -> `studio.py pitch`: how many pitches (2-5), the minutes per pitch, the model, the
-    effort (default high), the critic (the judge: never off), notes for the round, a cost cap per pitch; "let the critic
-    pick and go straight on" = --auto with a director run of direct_budget minutes on the Direct form's saved settings
-    (the model, the effort, ultracode, the cap; the round's critic)."""
-    d = pdir(name)
+def pitch_n(x):
     try:
-        n = int(body.get("n") or 3)
+        n = int(x or 3)
     except (TypeError, ValueError):
         raise ValueError("how many pitches? 2 to 5")
     if not 2 <= n <= 5:
         raise ValueError(f"{n} pitches: a pitch round has 2 to 5")
+    return n
+
+
+def pitch_args(name, body):
+    """The Pitch round page's form -> `studio.py pitch`: how many pitches (2-5), the minutes per pitch, the part of the
+    song they prove it on (proof: "" the studio's pick, a section name, or a-b; one the song can't have is refused here,
+    not when the job starts), the model, the effort (default high), the critic (the judge: never off), notes for the
+    round, a cost cap per pitch; "let the critic pick and go straight on" = --auto with a director run of direct_budget
+    minutes on the Direct form's saved settings (the model, the effort, ultracode, the cap; the round's critic)."""
+    import pitch
+    d = pdir(name)
+    n = pitch_n(body.get("n"))
     args = ["pitch", name, "--n", str(n), "--budget", budget_of(body.get("budget"), "20m"),
             "--effort", body.get("effort") if body.get("effort") in EFFORTS else "high"]
+    spec = str(body.get("proof") or "").strip()
+    if spec:
+        pitch.proof_window(d, spec)                      # (BadWindow: a ValueError, its message as it is)
+        args += ["--proof", spec]
     if MODEL_RE.fullmatch(str(body.get("model") or "")):
         args += ["--model", str(body["model"])]
     cm = str(body.get("critic_model") or "")
@@ -459,6 +477,21 @@ def pitch_args(name, body):
         if on(sd.get("ultracode")):
             args.append("--ultracode")
     return args
+
+
+def proof_preview(name, q):
+    """GET /api/p/<p>/proof-window?spec=&n=&budget=: the part of the song a pitch round would prove on (pitch.py's own
+    rule: the studio's pick without a spec, a section, or a-b), its render time here, and the queue's note for n
+    pitches of that many minutes; a part the song can't have: {window: None, error: why}."""
+    import pitch
+    d = pdir(name)
+    if not os.path.isfile(os.path.join(d, "song", "song-map.json")):
+        raise ValueError("no song map yet: analyse the song first")
+    one = lambda k: (q.get(k) or [""])[0]
+    try:
+        return pitch.window_preview(d, one("spec").strip() or None, pitch_n(one("n")), budget_of(one("budget"), "20m"))
+    except pitch.BadWindow as e:                     # an answer, not a failed request: the page says why
+        return {"window": None, "error": str(e)}
 
 
 def pitch_live(d, rd, p):
@@ -943,7 +976,7 @@ class H(BaseHTTPRequestHandler):
         return [urllib.parse.unquote(x) for x in u.path.strip("/").split("/") if x], urllib.parse.parse_qs(u.query)
 
     def do_GET(self):
-        parts, _ = self.route()
+        parts, q = self.route()
         try:
             if not parts:
                 return self.send_file(os.path.join(APP, "static", "index.html"))
@@ -971,6 +1004,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json(live_state(parts[2]))
             if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "pitches":
                 return self.send_json(pitches_state(parts[2]))
+            if parts[0] == "api" and parts[1] == "p" and len(parts) == 4 and parts[3] == "proof-window":
+                return self.send_json(proof_preview(parts[2], q))
             if parts[:2] == ["api", "doctor"]:
                 r = subprocess.run([PY, os.path.join(TOOLS, "studio.py"), "doctor"], capture_output=True, text=True, encoding="utf-8",
                                    errors="replace", cwd=STUDIO, env=dict(os.environ, PYTHONIOENCODING="utf-8"))

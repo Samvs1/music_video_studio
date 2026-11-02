@@ -23,6 +23,8 @@
  6d. the session plumbing (messages sent while a turn runs join it: one result, as on the real CLI; a background agent
     keeps the session working, then it starts a turn of its own; the costs as running totals; the cost cap) and the
     runner in-process (no reminder, nudge or closing while agents work; live notes; the cap; the run settings)
+ 6g. the pitch round's proof window, in-process (the studio's pick; a section; a-b in seconds or m:ss; what the song
+    can't have refused with why; the Pitch round page's preview; a dry-run round on the user's section and its brief)
  7. the autonomous director runner end to end with a stand-in for Claude Code (tests/fake_claude.py: no usage spent;
     the critic's notes reach the director as a message and the new version gets final/critic_vN.md; the cost isn't
     double-counted), then a review round (a note -> --revise -> the next version, the note marked done); then a
@@ -257,6 +259,7 @@ def main():
     live_check(m)
     session_check()
     runner_check()
+    proof_window_check()
 
     if not a.no_director:
         print("== 7. the director runner (stand-in for Claude Code)", flush=True)
@@ -1356,6 +1359,76 @@ def flags_check():
         "a director run going on: a second `direct` and a pitch round are refused, nothing archived, no run folder, its STOP "
         "file left alone", f"direct: {r3.returncode} {r3.stderr.strip()[-120:]}; pitch: {r4.returncode} {r4.stderr.strip()[-120:]}; "
         f"versions {vs0} -> {vs1}; runs {len(runs0)} -> {len(runs1)}; STOP kept {stop_kept}")
+
+
+def proof_window_check():
+    """The part of the song a pitch round proves its ideas on (in-process, no Claude): the studio's pick; a section by
+    name in any case (the same rule around its start); a-b in seconds or m:ss (the same window either way, on its
+    frames); what the song can't have refused with why (BadWindow, no flag in the message: the web app shows it as it
+    is; the command line puts --proof in front, before any round folder exists); the Pitch round page's preview (the
+    render time; the queue's note only when the proofs crowd the budget); a dry-run round on a section: round.json says
+    the user chose it, the brief says so in the user's voice ("the section I chose")."""
+    print("== 6g. the proof window: the studio's pick or the user's (in-process)", flush=True)
+    import pitch as pitches
+    from mv.song import Song
+    S = Song(PDIR)
+    dur, bad, rd = S.duration, [], None
+    mm = lambda t: f"{int(t // 60)}:{t % 60:05.2f}"
+    auto = pitches.proof_window(PDIR)
+    fps = auto["fps"]
+    sec = S.sections[min(2, len(S.sections) - 1)]
+    w_sec = pitches.proof_window(PDIR, sec["name"].upper())
+    rule = pitches.window_around(S, float(sec["t0"]), fps, int(round(dur * fps)))
+    if auto.get("by") != "studio" or auto.get("spec") is not None or "the user chose" in auto["why"]:
+        bad.append(f"the studio's pick: {auto.get('by')} {auto.get('spec')} {auto['why']!r}")
+    if (w_sec["a"], w_sec["b"]) != rule[:2] or w_sec["by"] != "user" or f"{sec['name']}, the section the user chose" not in w_sec["why"]:
+        bad.append(f"section {sec['name']}: {w_sec['a']}:{w_sec['b']} vs the rule {rule[:2]}; {w_sec['by']} {w_sec['why']!r}")
+    x, y = round(dur * 0.3, 2), round(dur * 0.3 + 15.5, 2)
+    w1, w2 = pitches.proof_window(PDIR, f"{x}-{y}"), pitches.proof_window(PDIR, f"{mm(x)} – {mm(y)}")
+    if (w1["a"], w1["b"]) != (w2["a"], w2["b"]) or (w1["a"], w1["b"]) != (int(round(x * fps)), int(round(y * fps))) or w2["by"] != "user" \
+            or w2["why"] != "the part of the song the user chose":
+        bad.append(f"{x}-{y} {w1['a']}:{w1['b']} vs {mm(x)}-{mm(y)} {w2['a']}:{w2['b']} ({w2['by']}, {w2['why']!r})")
+    for spec, want in ((f"{dur - 5:.1f}-{dur - 20:.1f}", "the start first"), (f"0-{dur + 5:.0f}", "inside the song"), ("0-1", "at least 2 s"),
+                       ("0:75-1:20", "m:ss"), ("no-such-part", "no section 'no-such-part'")):
+        try:
+            pitches.proof_window(PDIR, spec)
+            bad.append(f"{spec}: taken")
+        except pitches.BadWindow as e:
+            if want not in str(e) or "--proof" in str(e):
+                bad.append(f"{spec}: {e}")
+    before = pitches.round_numbers(PDIR)
+    try:
+        pitches.Round(PDIR, n=2, budget="3m", model="fake", effort="low", critic_model="fake", proof="no-such-part", dry_run=True,
+                      log=lambda s: None)
+        bad.append("a round on a section the song doesn't have: started")
+    except SystemExit as e:
+        if not str(e).startswith("--proof no-such-part: no section") or pitches.round_numbers(PDIR) != before:
+            bad.append(f"the command line's refusal: {e}; rounds {before} -> {pitches.round_numbers(PDIR)}")
+    roomy, tight = pitches.window_preview(PDIR, None, 2, "60m"), pitches.window_preview(PDIR, f"0-{dur:.2f}", 5, "2m")
+    if roomy["note"] or not roomy["estimate"] or roomy["window"] != auto or not tight["note"] or tight["all_s"] < 5 * tight["proof_s"] - 5:
+        bad.append(f"the preview: roomy {roomy['estimate']} {roomy['note']!r}; tight {tight['estimate']} {tight['all_s']} {tight['note'][:60]!r}")
+    was = os.environ.get("MV_CLAUDE")
+    os.environ["MV_CLAUDE"] = os.path.join(TESTS, "fake_claude.py")
+    try:
+        d = pitches.pitch_round(PDIR, 2, "3m", "fake", "low", "fake", None, sec["name"], dry_run=True, log=lambda s: None)
+        rd = os.path.join(PDIR, *d["dir"].split("/"))
+        brief = open(os.path.join(rd, "sessions", "p1", "brief.md"), encoding="utf-8").read()
+        if (d["proof"]["by"], d["proof"]["spec"], d["proof"]["a"], d["proof"]["b"]) != ("user", sec["name"], *rule[:2]) \
+                or f"{sec['name']}, the section I chose" not in brief or "the user chose" in brief or f"--frames {rule[0]}:{rule[1]}" not in brief:
+            bad.append(f"the dry-run round: {d['proof']}; brief: {[ln for ln in brief.splitlines() if 'proves itself' in ln][:1]}")
+    finally:
+        if was is None:
+            os.environ.pop("MV_CLAUDE", None)
+        else:
+            os.environ["MV_CLAUDE"] = was
+        if rd:
+            shutil.rmtree(rd, ignore_errors=True)
+    say("PASS" if not bad else "FAIL", "the proof window: the studio's pick; a section by name (any case, the rule around its "
+        "start); a-b in seconds or m:ss (the same frames); what the song can't have refused with why (no flag in the message; "
+        "the command line's --proof refusal before any round folder); the page's preview (render time, the queue's note when "
+        "tight); a round on the user's section: round.json says so, the brief in the user's voice",
+        "; ".join(bad)[:2500] if bad else f"studio {auto['t0']}-{auto['t1']}; {sec['name']} {w_sec['t0']}-{w_sec['t1']}; "
+                                          f"preview {roomy['estimate']} per proof")
 
 
 def pitch_check(env):

@@ -15,7 +15,9 @@ keeps; the run view while the director's agent works: its line in the live log, 
 live' offered; after the run the Agents list, the costs per model and the total) -> live preview (GET live, the live server's URL space and what it
 refuses, a live note round-trip; the Watch page's live view playing the plan's scenes with the song in headless Chromium,
 the size picker, the sound delay, a stateful scene caught up after a seek, N for a live note) -> the pitch round
-(started from the Pitch round page in headless Chromium: the round at work, GET pitches, the cards with their proofs,
+(the part of the song they prove it on: GET proof-window, a part the song can't have refused; on the page a drag
+across the song, a click on a section, a bad time, ▶ Listen; then started from the Pitch round page in headless
+Chromium on the section chosen: the round at work, GET pitches, the cards with their proofs,
 ▶ live over the proof window, Build this one -> a director run from the pitch; pitch-pick's refusals; Stop on a pitch
 job) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
 tests/out/ui/; on the brief page a picture is added and named, on the song page the lyric timing editor opens, taps,
@@ -512,8 +514,26 @@ def pitch_check(B, name, out, browser=True):
     r2 = requests.post(f"{B}/api/p/{name}/pitch", json={"n": 7}).json()
     say("the critic" in r1.get("error", "") and "2 to 5" in r2.get("error", ""), "POST pitch refuses a round without the critic "
         "(the judge) and 7 pitches", f"{r1.get('error')}; {r2.get('error')}")
+    # the part of the song they prove it on: the preview (the studio's pick, a section, a-b in m:ss; a part the song
+    # can't have answered with why), and POST pitch refuses a part the song can't have before anything starts
+    m = requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()
+    sec = m["sections"][1]
+    pv = lambda spec, **k: requests.get(f"{B}/api/p/{name}/proof-window", params=dict(spec=spec, **k))
+    p0, p1, p2, p3 = pv(""), pv(sec["name"]), pv("0:10-0:26", n=5, budget=2), pv("99:00-99:30")
+    w0, w1, w2 = ((p.json() or {}).get("window") or {} for p in (p0, p1, p2))
+    r3 = requests.post(f"{B}/api/p/{name}/pitch", json={"n": 2, "proof": "no-such-part"}).json()
+    idle = not requests.get(f"{B}/api/p/{name}/job").json().get("running")
+    say(all(p.status_code == 200 for p in (p0, p1, p2, p3)) and w0.get("by") == "studio" and p0.json().get("estimate")
+        and w1.get("by") == "user" and f"{sec['name']}, the section the user chose" in w1.get("why", "")
+        and (w1.get("t0"), w1.get("t1")) != (w0.get("t0"), w0.get("t1")) and (w2.get("t0"), w2.get("t1")) == (10.0, 26.0)
+        and p2.json().get("note") and p3.json().get("window") is None and "inside the song" in p3.json().get("error", "")
+        and "no section 'no-such-part'" in r3.get("error", "") and idle,
+        "GET proof-window: the studio's pick, a section, a-b in m:ss (the queue's note for 5 pitches of 2 min), a part the "
+        "song can't have answered with why; POST pitch refuses a part the song can't have (nothing started)",
+        f"studio {w0.get('t0')}-{w0.get('t1')}; {sec['name']} {w1.get('t0')}-{w1.get('t1')}; 0:10-0:26 {w2.get('t0')}-{w2.get('t1')} "
+        f"note {bool(p2.json().get('note'))}; bad {p3.json()}; POST {r3}; idle {idle}")
     form = {"n": 2, "budget": "3", "model": "fake", "effort": "low", "critic_model": "haiku",
-            "seed_notes": "one of you, try it with nothing but type (server test)"}
+            "seed_notes": "one of you, try it with nothing but type (server test)", "proof": sec["name"]}
     shots = os.path.join(out, "ui")
     os.makedirs(shots, exist_ok=True)
     pw = b = page = None
@@ -548,6 +568,49 @@ def pitch_check(B, name, out, browser=True):
                 sent.append(json.loads(route.request.post_data or "{}"))
                 route.continue_()
             page.route("**/api/p/*/pitch", grab)
+            # the part of the song: the studio's pick shown; a drag across the song (on bar lines, the times, "you
+            # chose"); a click on a section; a time the song can't have (said in red, Listen off, the round not
+            # started); ▶ Listen plays that part and stops; then the section from the dropdown, and the round starts
+            page.wait_for_function("() => /bar:beat/.test(($('#pw-txt') || {}).innerText || '')", timeout=15000)
+            auto_txt = page.inner_text("#pw-txt")
+            box = page.locator("#pw-cv").bounding_box()
+            X, Y = (lambda t: box["x"] + t / m["duration"] * box["width"]), box["y"] + box["height"] / 2
+            page.mouse.move(X(0.1 * m["duration"]), Y)
+            page.mouse.down()
+            page.mouse.move(X(0.25 * m["duration"]), Y, steps=4)
+            page.mouse.move(X(0.4 * m["duration"]), Y, steps=4)
+            page.mouse.up()
+            page.wait_for_function("() => /part of the song you chose/.test($('#pw-txt').innerText)", timeout=10000)
+            drag = page.evaluate("() => [PW.mode, PW.a, PW.b, $('#pw-a').value, $('#pw-b').value, $('#pw-sel').value]")
+            lines = [x["t"] for x in m["bars"]] + [m["bars"][-1]["end"], 0.0, m["duration"]]
+            mmss = lambda v: (lambda p: 60 * int(p[0]) + float(p[1]))(v.split(":")) if ":" in v else float(v)
+            page.mouse.click(X((sec["t0"] + sec["t1"]) / 2), Y)
+            page.wait_for_function("() => /the section you chose/.test($('#pw-txt').innerText)", timeout=10000)
+            clicked = page.input_value("#pw-sel")
+            page.fill("#pw-b", "99:00")
+            page.press("#pw-b", "Tab")
+            page.wait_for_function("() => PW.err !== ''", timeout=10000)
+            err_txt, err_off = page.inner_text("#pw-txt"), page.is_disabled("#pw-play")
+            page.click("#go-pitch")
+            page.wait_for_timeout(600)
+            refused, none_sent = page.inner_text("#toast"), not sent
+            page.select_option("#pw-sel", f"sec:{sec['name']}")
+            page.wait_for_function("() => !PW.err && PW.w && PW.w.spec === PW.sec", timeout=10000)
+            page.click("#pw-play")
+            page.wait_for_function("() => !$('#pw-au').paused && $('#pw-au').currentTime > PW.w.t0 + 0.3", timeout=15000)
+            heard = page.evaluate("() => [$('#pw-au').currentTime, PW.w.t0, PW.w.t1, $('#pw-play').innerText]")
+            page.click("#pw-play")
+            quiet = page.evaluate("() => $('#pw-au').paused && !PW.raf")
+            page.screenshot(path=os.path.join(shots, "pitch-part.png"), full_page=True)
+            say(drag[0] == drag[5] == "range" and drag[2] > drag[1] and all(min(abs(t - x) for x in lines) < 1e-6 for t in drag[1:3])
+                and abs(mmss(drag[3]) - drag[1]) < 0.006 and abs(mmss(drag[4]) - drag[2]) < 0.006 and "you chose" not in auto_txt
+                and clicked == f"sec:{sec['name']}" and "inside the song" in err_txt and err_off and "The part of the song" in refused
+                and none_sent and heard[1] - 0.05 <= heard[0] < heard[2] and "Stop" in heard[3] and quiet,
+                "UI: the part of the song they prove it on: the studio's pick shown; a drag across the song (on bar lines, its "
+                "times, 'you chose'); a click on a section; a time the song can't have said in red (Listen off, the round not "
+                "started); ▶ Listen plays that part and stops",
+                f"drag {drag}; clicked {clicked}; bad {err_txt[:80]!r} (listen off {err_off}, toast {refused!r}, sent {sent}); "
+                f"heard {heard}, then paused {quiet}; the studio's pick {auto_txt[:80]!r}")
             page.click("#go-pitch")
             page.wait_for_selector("#pv-live-round .pv-row >> nth=1", timeout=60000)
             page.unroute("**/api/p/*/pitch")
@@ -577,11 +640,14 @@ def pitch_check(B, name, out, browser=True):
               and str(((by.get(1) or {}).get("live") or {}).get("scene") or "").endswith(f"round-{K}/p1/scenes/proof/scene.js")
               and rd.get("model") == "fake" and rd.get("effort") == "low" and rd.get("critic_model") == "haiku"
               and rd.get("seed_notes") == form["seed_notes"] and not R.get("running")
-              and (not page or (kept.get("n"), kept.get("budget"), kept.get("critic_model"), kept.get("auto")) == ("2", "3", "haiku", False)))
-        say(ok, "GET pitches: the round done, both pitches delivered (pitch.md, the proof with the song, 2 style frames, the "
-            "critic's notes), the verdict (p2, graft ideas from p1), what each card plays live (p2 its draft plan, p1 its "
-            "proof's scene); the form's settings kept",
-            f"round {K} {rd.get('state')}; {[(p['k'], p['state'], p.get('live')) for p in ps]}; verdict {v.get('winner')} "
+              and (w.get("by"), w.get("spec"), w.get("t0"), w.get("t1")) == ("user", sec["name"], w1.get("t0"), w1.get("t1"))
+              and (not page or (kept.get("n"), kept.get("budget"), kept.get("critic_model"), kept.get("auto"), kept.get("proof"))
+                   == ("2", "3", "haiku", False, sec["name"])))
+        say(ok, "GET pitches: the round done on the part of the song chosen (the section), both pitches delivered (pitch.md, "
+            "the proof with the song, 2 style frames, the critic's notes), the verdict (p2, graft ideas from p1), what each "
+            "card plays live (p2 its draft plan, p1 its proof's scene); the form's settings kept (the part of the song too)",
+            f"round {K} {rd.get('state')} on {w.get('spec')} {w.get('t0')}-{w.get('t1')} ({w.get('by')}); "
+            f"{[(p['k'], p['state'], p.get('live')) for p in ps]}; verdict {v.get('winner')} "
             f"{v.get('ranking')}; proof_av {av.status_code} {av.headers.get('Content-Type')}; kept {kept}")
         if page:
             page.wait_for_selector(f"#pv-r{K} .pv-card video >> nth=1", timeout=30000)

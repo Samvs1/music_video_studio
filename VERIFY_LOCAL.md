@@ -232,9 +232,18 @@ Then in the web app, on a project that has its song folder and your notes (no di
   have to take? Tell Claude if it doesn't;
 - the form: 3 pitches, 20 minutes each, the model (the project's director model; Sonnet for a cheaper round),
   effort high, the critic Sonnet; "Their angles: the story, the wild card, the sound and the structure" under it.
+  Under **The part of the song they prove it on**: *The studio's pick* and, below a strip of the whole song (its
+  sections in colour, loud and quiet, ★ markers), the window it picked, bright, the rest dimmed, with its times,
+  bar:beat and why, and what each proof takes to render here. Press **▶ Listen**: that part of the song plays and
+  stops at its end (a white line runs along the strip). Click a section on the strip: the list says that section and
+  the window moves to 2 bars before it. Drag across the song: a window of your own, snapped to bar lines, *the part
+  of the song you chose*; drag an edge, then the middle: it moves by bars. Type a "to" past the end of the song: the
+  reason in red, Listen greyed out, and Start refuses with the reason. Make the window 40 s with 5 pitches of 4
+  minutes: two warnings (long; the render queue). Does choosing feel direct? Set it back to *The studio's pick* (or
+  keep a part you want; the round uses it, and the form remembers it next time).
   **Start the pitch round**. Within seconds a box at the top: *Round 1 pitching*, the time left, the proof window
-  (`0:xx–0:yy of the song (... s, bar:beat ...)`: a 12-24 s window around the song's biggest moment, a chorus start or
-  a drop), and a line per pitch: its angle, *at work*, its time, its cost, its agents, its last lines, all three at
+  (`0:xx–0:yy of the song (... s, bar:beat ...)`: the part you chose, or a 12-24 s window around the song's biggest
+  moment, a chorus start or a drop), and a line per pitch: its angle, *at work*, its time, its cost, its agents, its last lines, all three at
   once. In Task Manager one render at a time (the pitches' proof renders queue: `waiting for the render queue` in a
   pitch's lines while another renders); `studio.py clock <p>` prints the round's time left;
 - after ~20-25 min the box says *judging* (the proofs get the song's audio, the critic looks at each proof, the

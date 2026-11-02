@@ -56,12 +56,17 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    **Pitch round** (optional: the step with no number; your choice, never a required step): several directors pitch
    from different angles; the critic compares; you pick which one the director builds. Skip it and the director
    starts from your notes, exactly as before. The page puts the two side by side: **Hold a pitch round** (how many,
-   2-5; the minutes per pitch, 20 by default; the model and the effort, high; the critic, which is the judge; notes for
-   the round; a cost cap per pitch; and "let the critic pick and go straight on with a __-minute director run") or
-   **Skip it**. Each pitch gets its own angle (the story, the wild card, the sound and the structure, one medium pushed
+   2-5; the minutes per pitch, 20 by default; **the part of the song they prove it on**; the model and the effort,
+   high; the critic, which is the judge; notes for the round; a cost cap per pitch; and "let the critic pick and go
+   straight on with a __-minute director run") or **Skip it**. The part of the song is the studio's pick (the song's
+   biggest moment) unless you choose another: a section from the list, or your own on a strip of the whole song (its
+   sections, loud and quiet, the ★★★ moments): click a section, or drag across the song (it snaps to bars; drag an
+   edge to move it, the middle to slide it), or type the times. Under it, the window exactly as the round will take
+   it (times, bar:beat, why), what each proof takes to render here, and a warning when it's outside 12-24 s or the
+   proofs would crowd the pitches' minutes; **▶ Listen** plays that part of the song. The form keeps your choice. Each pitch gets its own angle (the story, the wild card, the sound and the structure, one medium pushed
    to its limit, against the grain; your ideas taken to the extreme first when you wrote some) and is told to be
-   unmistakably different from the others and as bold as it can make well, and proves its idea on the same 12-24 s
-   window around the song's biggest moment. While they work, each pitch's line shows its angle, its state, its time,
+   unmistakably different from the others and as bold as it can make well, and proves its idea on the same part of
+   the song (the one you chose, or the studio's 12-24 s window around the song's biggest moment). While they work, each pitch's line shows its angle, its state, its time,
    its cost, its agents and its last lines; **Stop** makes each wrap up (the critic and the verdict still look at what
    exists). Then each round is a row of cards: per pitch its title, angle, the idea in two sentences, its style frames
    (click to enlarge), **the proof with the song** (`proof_av.mp4`), **▶ live** (its scenes, or its draft plan, played
@@ -107,7 +112,7 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `song <p>` · `curves <p> [--fps N]` | remake the song folder · remake the per-frame files for another fps |
 | `story <p> [--model M]` | Claude drafts `song/song-story.md` (headless, read-only) |
 | `align-lyrics <p> [--in lines.json]` | the lyric lines placed where Whisper hears them (`cache/lyrics/aligned.json`; the timing editor's button) |
-| `pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--critic-effort E] [--proof "chorus 1"\|24-44] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N] [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N] [--ultracode]] [--dry-run]` | the pitch round, optional: N directors pitch at once from different angles, each proving its idea on the same window of the song (`work/pitches/round-K/`); proof_av.mp4 (the proof with the song), the critic on each proof, one verdict (ambition first) with graft ideas, the costs; `--auto`: the verdict's winner is built at once |
+| `pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--critic-effort E] [--proof "chorus 1"\|24-44\|1:02-1:20] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N] [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N] [--ultracode]] [--dry-run]` | the pitch round, optional: N directors pitch at once from different angles, each proving its idea on the same window of the song (`work/pitches/round-K/`); proof_av.mp4 (the proof with the song), the critic on each proof, one verdict (ambition first) with graft ideas, the costs; `--auto`: the verdict's winner is built at once |
 | `pitch-pick <p> round-K/pN [--dry-run]` | put a picked pitch in place for an interactive director (`/musicvideo`), as `direct --pitch` does first, and print what's where, the critic's notes on its proof and the verdict's graft ideas |
 | `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-effort medium] [--critic-max 6] [--pitch round-K/pN]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final; `--pitch`: it starts from that pitch (put in place first) and goes further |
 | `critique <p> <video \| vN> [--model sonnet] [--effort medium] [--focus "..."] [--max-usd 2] [--pictures a.png,b.png] [--concept PATH] [--out DIR] [--no-look]` | the critic: a cheaper model with fresh eyes looks at a video, reports back in text (`work/critic/`; a version also `final/critic_vN.md`) |
@@ -186,9 +191,11 @@ round's files, the live server) in `tools/INTERNALS.md`.
   `review/`, `project.json`, `song/`, `work/scenes/`, `work/kit/`, `work/plan.json`, `work/concept.md`, ...). Each
   brief says the others pitch from other angles and that the user will compare: be unmistakably different, as bold
   as can be made well, the proof the idea at full strength on the window, honest about the render time (the whole
-  song's final render per renderer on this machine is in it). The studio picks one proof window for all: the
-  strongest ★★★ moment with music on both sides (a chorus start or a drop first, then the biggest lift), 2 bars
-  before it to ~16 s after, on downbeats, 12-24 s (`--proof` sets it). After the pitches: `proof_av.mp4` (the proof's
+  song's final render per renderer on this machine is in it). One proof window for all: the user's choice
+  (`--proof "chorus 1"`: the rule below around that section's start; `--proof 24-44` or `--proof 1:02-1:20`: exactly
+  that; the Pitch round page's picker sends the same), else the studio's pick, the strongest ★★★ moment with music on
+  both sides (a chorus start or a drop first, then the biggest lift), 2 bars before it to ~16 s after, on downbeats,
+  12-24 s. After the pitches: `proof_av.mp4` (the proof's
   video copied, the song's audio cut at the window, AAC), the critic on each proof (`--concept pN/pitch.md --out
   pN/`, with its style frames; two at a time), then one verdict call on the critic's model (every pitch.md inline, the
   style frames and the proofs' strips to open, each critique, this machine's render speeds): ambition highest, then
@@ -300,7 +307,8 @@ director how they look, so it can draw them; the pictures never appear in the vi
   spec. The pitches are full directors on the top model (the project's director model, effort high), because the idea
   is what's being chosen; the critic's cheaper model does the image-heavy looking at the proofs and judges the round,
   weighing ambition highest and never rewarding the safe option. All pitches prove themselves on the same window
-  (chosen by the studio, around the song's biggest moment), so they can be compared, and start fresh from the song and
+  (the part of the song you choose, else the studio's pick around the song's biggest moment), so they can be compared,
+  and start fresh from the song and
   your notes rather than from an earlier director's work. The angles are fixed starts (the story, the wild card, the
   sound and the structure, one medium, against the grain; your ideas first when you wrote some) so the pitches differ
   by construction, not by luck. Picking never overwrites: an existing concept, plan or style frames are kept as
