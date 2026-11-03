@@ -288,11 +288,13 @@ def critic_brief(critic, project, python, tools):
     return (f"\n- The studio's critic: a cheaper model ({critic[0]}) with fresh eyes looks at what you render while you "
             f"work: every full preview you mux into work/previews/preview_N.mp4 and final/music-video.mp4 (up to "
             f"{critic[1]} critiques this run). It sees only the frames, work/concept.md and the song, not your reasoning, "
-            f"and its notes arrive as a message from the studio a few minutes later (ambition first, then craft). It does "
+            f"and its notes arrive as a message from the studio a few minutes later (the idea and whether it reads, then "
+            f"craft). The final is looked at once your turn ends or it has held still for a few minutes, not on every "
+            f"rewrite. It does "
             f"the looking so your own tokens go into the video: after you mux a full preview, don't run eyes.py look on it "
             f"or open its sheets yourself; carry on with the next thing until its notes arrive, then open only the "
             f"pictures it names that you need to judge yourself (one eyes.py strip or beats for one specific question is "
-            f"fine). You're the director: take what's right, push harder where it says you played safe, ignore what's "
+            f"fine). You're the director: take what's right (what to cut as much as what to add), ignore what's "
             f"wrong. For a second look at one part: `{python} {tools}/studio.py critique {project} <video> --focus \"...\"` "
             f"(2-4 min).")
 
@@ -422,9 +424,10 @@ def claude_args(pdir, model, effort, ultracode=False, max_usd=None, extra_deny=(
 
 
 # ------------------------------------------------------------------ the critic during a run
+FINAL_SETTLE_S = 3 * 60            # the final held still this long (or the director's turn ended): it's ready to critique
 CRITIC_INTRO = ("The studio's critic ({model}, fresh eyes: it saw only the frames, your concept and the song, not your "
-                "reasoning) looked at {video}. You're the director: take what's right, push harder where it says you "
-                "played safe, ignore what's wrong, and note in work/log.md what you took and why.")
+                "reasoning) looked at {video}. You're the director: take what's right, ignore what's wrong, and note in "
+                "work/log.md what you took and why. You don't have to act on every point before your next cut.")
 
 
 def since(at, started):
@@ -448,13 +451,17 @@ class CriticWatcher:
     critiqued (or being critiqued) elsewhere. At most `most` critiques per run, the last one kept for a final; no
     preview critique when its notes couldn't reach the director in time (`min_left`), and nothing new once the run is
     stopping. Finished critiques wait in take() for the runner; the first preview passed over because the critiques
-    are used up waits in passed() (the director is told once: it isn't looking at full previews itself)."""
+    are used up waits in passed() (the director is told once: it isn't looking at full previews itself).
+    The final is rewritten in place, often minutes apart while the director iterates: it is critiqued once the
+    director says it's ready (its turn ended: `idle`), or once it has held still for `settle` s, not on every write
+    (late in the run, when waiting would keep its notes from reaching the director, at once)."""
 
-    def __init__(self, pdir, started, model, effort, most=6, min_left=6 * 60):
+    def __init__(self, pdir, started, model, effort, most=6, min_left=6 * 60, settle=FINAL_SETTLE_S):
         self.pdir, self.started, self.model, self.effort, self.most = pdir, started, model, effort, most
-        self.min_left = min_left
+        self.min_left, self.settle = min_left, settle
         self.fin = os.path.join(pdir, "final", "music-video.mp4")
         self.seen, self.handled, self.finished = {}, set(), []
+        self.since = {}                         # path -> when the poll first saw its current size + mtime
         self.job, self.n, self.last = None, 0, 0.0
         self.done_at = 0.0                      # the newest cut critiqued elsewhere (its mtime)
         self.skipped, self.told = [], False     # a preview passed over for want of critiques left (said once)
@@ -478,7 +485,16 @@ class CriticWatcher:
         v = rel(f, self.pdir)
         return critic.find(self.pdir, v, k[1], k[2]) or ("coming" if critic.is_pending(self.pdir, v, k[1], k[2]) else None)
 
-    def poll(self, now, left=None, stopping=False):
+    def settled(self, f, k, now, left=None, idle=False):
+        """A cut is ready for an automatic critique: a preview once its size held still over two looks; the final
+        once the director's turn is over, or it has held still for `settle` s, or the run is too near its end to wait."""
+        if not self.is_final(k) or idle or not self.settle:
+            return True
+        if left is not None and left < self.min_left + self.settle:
+            return True
+        return now - self.since.get(f, now) >= self.settle
+
+    def poll(self, now, left=None, stopping=False, idle=False):
         if now - self.last < 5:
             return
         self.last = now
@@ -488,7 +504,9 @@ class CriticWatcher:
             if not k or not k[1] or k[2] <= self.started or re.search(r"\.(part|tmp)\b", os.path.basename(f)):
                 continue
             was, self.seen[f] = self.seen.get(f), k
-            if was == k and k not in self.handled:
+            if was != k:
+                self.since[f] = now
+            if was == k and k not in self.handled and self.settled(f, k, now, left, idle):
                 there = self.elsewhere(f, k)
                 if isinstance(there, dict):         # (plan assemble critiqued it: the director has its report)
                     self.handled.add(k)
@@ -579,6 +597,16 @@ class CriticWatcher:
             out, self.skipped = self.skipped, []
         return out
 
+    def newer(self, k):
+        """The cuts (paths relative to the project) written after the cut with key k: the same file rewritten, or
+        another preview or final made since."""
+        out = []
+        for f in glob.glob(os.path.join(self.pdir, "work", "previews", "*.mp4")) + [self.fin]:
+            k2 = self.key(f)
+            if k2 and k2 != k and k2[2] > k[2] and k2[2] > self.started:
+                out.append(rel(f, self.pdir))
+        return out
+
     def pending_final(self):
         """A critique of the current final/music-video.mp4 is running or will start (it hasn't been handled yet)."""
         k = self.key(self.fin)
@@ -619,13 +647,19 @@ def critic_pictures(c, most=12):
             + ", ".join(ps[:most]) + (f" (+{len(ps) - most} more)" if len(ps) > most else "") + ".") if ps else ""
 
 
-def critic_message(c, most=6000):
+CRITIC_STALE = ("\n**These notes are on an older cut**: you've written {newer} since it was made. Skip what you have "
+                "changed since; take what still applies to the current cut.")
+
+
+def critic_message(c, most=6000, newer=None):
+    """The critic's report as a message to the director; `newer`: the cuts written since the one it looked at."""
     rep = (c.get("report") or "").strip()
     if len(rep) > most:
         rep = rep[:most].rsplit("\n", 1)[0] + "\n[... the rest is in the file]"
     pics = critic_pictures(c)
     return CRITIC_INTRO.format(model=c.get("model") or "the critic", video=c["video"]) + \
-        f" (Its report is also in {c.get('file')}.)" + (f"\n{pics}" if pics else "") + "\n\n" + rep
+        f" (Its report is also in {c.get('file')}.)" + (CRITIC_STALE.format(newer=", ".join(newer)) if newer else "") \
+        + (f"\n{pics}" if pics else "") + "\n\n" + rep
 
 
 CRITIC_USED_UP = ("The studio's critic has used this run's preview critiques ({n}; the last one is kept for the final), so "
@@ -634,9 +668,9 @@ CRITIC_USED_UP = ("The studio's critic has used this run's preview critiques ({n
                   "time.")
 
 
-NUDGE_HEAD = ("You delivered a cut with {left} still on the clock: spend it making the video better, and bolder. Start "
-              "where the critic says you played safe and with what it says the boldest version of your concept would do, "
-              "not with polish; then its worst problems. ")
+NUDGE_HEAD = ("You delivered a cut with {left} still on the clock: spend it making the video better. Start with what "
+              "the critic says keeps the idea from landing (where it is too busy to read as much as where it is flat), "
+              "then its worst problems; better can mean fewer things on screen. ")
 NUDGE_TAIL = ("\n\nThen render, check and deliver again. Keep the current final until the new one passes the checks. Then "
               "rewrite report.md so it describes the cut you delivered (no 'Round' heading: those are for the user's "
               "review rounds).")
@@ -655,7 +689,7 @@ def critic_nudge(c, left, seen=False):
     probs = critic.problems_text(c, 4)
     return (head + f"You had the critic's notes on this cut ({c.get('file')}); the gist again:\n\n"
             f"Its verdict: {c.get('verdict') or '-'} ({critic.score_line(c.get('scores'))})\n"
-            + (f"\nAmbition: {amb[:1500]}\n" if amb else "") + (f"\nWhere it plays safe:\n{safe}\n" if safe else "")
+            + (f"\nAmbition: {amb[:1500]}\n" if amb else "") + (f"\nWhere it is flat or busy:\n{safe}\n" if safe else "")
             + (f"\nIts worst problems:\n{probs}\n" if probs else "") + NUDGE_TAIL)
 
 
@@ -674,9 +708,9 @@ def plain_nudge(left, pdir, critic_on=False, coming=False):
             f"For fresh eyes on it, ask the critic (a cheaper model looks at the pictures and reports back) rather than "
             f"opening every sheet yourself: `{venv_python(pdir)} {tools}/studio.py critique {os.path.basename(pdir)} "
             f"final/music-video.mp4 --focus \"...\"` (2-4 min).")
-    return (f"You delivered a cut with {fmt_dur(left)} still on the clock. Spend it making the video better, and bolder: "
-            f"where does it play safe, which ★★★ moment doesn't change the picture's rules, what would the boldest "
-            f"version of your concept do? {look}" + NUDGE_TAIL)
+    return (f"You delivered a cut with {fmt_dur(left)} still on the clock. Spend it making the video better: "
+            f"where is it too busy to read, where is it flat, which ★★★ moment doesn't land, what would make your "
+            f"concept clearer? {look}" + NUDGE_TAIL)
 
 
 def run_streamed(cmd, env, log, timeout=2400, abort=None):
@@ -1072,7 +1106,7 @@ class Runner:
         self.check_hung(now)
         s, critics = self.s, self.critics
         if critics:
-            critics.poll(now, left, stopping=self.stop_reason is not None)
+            critics.poll(now, left, stopping=self.stop_reason is not None, idle=s.alive() and not s.working)
             for c in critics.take():
                 self.record(c, "the director ran it" if c.get("seen") else "waiting")
                 if not c.get("error") and not c.get("seen"):
@@ -1122,9 +1156,15 @@ class Runner:
                     s.close_input()
         for c in list(self.unsent):                                # the critic's other notes go in as they come
             self.unsent.remove(c)
-            if not s.closed and left > 120 and self.stop_reason is None and s.alive():
-                self.send(critic_message(c), f"critic: {c['video']}")
-                self.used(c, "sent")
+            newer = critics.newer(c["key"]) if critics and c.get("key") else []
+            if c.get("key") and CriticWatcher.key(c["key"][0]) != c["key"] and critics.is_final(c["key"]) \
+                    and critics.pending_final():
+                # the final changed again and its own critique is coming: these notes would only be stale
+                self.note(f"🔍 the critic's notes on an older final are dropped: a critique of the current one is coming")
+                self.used(c, "superseded")
+            elif not s.closed and left > 120 and self.stop_reason is None and s.alive():
+                self.send(critic_message(c, newer=newer), f"critic: {c['video']}" + (" (an older cut)" if newer else ""))
+                self.used(c, "sent, on an older cut" if newer else "sent")
             else:
                 self.used(c, "too late for the director")
         return s.alive()

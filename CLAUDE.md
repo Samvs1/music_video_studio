@@ -25,7 +25,7 @@ what it can't hear; Claude Code directs the video, interactively (`/musicvideo <
 ## A run (autonomous or interactive)
 One director with full reign (the top model, effort max by default): it builds the video itself or deploys agents
 where it wants to; nothing forces agents (`--ultracode` and `--max-usd` optional). The cheap critic looks at its
-previews and final and reports back in text, ambition first; the user's live notes reach it mid-run; directors mark
+previews and final and reports back in text (the idea and whether it reads, then craft); the user's live notes reach it mid-run; directors mark
 notes done with `studio.py note-done <p> <id> "<fix>"`. Details: the skill's "How a run works". A pitch round
 (`studio.py pitch <p>`) is the user's optional step before a run; `direct --pitch round-K/pN`, or interactively
 `studio.py pitch-pick <p> round-K/pN`, starts from the pick. A director never starts a pitch round itself.
@@ -45,8 +45,8 @@ venv. Bash heredocs mangle quotes: for non-trivial patches write a small script 
 - Reference pictures (`refs/`) show how people look: draw them in the video's language; the pictures (or anything made
   from their pixels) never appear in the video.
 - You can't hear or watch: never claim you did. Directors: look at frames (`eyes.py`), read the song folder, run the
-  checks; let the critic do the image-heavy looking at full previews (it pushes ambition up, never toward the safer
-  idea).
+  checks; let the critic do the image-heavy looking at full previews (it judges whether the idea lands and reads: it
+  can say "cut this" as readily as "add this"; more on screen is not more ambition).
 - Craft (details in the skill): every cut and hit on a musical event within a frame; lyric text on the beat or 8th at
   or just before its sung word; text readable long enough, ≥ 3:1 contrast, never clipped; nothing revealed in a
   shot's last beat; one committed visual language; fix the film, not the frame; no rapid bright flashing; say which

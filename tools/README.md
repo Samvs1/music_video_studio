@@ -64,7 +64,7 @@ A plan segment's video keeps its eyes next to it: `work/segments/<id>/eyes/<name
 eyes are newer than the video) and strips at up to three of the strongest ★★★ moments, then one headless Claude call
 (read-only tools) opens those pictures and judges them against `work/concept.md` (or `--concept`), the song's
 essentials (`work/song-notes.md`, else `work/critic/song-brief.md`), the user's notes, the anti-defaults and the craft
-rules: ambition first, then craft. Not `report.md` or `work/log.md`: fresh eyes. 2-4 minutes. Output:
+rules: the idea and whether it reads (too busy or too flat), then craft. Not `report.md` or `work/log.md`: fresh eyes. 2-4 minutes. Output:
 `work/critic/<video>_NN.md` (≤ 60 lines: verdict, scores, the worst problems with times and a direction to push, what
 works, what the pictures can't tell) + `.json` (`verdict`, `scores` {ambition, song_fit, craft, readability} 1-10,
 `problems` [{severity, t0, t1, where, what, push}], `keep`, `safe`, `anti_defaults`, `fixed_since_last`, plus the

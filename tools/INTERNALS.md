@@ -13,6 +13,12 @@ critique goes into the run's status as it comes (`used`: "the director ran it"),
 `--critic-max` critiques a run (default 6), the last one kept for a final; no preview critique when its notes couldn't
 reach the director in time (6 min). The first preview it passes over because the critiques are used up is said to the
 director once, as a message (it was told not to look at full previews itself).
+The final is rewritten in place, often minutes apart while the director iterates, so the watcher doesn't critique
+every write: a final is ready once the director's turn is over (it has nothing running), or once it has held still
+for `FINAL_SETTLE_S` (3 min; a rewrite restarts the wait), or at once when waiting would keep its notes from reaching
+the director (less than 6 + 3 min left). Notes that finish after their cut changed: on a final rewritten since whose
+own critique is coming, they're dropped (`used`: "superseded"); otherwise they're sent with a line naming the cuts
+written since (`used`: "sent, on an older cut"), so the director skips what it has changed.
 
 ## Agents in a run (the director's choice)
 The autonomous director has full reign: it builds the video itself, or deploys agents where it wants to; nothing

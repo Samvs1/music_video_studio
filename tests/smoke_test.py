@@ -856,7 +856,7 @@ def watcher_check():
         os.utime(f, (started + dt, started + dt))
 
     def watch(n=0, rounds=4, **kw):
-        w = W(d, started, "fake", "medium", most=6)
+        w = W(d, started, "fake", "medium", most=6, settle=0)
         w.done, w.n = [], n
         for i in range(rounds):
             w.poll(1000.0 + 5 * i, **kw)
@@ -866,7 +866,7 @@ def watcher_check():
     b = watch()                                     # the final first, then the newer preview
     c = watch(left=200)                             # 3 min left: no preview critique (its notes couldn't reach the director)
     e = watch(stopping=True)
-    f = W(d, started, "fake", "medium", most=6)     # a preview critique running when the final is ready: it gives way
+    f = W(d, started, "fake", "medium", most=6, settle=0)     # a preview critique running when the final is ready: it gives way
     f.done, f.n = [], 1
     f.job = {"key": f.key(prev), "video": "work/previews/preview_1.mp4", "proc": None}
     f.poll(1000.0)
@@ -893,7 +893,7 @@ def watcher_check():
     os.makedirs(os.path.join(d, "work", "critic"), exist_ok=True)
     json.dump({"video": "work/previews/preview_2.mp4", "size": 120, "mtime": started + 30, "scores": {"ambition": 5},
                "file": "work/critic/preview_2_01.md"}, open(os.path.join(d, "work", "critic", "preview_2_01.json"), "w"))
-    g = W(d, started, "fake", "medium", most=6)
+    g = W(d, started, "fake", "medium", most=6, settle=0)
     g.done, g.handled = [], {g.key(fin), g.key(prev)}
     with critic.pending(d, p3):
         for i in range(3):
@@ -912,12 +912,12 @@ def watcher_check():
     # an older preview still waiting isn't critiqued after a newer cut has its critique (or is getting one) elsewhere
     json.dump({"video": "work/previews/preview_3.mp4", "size": 120, "mtime": started + 40, "scores": {"ambition": 6},
                "file": "work/critic/preview_3_01.md"}, open(os.path.join(d, "work", "critic", "preview_3_01.json"), "w"))
-    h = W(d, started, "fake", "medium", most=6)
+    h = W(d, started, "fake", "medium", most=6, settle=0)
     h.done, h.handled = [], {h.key(fin)}
     for i in range(3):
         h.poll(3000.0 + 5 * i)
         time.sleep(0.05)
-    k = W(d, started, "fake", "medium", most=6)     # the same with the newer one still being critiqued
+    k = W(d, started, "fake", "medium", most=6, settle=0)     # the same with the newer one still being critiqued
     k.done, k.handled = [], {k.key(fin), k.key(p2), k.key(p3)}
     p4 = os.path.join(d, "work", "previews", "preview_4.mp4")
     open(p4, "wb").write(b"z" * 130)
@@ -929,6 +929,43 @@ def watcher_check():
     say("PASS" if h.done == [] and h.key(prev) in h.handled and k.done == [] and k.key(prev) in k.handled else "FAIL",
         "the critic watcher: an older preview still waiting is passed over once a newer cut has a critique, or is getting "
         "one, elsewhere", f"done {h.done} / {k.done}; passed over {h.key(prev) in h.handled} / {k.key(prev) in k.handled}")
+    # the final is rewritten in place while the director iterates: it waits until the director's turn is over or it
+    # has held still for `settle` s (a rewrite restarts the wait), or at once near the run's end; newer() names the
+    # cuts written after one (for the "these notes are on an older cut" line)
+    d2 = os.path.join(PDIR, "cache", "_watcher_settle")
+    shutil.rmtree(d2, ignore_errors=True)
+    os.makedirs(os.path.join(d2, "final"))
+    os.makedirs(os.path.join(d2, "work", "previews"))
+    fin2 = os.path.join(d2, "final", "music-video.mp4")
+    open(fin2, "wb").write(b"x" * 100)
+    os.utime(fin2, (started + 10, started + 10))
+
+    def settle_watch(times, rewrite_at=None, **kw):
+        w = W(d2, started, "fake", "medium", most=6, settle=180)
+        w.done, got = [], []
+        for t in times:
+            if rewrite_at is not None and t == rewrite_at:
+                open(fin2, "wb").write(b"x" * 110)
+                os.utime(fin2, (started + 20, started + 20))
+            w.poll(float(t), **kw)
+            time.sleep(0.05)
+            got.append(len(w.done))
+        return w, got
+    _, early = settle_watch([1000, 1005, 1010, 1100])                # still settling: nothing yet
+    _, held = settle_watch([1000, 1005, 1190])                       # held still 3 min: critiqued
+    open(fin2, "wb").write(b"x" * 100)
+    os.utime(fin2, (started + 10, started + 10))
+    _, rewritten = settle_watch([1000, 1005, 1100, 1190, 1300], rewrite_at=1100)   # the rewrite at 1100 restarts the wait
+    _, idle = settle_watch([1000, 1005], idle=True)                  # the director's turn is over: at once
+    _, late = settle_watch([1000, 1005], left=400)                   # near the end: at once
+    w = W(d2, started, "fake", "medium", most=6, settle=180)
+    k_old = (w.key(fin2)[0], 100, started + 10)
+    newer = w.newer(k_old)
+    say("PASS" if early == [0, 0, 0, 0] and held == [0, 0, 1] and rewritten == [0, 0, 0, 0, 1] and idle == [0, 1]
+        and late == [0, 1] and newer == ["final/music-video.mp4"] and w.newer(w.key(fin2)) == [] else "FAIL",
+        "the critic watcher: a final rewritten in place is critiqued once the director's turn is over or it has held "
+        "still for the settle time (a rewrite restarts it), at once near the end; newer() names the cuts written since",
+        f"early {early} held {held} rewritten {rewritten} idle {idle} late {late} newer {newer}")
 
 
 def session_check():

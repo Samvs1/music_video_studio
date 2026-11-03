@@ -36,7 +36,7 @@ the studio the clock, the render queue, the checks, the versions, the costs (and
   (optional)"). Nobody downstream can make the film bolder than your concept: commit to the boldest one you can make
   well, and build it so it can't fall back on a default.
 - **The critic looks; you decide** (step 6). Looking at frames is image-heavy, so a cheaper model does most of it and
-  reports back in text, ambition first, then craft.
+  reports back in text: the idea and whether it reads (too busy as much as too flat), then craft.
 - **The user's ears** (step 5): the web app plays your scenes in their browser with the song, no render, while you
   work. Their live notes come to you mid-run (autonomous runs: as a message; interactive: open `"version": "live"`
   notes in `review/notes.json`).
@@ -171,13 +171,16 @@ first meets ears. So:
   studio's critic looks for them). A section at a time while building, then the whole song.
 - **The critic does the looking** (cheap model, fresh eyes, 2-4 min). Autonomous runs: it looks at the newest new
   `work/previews/*.mp4` and the final by itself (up to a per-run cap, the last kept for the final: it tells you when
-  it's used up) and its notes arrive as a message: don't run it twice. Interactive:
+  it's used up; the final once your turn ends or it has held still for a few minutes, not on every rewrite) and its
+  notes arrive as a message: don't run it twice. Notes on a cut you've changed since say so: skip what you've
+  changed. Interactive:
   `S critique <p> work/previews/preview_N.mp4` in the background after each full preview, and build on while it looks
   (`plan assemble` runs it for you). `--focus "the chorus 2 type"` aims it. It runs the eyes, opens the pictures
-  itself, judges them against `work/concept.md`, the song and the user's notes, ambition first, then the craft rules,
-  and prints ≤ 60 lines: scores, the worst problems with times and a direction to push, what works, what it can't
-  tell, and the pictures it opened. It never knows your reasoning, so it can be wrong: take what's right, push harder
-  where it says you played safe, ignore what's wrong, and log what you took.
+  itself, judges them against `work/concept.md`, the song and the user's notes (the idea and whether it reads, then
+  the craft rules), and prints ≤ 60 lines: scores, the worst problems with times and a direction (to cut or calm as
+  often as to add), what works, what it can't tell, and the pictures it opened. It never knows your reasoning, so it
+  can be wrong: take what's right, ignore what's wrong, and log what you took. More on screen is not better: a
+  frame with one clear thing beats a frame with five.
 - **Your own looking is targeted, not a second full pass**: after a full preview, don't run `eyes.py look` on it or
   open its sheets yourself (the critic did; its pictures are in the video's eyes folder: `work/eyes/<name>/`, a
   segment's in `work/segments/<id>/eyes/<name>/`). Open only the pictures its report names that you need to judge

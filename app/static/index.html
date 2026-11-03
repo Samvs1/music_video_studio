@@ -982,7 +982,7 @@ function vDirect() {
     <div class="two"><div><label>Cost cap in $ (optional)</label><input id="d-cap" type="number" min="0" step="1" value="${esc(d.max_usd || "")}" placeholder="no cap"></div>
       <div><label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-ultra" ${ultra ? "checked" : ""} style="width:auto"> Ultracode</label>
         <p class="hint" style="margin-top:2px">the director may orchestrate multi-agent workflows: more tokens</p></div></div>
-    <p class="hint">The critic is a cheaper model with fresh eyes: it looks at every preview the director makes and at the final, and reports back in text, ambition first, then craft. The director decides what to take. Looking at pictures is where the tokens go, so the expensive model doesn't do it. A cost cap ends the run when the director's session (its agents included) has spent that much.</p>
+    <p class="hint">The critic is a cheaper model with fresh eyes: it looks at every preview the director makes and at the final, and reports back in text, the idea and whether it reads (it can say &ldquo;cut this&rdquo; as readily as &ldquo;add this&rdquo;), then craft. The director decides what to take. Looking at pictures is where the tokens go, so the expensive model doesn't do it. A cost cap ends the run when the director's session (its agents included) has spent that much.</p>
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
     ${pitchHint()}
     ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
@@ -1076,7 +1076,8 @@ function costsBox(d) {                // the cost per model (the director's, its
 
 const USED = {"sent": "sent to the director", "in the nudge": "in the nudge to use the time left", "waiting": "not sent yet",
               "after the run": "after the run (for the version)", "too late for the director": "too late to send",
-              "the director ran it": "the director asked for it"};
+              "the director ran it": "the director asked for it", "sent, on an older cut": "sent to the director (on an older cut)",
+              "superseded": "dropped: the final changed again"};
 function scoreChips(sc) {            // the critic's four scores (out of 10)
   if (!sc) return `<span class="sc">no scores</span>`;
   return [["ambition", "ambition"], ["song_fit", "song fit"], ["craft", "craft"], ["readability", "readability"]]
@@ -1134,7 +1135,7 @@ function critBox(v) {                // the critic's notes on this cut, and "Ask
   return `<div class="box" id="wcritic" style="margin-top:14px"><div class="row"><b>Critic</b>${c ? `${scoreChips(c.scores)}<span class="mut">${esc(c.model || "")}${c.at ? " &middot; " + esc(c.at) : ""}${c.cost_usd != null ? ` &middot; $${c.cost_usd.toFixed(2)}` : ""}</span>` : `<span class="mut">no notes on this cut yet</span>`}
     <span class="sp" style="flex:1"></span><select id="w-cmodel" style="width:auto;padding:5px 8px">${["sonnet", "haiku", "opus"].map(m => `<option ${m === def ? "selected" : ""}>${m}</option>`).join("")}</select>
     <button class="small ghost" id="go-critique" onclick="askCritic()">${c ? "Ask again" : "Ask the critic"}</button><button class="ghost small" id="stop-critique" onclick="stopJob()" style="display:none">Stop</button></div>
-    ${c ? "" : `<p class="hint">A cheaper model with fresh eyes looks at this cut's frames against the concept and the song: ambition first, then craft, with the times to fix (2-4 min; a few cents with Haiku, more with Opus). It can't hear either: your ears are still the judge.</p>`}
+    ${c ? "" : `<p class="hint">A cheaper model with fresh eyes looks at this cut's frames against the concept and the song: the idea and whether it reads, then craft, with the times to fix (2-4 min; a few cents with Haiku, more with Opus). It can't hear either: your ears are still the judge.</p>`}
     <ul class="steplist" id="sl-critique"></ul><div id="wn-critique"></div><pre class="log" id="lg-critique" style="display:none"></pre>
     <div class="sv-md" id="wcrit-md">${c ? '<span class="mut">loading the critic&rsquo;s notes&hellip;</span>' : ""}</div></div>`;
 }
