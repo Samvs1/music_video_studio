@@ -573,7 +573,7 @@ def pitch_check(B, name, out, browser=True):
             # started); ▶ Listen plays that part and stops; then the section from the dropdown, and the round starts
             page.wait_for_function("() => /bar:beat/.test(($('#pw-txt') || {}).innerText || '')", timeout=15000)
             auto_txt = page.inner_text("#pw-txt")
-            page.locator("#pw-cv").scroll_into_view_if_needed()          # filling the notes scrolled the strip off-screen
+            page.locator("#pw-cv").evaluate("e => e.scrollIntoView({block: 'center'})")    # filling the notes scrolled it away
             box = page.locator("#pw-cv").bounding_box()
             X, Y = (lambda t: box["x"] + t / m["duration"] * box["width"]), box["y"] + box["height"] / 2
             page.mouse.move(X(0.1 * m["duration"]), Y)
@@ -581,7 +581,12 @@ def pitch_check(B, name, out, browser=True):
             page.mouse.move(X(0.25 * m["duration"]), Y, steps=4)
             page.mouse.move(X(0.4 * m["duration"]), Y, steps=4)
             page.mouse.up()
-            page.wait_for_function("() => /part of the song you chose/.test($('#pw-txt').innerText)", timeout=10000)
+            try:
+                page.wait_for_function("() => /part of the song you chose/.test($('#pw-txt').innerText)", timeout=10000)
+            except Exception:
+                print("   the drag didn't take: box", box, "now", page.locator("#pw-cv").bounding_box(), "state",
+                      page.evaluate("() => [scrollY, innerHeight, PW.mode, PW.a, PW.b, PW.err, $('#pw-txt').innerText.slice(0, 160)]"))
+                raise
             drag = page.evaluate("() => [PW.mode, PW.a, PW.b, $('#pw-a').value, $('#pw-b').value, $('#pw-sel').value]")
             lines = [x["t"] for x in m["bars"]] + [m["bars"][-1]["end"], 0.0, m["duration"]]
             mmss = lambda v: (lambda p: 60 * int(p[0]) + float(p[1]))(v.split(":")) if ":" in v else float(v)
