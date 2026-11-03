@@ -970,6 +970,7 @@ function vDirect() {
   const open = latest ? S.notes.filter(n => !n.done && String(n.version).replace("v", "") === String(latest.n)) : [];
   const liveOpen = latest ? S.notes.filter(n => !n.done && n.version === "live") : [];     // left in the live view, still open
   const cmd = `/musicvideo ${S.name}`, ultra = d.ultracode === true || d.ultracode === "true";
+  const autoc = d.auto_continue === true || d.auto_continue === "true";
   // a saved effort counts only when this form saved it (it always saves ultracode): the old forms saved "high" each time
   const effort = "ultracode" in d && EFFORTS.includes(d.effort) ? d.effort : "max";
   $("#pane").innerHTML = `<h2>Direct</h2>
@@ -982,31 +983,34 @@ function vDirect() {
     <div class="two"><div><label>Cost cap in $ (optional)</label><input id="d-cap" type="number" min="0" step="1" value="${esc(d.max_usd || "")}" placeholder="no cap"></div>
       <div><label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-ultra" ${ultra ? "checked" : ""} style="width:auto"> Ultracode</label>
         <p class="hint" style="margin-top:2px">the director may orchestrate multi-agent workflows: more tokens</p></div></div>
+    <label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-auto" ${autoc ? "checked" : ""} style="width:auto"> Continue by itself when Claude's usage limit resets</label>
+    <p class="hint" style="margin-top:2px">If your Claude plan's usage limit stops the director mid-run, the run waits with its clock stopped and carries on where it was once the limit resets (up to a day). Off: the run ends there, and you can continue it here later.</p>
     <p class="hint">The critic is a cheaper model with fresh eyes: it looks at every preview the director makes and at the final, and reports back in text, ambition first, then craft. The director decides what to take. Looking at pictures is where the tokens go, so the expensive model doesn't do it. A cost cap ends the run when the director's session (its agents included) has spent that much.</p>
     <label>Notes for this run (optional)</label><textarea id="d-seed" placeholder="e.g. try something with paper cut-outs; keep the type minimal">${""}</textarea>
     ${pitchHint()}
     ${(S.project.refs || []).length ? `<p class="hint">Claude also gets your ${S.project.refs.length} reference picture${S.project.refs.length > 1 ? "s" : ""} (<a href="#${S.name}/song">Song &amp; brief</a>).</p>` : ""}
     ${open.length || liveOpen.length ? `<label style="text-transform:none;letter-spacing:0;color:var(--fg)"><input type="checkbox" id="d-revise" checked style="width:auto"> Review round: address my ${[open.length ? `${open.length} note${open.length > 1 ? "s" : ""} on v${latest.n}` : "", liveOpen.length ? `${liveOpen.length} note${liveOpen.length > 1 ? "s" : ""} from the live view` : ""].filter(Boolean).join(" and ")} and make v${latest.n + 1}</label>` : ""}
+    <div id="d-cont">${contBox(S.director && !directing(S.job) ? S.director.continuable : null)}</div>
     <div class="row" style="margin-top:12px"><button id="go-direct" onclick="startDirect()" ${S.song.map ? "" : "disabled"}>Start the director</button><button class="ghost small" id="stop-direct" onclick="stopJob()" style="display:none">Stop it (wraps up cleanly)</button></div>
     ${S.song.map ? "" : `<p class="hint" style="color:var(--bad)">Analyse the song first.</p>`}</div>
   <div class="box"><div class="hand">with you</div><h2 style="font-size:24px">Direct it together</h2>
     <p class="mut">Open Claude Code in the studio folder and run the skill. The same director's workflow, but you can talk along. It asks the critic you set on the left (with &ldquo;off&rdquo;, none: it looks itself), and its notes on each version it delivers show on the Watch page.</p>
     <code class="cmd" style="font-size:12px">${esc(S.studio)}</code><code class="cmd">${esc(cmd)}</code><button class="small" onclick="navigator.clipboard.writeText('${cmd}');toast('Copied')">Copy command</button></div></div>
   <div id="dir-live" style="margin-top:16px"></div>`;
-  ["#d-budget", "#d-effort", "#d-model", "#d-critic", "#d-cap", "#d-ultra"].forEach(id => $(id).addEventListener("change", () => dirSave()));
+  ["#d-budget", "#d-effort", "#d-model", "#d-critic", "#d-cap", "#d-ultra", "#d-auto"].forEach(id => $(id).addEventListener("change", () => dirSave()));
   watchJob("direct", refresh);
   dirLive(); clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
 }
 function dirForm() {
   const v = id => $(id).value;
-  return {budget: v("#d-budget"), model: v("#d-model"), effort: v("#d-effort"), critic_model: v("#d-critic"), ultracode: $("#d-ultra").checked, max_usd: v("#d-cap").trim()};
+  return {budget: v("#d-budget"), model: v("#d-model"), effort: v("#d-effort"), critic_model: v("#d-critic"), ultracode: $("#d-ultra").checked, max_usd: v("#d-cap").trim(), auto_continue: $("#d-auto").checked};
 }
 async function dirSave() {           // the form's settings kept as they change (a pitch card's "Build this one" uses them too)
   try { S.project = await post(`/api/p/${S.name}/brief`, {director: dirForm()}); } catch (e) { toast(e.message); }
 }
 function pitchHint() {               // the optional pitch round, as a choice: a round with pitches to pick from, or one at work
   const p = S.pitch;
-  if (directing(S.job) || ["running", "finishing"].includes((S.director || {}).state)) return "";     // (a run at work: Build this one, or the form)
+  if (directing(S.job) || ACTIVE.includes((S.director || {}).state)) return "";     // (a run at work: Build this one, or the form)
   if (!p) return `<p class="hint">Want to see a few really different ideas first? A <a href="#${S.name}/pitch">pitch round</a> (optional) lets several directors pitch from different angles; you pick which one the director builds.</p>`;
   if (p.running) return `<p class="hint" style="color:var(--acc)">A <a href="#${S.name}/pitch">pitch round</a> is at work: the director can start when it's done (from the pitch you pick, or from your notes).</p>`;
   if (p.delivered && !p.picked && !p.run_since) return `<p class="hint">Pitch round ${p.round} has ${p.delivered} pitch${p.delivered > 1 ? "es" : ""} to choose from: <a href="#${S.name}/pitch">pick one</a> and the director starts from it, or start here and it starts from your notes.</p>`;
@@ -1020,6 +1024,26 @@ async function startDirect() {
   clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
   setTimeout(dirLive, 1500);
 }
+async function startContinue() {     // Continue the last run: its own conversation, the minutes in its box, the form's settings
+  const body = {...dirForm(), budget: $("#d-cbudget").value, seed_notes: $("#d-seed").value, continue: true};
+  await dirSave();
+  dirWant = Date.now();
+  const cb = $("#d-cont"); if (cb) { cb.dataset.k = ""; cb.innerHTML = ""; }
+  startJob("direct", body);
+  clearInterval(dpoll); dpoll = setInterval(dirLive, 2000);
+  setTimeout(dirLive, 1500);
+}
+const hhmm = t => new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+function contBox(c) {                // the last run, once it's over: carried on where it stopped (Claude's usage limit, a stop, a cut-off runner)
+  if (!c) return "";
+  const later = c.resets_at && c.resets_at * 1000 > Date.now();
+  const head = c.limit ? `Run ${c.run} was stopped by Claude's usage limit` : c.cut ? `Run ${c.run} was cut short` : `Run ${c.run} is over`;
+  return `<div class="crit" id="d-cont-box"${c.cut ? ' style="border-color:var(--acc)"' : ""}><b>${head}</b> <span class="mut">${esc(c.why || "")}${c.left_s >= 60 ? ` &middot; ${dur(c.left_s)} of its budget left` : ""}</span>
+    <p class="hint" style="margin:4px 0">Continue it: the director picks up where it stopped, ${c.resumable ? "in the same conversation (it remembers what it was doing)" : "in a fresh session told where the work is"}, with the settings above${later ? `. The limit resets at ${hhmm(c.resets_at)}: the run waits for it, then starts` : ""}.</p>
+    <div class="row"><label style="margin:0;text-transform:none;letter-spacing:0">Minutes</label><input id="d-cbudget" type="number" min="5" value="${Math.round((c.budget_s || 900) / 60)}" style="width:90px">
+      <button id="go-cont" class="${c.cut ? "" : "ghost"}" onclick="startContinue()">${later ? `Continue the last run at ${hhmm(c.resets_at)}` : "Continue the last run"}</button></div></div>`;
+}
+const ACTIVE = ["running", "finishing", "paused", "waiting"];     // a run at work (paused / waiting: for Claude's usage limit)
 let dirWant = 0, lastJob = null;     // when this page started a run (its first status can take a while), the last job state
 async function dirLive() {
   const el = $("#dir-live"); if (!el) return clearInterval(dpoll);
@@ -1027,7 +1051,10 @@ async function dirLive() {
   try { d = await api(`/api/p/${S.name}/director`); } catch (e) { return; }
   el.innerHTML = d && d.run ? runView(d) : "";
   const ev = $("#dir-ev"); if (ev) ev.scrollTop = 1e9;
-  const running = d && ["running", "finishing"].includes(d.state);
+  const c = d && !(lastJob && lastJob.running) ? d.continuable : null, cb = $("#d-cont");
+  const ck = c ? JSON.stringify([c.run, c.resets_at, c.left_s, c.why]) : "";
+  if (cb && cb.dataset.k !== ck) { cb.dataset.k = ck; cb.innerHTML = contBox(c); }     // (not while you type in it)
+  const running = d && ACTIVE.includes(d.state);
   const jobOn = directing(lastJob), g = $("#go-direct");
   if (g && !(lastJob && lastJob.running)) {          // a run started from the command line: no second one over it
     g.disabled = !!running || !S.song.map; g.title = running ? "a director run is going on: let it finish (or stop it) first" : "";
@@ -1035,17 +1062,26 @@ async function dirLive() {
   if (!running && !jobOn && Date.now() - dirWant > 300000) clearInterval(dpoll);
 }
 function runHead(d, extra) {
-  const running = ["running", "finishing"].includes(d.state), left = d.deadline - d.now;
+  const running = ACTIVE.includes(d.state), left = d.deadline - d.now, p = d.paused || {};
   const none = !running && d.result === "no final";   // it ended without a new final: say so, in red
-  return `<div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : none ? "background:var(--bad);color:#fff" : ""}">${esc(none ? d.state + ": no new final" : d.state)}</span>
+  const spent = d.active_s ?? (d.now - d.started);    // (the run's own time: not the waits for the usage limit)
+  const tag = d.state === "paused" ? "paused: usage limit" : d.state === "waiting" ? "waiting for the usage limit" : none ? d.state + ": no new final" : d.state;
+  const clock = d.state === "paused" ? `clock stopped at <b style="color:var(--fg)">${dur(p.left_s || 0)} left</b>, carries on at ${hhmm(p.until)}`
+    : d.state === "waiting" ? `starts at <b style="color:var(--fg)">${hhmm(d.waiting_until)}</b> with ${esc(d.budget)}`
+    : `${dur(spent)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>`;
+  const why = d.state === "paused" ? `<p class="hint" id="dir-paused" style="color:var(--acc)">Claude's usage limit stopped the director${p.text ? ` (&ldquo;${esc(p.text)}&rdquo;)` : ""}. The run waits with its clock stopped and carries on by itself at ${hhmm(p.until)}${p.resets_at ? "" : " (no reset time given: it tries again every 15 minutes)"}. Stop it to end the run now: you can continue it later.</p>`
+    : d.state === "waiting" ? `<p class="hint" id="dir-paused" style="color:var(--acc)">This run continues run ${esc((d.continues || {}).run)}: Claude's usage limit hasn't reset yet, so it starts at ${hhmm(d.waiting_until)}.</p>` : "";
+  return `<div class="row"><b>Run ${d.run}</b><span class="tag" style="margin:0;${running ? "background:var(--acc);color:#111" : none ? "background:var(--bad);color:#fff" : ""}">${esc(tag)}</span>
       <span class="mut">${extra}</span>${running ? `<a class="lv-go" href="#${S.name}/watch" onclick="wsel='live'" title="the scenes as they are now, in your browser with the song (no render): your notes from there reach the director within seconds">&#9654; play the scenes live</a>` : ""}<span class="sp" style="flex:1"></span>
-      <span class="mut">${running ? `${dur(d.now - d.started)} in, <b style="color:var(--fg)">${left > 0 ? dur(left) + " left" : "time is up: wrapping up"}</b>` : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; <span title="the director's session (its agents included) and the critic">${usd(runTotal(d))}</span>${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
-    ${running ? `<div class="prog"><div style="width:${Math.min(100, Math.max(0, (d.now - d.started) / d.budget_s * 100))}%"></div></div>` : `<p class="hint"${none ? ' style="color:var(--bad)"' : ""}>${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}`;
+      <span class="mut">${running ? clock : `wall ${dur(d.wall_s || d.elapsed_s || 0)}`} &middot; <span title="the director's session (its agents included) and the critic">${usd(runTotal(d))}</span>${d.version ? ` &middot; delivered <b>v${d.version}</b>` : ""}</span></div>
+    ${running && d.state !== "waiting" ? `<div class="prog"><div style="width:${Math.min(100, Math.max(0, spent / d.budget_s * 100))}%"></div></div>${why}` : running ? why : `<p class="hint"${none ? ' style="color:var(--bad)"' : ""}>${esc(d.stop_reason || "")}${d.version ? ` &middot; <a href="#${S.name}/watch">watch v${d.version} &rarr;</a>` : ""}</p>`}`;
 }
 const evLog = d => esc((d.events || []).map(e => String(e.text).split("\n").map((l, i) => `${i ? "".padStart(8) : dur(e.t).padStart(8)}  ${l}`).join("\n")).join("\n"));
 function runView(d) {                 // a run: its settings, the live log (the director's work, its agents' lines), its agents, the critic's notes, the costs
-  const pt = d.pitch, running = ["running", "finishing"].includes(d.state);
-  return `<div class="box">${runHead(d, `${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)}${d.ultracode ? " &middot; ultracode" : ""}${d.max_usd ? ` &middot; cap $${esc(d.max_usd)}${d.budget_hit ? " (reached)" : ""}` : ""} &middot; budget ${esc(d.budget)}${d.critic_model && d.critic_model !== "off" ? ` &middot; critic ${esc(d.critic_model)}` : ""}`)}
+  const pt = d.pitch, running = ACTIVE.includes(d.state), co = d.continues, ps = d.pauses || [];
+  return `<div class="box">${runHead(d, `${esc(d.kind)} &middot; ${esc(d.model_used || d.model)} &middot; effort ${esc(d.effort)}${d.ultracode ? " &middot; ultracode" : ""}${d.max_usd ? ` &middot; cap $${esc(d.max_usd)}${d.budget_hit ? " (reached)" : ""}` : ""} &middot; budget ${esc(d.budget)}${d.critic_model && d.critic_model !== "off" ? ` &middot; critic ${esc(d.critic_model)}` : ""}${d.auto_continue ? " &middot; continues after a usage limit" : ""}`)}
+    ${co ? `<p class="hint" id="dir-continues" style="margin:4px 0 0">Continues run ${esc(co.run)}${co.resumed ? " in its own conversation" : co.resumed === false ? " in a fresh session (its conversation couldn't be resumed: the brief says where the work is)" : ""} <span class="mut">(it had ended: ${esc(co.why || "")})</span></p>` : ""}
+    ${ps.length ? `<p class="hint" id="dir-pauses" style="margin:4px 0 0">Waited ${dur(ps.reduce((a, x) => a + (x.s || 0), 0))} for Claude's usage limit to reset, the clock stopped${ps.length > 1 ? ` (${ps.length} times)` : ""}.</p>` : ""}
     ${pt ? `<p class="hint" id="dir-pitch" style="margin:4px 0 0">${running ? "Starting" : "Started"} from pitch <a href="#${S.name}/pitch">${esc(pt.ref)}</a>${pt.title ? `: <b style="color:var(--fg)">${esc(pt.title)}</b>` : ""} <span class="mut">(${esc(pt.angle || "")}; ${pt.by === "auto" ? "the critic's pick" : "your pick"}). The pitch is its starting point, not its ceiling: the director has full reign and was told to go further.</span></p>` : ""}
     <pre class="log" id="dir-ev" style="max-height:420px">${evLog(d)}</pre>
     ${agentsBox(d)}
@@ -1057,7 +1093,7 @@ function runView(d) {                 // a run: its settings, the live log (the 
 const usd = x => { x = +(x || 0); return x > 0 && x < 0.005 ? "<$0.01" : "$" + x.toFixed(2); };
 const runTotal = d => d.total_usd ?? (+(d.cost_usd || 0) + +(d.critic_cost_usd || 0));
 function agentsBox(d) {               // the director's agents (its own choice): what each does, its model, running or done, how long
-  const ag = d.agents || [], running = ["running", "finishing"].includes(d.state);
+  const ag = d.agents || [], running = ACTIVE.includes(d.state);
   if (!ag.length) return `<p class="hint" id="dir-agents">Agents: ${running ? "none so far (whether to deploy any is the director's call)" : "none (the director made it all itself)"}</p>`;
   const busy = ag.filter(a => a.state === "running").length;
   return `<div class="crit" id="dir-agents"><b>Agents</b> <span class="mut">${ag.length} in this run${busy ? `, ${busy} at work` : ""} (the director's own choice: they work in its sandbox, and what they cost is part of its session's)</span>

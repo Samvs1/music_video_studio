@@ -23,6 +23,12 @@
  6d. the session plumbing (messages sent while a turn runs join it: one result, as on the real CLI; a background agent
     keeps the session working, then it starts a turn of its own; the costs as running totals; the cost cap) and the
     runner in-process (no reminder, nudge or closing while agents work; live notes; the cap; the run settings)
+ 6e3. Claude's usage limit, in-process: read from Claude Code's own messages (the reset in its many forms; not a
+    throttle, the director's words or the cost cap); a session with the stand-in counts each refused turn once, its
+    reset from the rate_limit_event, nothing spent; a --resume Claude Code doesn't have; the runner on a simulated
+    clock (auto-continue: it waits with the clock stopped and carries on, resumes a session that ended or starts a
+    fresh one told where the work is; without it, or a reset too far: the run ends with what was left; stopped while
+    it waits); continuable and wait_for_reset
  6g. the pitch round's proof window, in-process (the studio's pick; a section; a-b in seconds or m:ss; what the song
     can't have refused with why; the Pitch round page's preview; a dry-run round on the user's section and its brief)
  7. the autonomous director runner end to end with a stand-in for Claude Code (tests/fake_claude.py: no usage spent;
@@ -30,7 +36,9 @@
     double-counted), then a review round (a note -> --revise -> the next version, the note marked done); then a
     director that deploys an agent and uses the plan tools, with --ultracode and --max-usd (the runner waits for the
     agent, the agent in status.json and the live log, the costs per model, the critic once per cut, a live note), and
-    `direct --dry-run` (the defaults: effort max, the agent tools, no Workflow, no cap)
+    `direct --dry-run` (the defaults: effort max, the agent tools, no Workflow, no cap); then a run Claude's usage
+    limit stops (the stand-in refuses its brief, no auto-continue: it ends at once with what was left) and
+    `direct --continue` (its own conversation through --resume, the studio's "carry on" first, the budget it had left)
  7c. the pitch round with the stand-in (tests/fake_claude.py's pitch and verdict roles): `pitch --n 2` (the proof
     window, each pitch's brief and sandbox: the deny rules keep it out of the other's folder and the project's files;
     proof_av.mp4 with the song's audio at the window; the critic on each proof; the verdict; the costs from the
@@ -261,6 +269,7 @@ def main():
     live_check(m)
     session_check()
     runner_check()
+    limit_check()
     proof_window_check()
 
     if not a.no_director:
@@ -311,6 +320,7 @@ def main():
         say("PASS" if sum(f.startswith("music-video_v") for f in files) >= 3 else "FAIL", "earlier versions kept", ", ".join(files))
         agents_run_check(env)
         flags_check()
+        continue_run_check(env)
         pitch_check(env)
         pitch_step_check()
         pitch_trouble_check()
@@ -1052,6 +1062,10 @@ class FakeSession:
         self.name, self.lock, self.closed, self.busy, self.returncode = "director", threading.RLock(), False, False, None
         self.status = {"events": [], "turns": 0, "cost_usd": 0.0, "messages_sent": [], "pid": 0, "agents": [], "model_usage": {}}
         self.sent, self._over, self._alive, self.proc, self.working = [], False, True, None, False
+        self.inits = 1                           # (a session the runner starts itself: it has begun its first turn)
+
+    def start(self):
+        return self
 
     def send(self, text, why):
         if self.closed or not self._alive:
@@ -1187,6 +1201,275 @@ def runner_check():
         "the user's live notes at once (marked forwarded; old, done ones and a stopping run's not sent); the cost cap ends the "
         "run without more messages; report.md's run settings (costs per model, the agents, ultracode, the cap)",
         ("failed: " + "; ".join(bad) + f" {out}")[:2500] if bad else "")
+
+
+def limit_check():
+    """Claude's usage limit, in-process: reading it (mv/session.py reset_at and limit_of on the shapes Claude Code
+    uses; not a temporary throttle, not the director's own words, not the cost cap); a real Session with the stand-in
+    (one hit per refused turn, its reset from the rate_limit_event, nothing spent on it, "close to its limit" once; a
+    --resume Claude Code doesn't have ends before its first turn); the runner on a simulated clock: with
+    auto_continue it pauses (nothing sent, no reminder, no live note, the clock stopped), carries on at the reset with
+    the deadline moved by the wait, and a session that ended meanwhile is resumed (--resume) or, when that can't be,
+    started fresh with a brief that says where the work is; no reset time: it tries again later; a reset too far away
+    or no auto_continue: the run ends with what was left (cut_off); stopped while it waits: it ends;
+    continuable() and wait_for_reset() for `direct --continue`."""
+    print("== 6e3. Claude's usage limit (in-process)", flush=True)
+    import datetime as dt
+    import director
+    from mv.session import Session, reset_at, limit_of
+    bad, out = [], {}
+    now = time.time()
+    # reading it
+    r = {k: reset_at(k, now) for k in ("Claude AI usage limit reached|1762178400", "resets in 2h 15m", "resets 3pm",
+                                       "resets 18:05Z", "resets 3pm (Europe/Brussels)", "resets Mon 10am", "resets Nov 4, 10am",
+                                       "no time here", "resets Feb 30, 1am")}
+    loc = lambda t: dt.datetime.fromtimestamp(t)                     # noqa: E731
+    try:
+        from zoneinfo import ZoneInfo
+        bxl = dt.datetime.fromtimestamp(r["resets 3pm (Europe/Brussels)"], ZoneInfo("Europe/Brussels"))
+    except Exception:                                                # (no tz database: the machine's own time)
+        bxl = loc(r["resets 3pm (Europe/Brussels)"])
+    utc = dt.datetime.fromtimestamp(r["resets 18:05Z"], dt.timezone.utc)
+    ok_read = (r["Claude AI usage limit reached|1762178400"] == 1762178400 and r["resets in 2h 15m"] == now + 8100
+               and (loc(r["resets 3pm"]).hour, loc(r["resets 3pm"]).minute) == (15, 0) and -60 < r["resets 3pm"] - now <= 86400
+               and (utc.hour, utc.minute) == (18, 5) and (bxl.hour, bxl.minute) == (15, 0)
+               and loc(r["resets Mon 10am"]).weekday() == 0 and loc(r["resets Mon 10am"]).hour == 10
+               and -60 < r["resets Mon 10am"] - now <= 7 * 86400
+               and (loc(r["resets Nov 4, 10am"]).month, loc(r["resets Nov 4, 10am"]).day) == (11, 4)
+               and r["no time here"] is None and r["resets Feb 30, 1am"] is None)
+    syn = lambda text, **kw: dict({"type": "assistant", "parent_tool_use_id": None,           # noqa: E731
+                                   "message": {"model": "<synthetic>", "content": [{"type": "text", "text": text}]}}, **kw)
+    hit = limit_of(syn("You've hit your session limit · resets 3pm", error="rate_limit"), None, now)
+    typed = limit_of(syn("Usage limit reached", api_error="usage_limit_reached",
+                         api_error_params={"rate_limit_info": {"resetsAt": int(now) + 900, "rateLimitType": "seven_day"}}), None, now)
+    by_event = limit_of(syn("You've hit your session limit · resets 3pm", error="rate_limit"),
+                        {"resets_at": now + 1234, "kind": "five_hour", "t": now - 5}, now)
+    old = limit_of({"type": "result", "is_error": True, "result": "Claude AI usage limit reached|1762178400"}, None, now)
+    nots = [limit_of(syn("API Error: Server is temporarily limiting requests (not your usage limit)", error="rate_limit"), None, now),
+            limit_of({"type": "assistant", "message": {"model": "opus", "content": [{"type": "text", "text": "I'll keep it under the usage limit"}]}}, None, now),
+            limit_of({"type": "result", "is_error": False, "result": "You've hit your session limit"}, None, now),
+            limit_of({"type": "result", "is_error": True, "subtype": "error_max_budget_usd", "result": "Budget limit reached"}, None, now),
+            limit_of(syn("Credit balance is too low", error="billing_error"), None, now),
+            limit_of(syn("You've hit your limit", api_error="model_requires_usage_credits"), None, now)]
+    ok_of = (hit and hit["resets_at"] == r["resets 3pm"] and typed and typed["resets_at"] == int(now) + 900
+             and typed["kind"] == "seven_day" and by_event and by_event["resets_at"] == now + 1234 and by_event["kind"] == "five_hour"
+             and old and old["resets_at"] == 1762178400 and nots == [None] * len(nots))
+    out["read"] = (r, hit, typed, by_event, old, nots)
+    if not ok_read:
+        bad.append("reset_at")
+    if not ok_of:
+        bad.append("limit_of")
+    # a real Session with the stand-in: the 2nd message is refused, it resets 2 s later
+    cmd = [PY, os.path.join(TESTS, "fake_claude.py"), "-p", "--input-format", "stream-json", "--output-format", "stream-json"]
+    d = os.path.join(PDIR, "cache", "_session_limit")
+    shutil.rmtree(d, ignore_errors=True)
+    s = Session(cmd, PDIR, d, name="echo", env=dict(os.environ, FAKE_ECHO_S="0.2", FAKE_LIMIT="2:2", FAKE_LIMIT_WARN="1",
+                                                     PYTHONIOENCODING="utf-8")).start()
+
+    def wait(most=20):
+        t0 = time.time()
+        while time.time() - t0 < most and not s.turn_over():
+            time.sleep(0.1)
+        s.ack()
+    s.send("<!-- mv:echo --> one", "first")
+    wait()
+    cost1 = s.status["cost_usd"]
+    t_hit = time.time()
+    s.send("two", "second")
+    wait()
+    hits2, lim, cost2 = s.status["limit_hits"], dict(s.status.get("limit") or {}), s.status["cost_usd"]
+    time.sleep(2.3)
+    s.send("three", "third")
+    wait()
+    s.stop("the test is done", wait=10)
+    s.finish()
+    evs = [e["text"] for e in s.status["events"]]
+    ok_sess = (hits2 == 1 and s.status["limit_hits"] == 1 and lim.get("kind") == "five_hour"
+               and 0 < (lim.get("resets_at") or 0) - t_hit <= 3 and cost2 == cost1 and s.status["cost_usd"] > cost2
+               and sum("⛔ Claude's usage limit stopped the echo" in x for x in evs) == 1
+               and sum("close to its limit (90% of the 5-hour limit" in x for x in evs) == 1 and any("echo: three" in x for x in evs))
+    d2 = os.path.join(PDIR, "cache", "_session_resume_bad")
+    shutil.rmtree(d2, ignore_errors=True)
+    s = Session(cmd + ["--resume", "nope"], PDIR, d2, name="director", env=dict(os.environ, FAKE_RESUME_BAD="1", PYTHONIOENCODING="utf-8")).start()
+    s.send("carry on", "continuing")
+    t0 = time.time()
+    while time.time() - t0 < 10 and s.alive():
+        time.sleep(0.1)
+    s.finish()
+    err = open(os.path.join(d2, "stderr.log"), encoding="utf-8").read()
+    ok_bad = not s.alive() and s.inits == 0 and "No conversation found with session ID: nope" in err
+    out["session"] = (hits2, lim, cost1, cost2, s.status.get("cost_usd"), [x for x in evs if "limit" in x])
+    if not ok_sess:
+        bad.append("a session with the stand-in")
+    if not ok_bad:
+        bad.append("a --resume that Claude Code doesn't have")
+    # the runner on a simulated clock
+    root = os.path.join(PDIR, "cache", "_runner_limit")
+
+    def make(budget=3600, auto=True, factory=None, fallback=None):
+        shutil.rmtree(root, ignore_errors=True)
+        for sub in ("work/director/run-1", "final", "review"):
+            os.makedirs(os.path.join(root, *sub.split("/")), exist_ok=True)
+        s = FakeSession()
+        t0 = time.time()
+        status = {"run": 1, "state": "running", "kind": "first", "model": "fake", "effort": "max", "budget_s": budget,
+                  "started": t0, "deadline": t0 + budget, "critiques": [], "critic_cost_usd": 0.0, "critic_model": "off",
+                  "events": s.status["events"], "messages_sent": s.status["messages_sent"], "agents": s.status["agents"],
+                  "limit_hits": 0, "session_id": "sid-1"}
+        s.status = status
+        R = director.Runner(root, 1, os.path.join(root, "work", "director", "run-1"), status, s, budget, t0, log=lambda x: None,
+                            auto_continue=auto, new_session=factory, fallback=fallback)
+        return R, s, t0
+
+    def limit(R, t, resets_at):
+        R.status["limit_hits"] += 1
+        R.status["limit"] = {"text": "You've hit your session limit · resets 3pm", "resets_at": resets_at, "kind": "five_hour", "at": t}
+    # 1. auto_continue: it waits (nothing sent, no reminder, no live note), then carries on with the clock moved
+    R, s, t0 = make()
+    limit(R, t0 + 100, t0 + 600)
+    s.over()                                      # (the turn the limit ended)
+    a1 = R.step(t0 + 100)
+    st1 = (R.status["state"], dict(R.status.get("paused") or {}))
+    np = os.path.join(root, "review", "notes.json")
+    json.dump([{"id": int((t0 + 1) * 1000), "version": "live", "t": 3.0, "text": "a note while it waits", "done": False}],
+              open(np, "w", encoding="utf-8"))
+    R.live_step(t0 + 300)
+    a2 = R.step(t0 + 400)
+    held = list(s.whys())
+    t_on = t0 + 600 + director.RESET_MARGIN_S + 1
+    a3 = R.step(t_on)
+    moved = R.deadline - (t0 + 3600)
+    ok1 = (a1 and a2 and a3 and st1[0] == "paused" and st1[1].get("until") == t0 + 600 + director.RESET_MARGIN_S
+           and st1[1].get("left_s") == 3500 and held == [] and s.whys() == ["the usage limit reset: carry on"]
+           and "you still have 58 min" in s.sent[-1][1] and "deadline is now" in s.sent[-1][1]
+           and abs(moved - (t_on - (t0 + 100))) < 1 and R.status["state"] == "running" and "paused" not in R.status
+           and len(R.status["pauses"]) == 1 and R.status["pauses"][0]["end"] == "carried on"
+           and abs(R.status["paused_s"] - (t_on - t0 - 100)) <= 1 and abs(R.active(t_on) - 100) < 1)
+    R.live_step(t_on + 10)                        # (the note left while it waited goes in now)
+    ok1 = ok1 and s.whys()[-1] == "the user's live note (1)"
+    out["auto"] = (st1, held, s.whys(), moved, R.status.get("pauses"))
+    if not ok1:
+        bad.append("auto_continue: wait, then carry on")
+    # 2. no reset time given: it tries again after RETRY_S; still refused: it waits again
+    R, s, t0 = make()
+    limit(R, t0 + 50, None)
+    R.step(t0 + 50)
+    p2 = dict(R.status.get("paused") or {})
+    R.step(t0 + 50 + director.RETRY_S + 1)
+    sent2 = list(s.whys())
+    limit(R, t0 + 60 + director.RETRY_S, None)
+    R.step(t0 + 60 + director.RETRY_S)
+    ok2 = (p2.get("until") == t0 + 50 + director.RETRY_S and sent2 == ["the usage limit reset: carry on"]
+           and R.status["state"] == "paused" and len(R.status["pauses"]) == 1)
+    out["retry"] = (p2, sent2, R.status["state"])
+    if not ok2:
+        bad.append("no reset time: try again later")
+    # 3. without auto_continue: the run ends there, with what was left
+    R, s, t0 = make(auto=False)
+    limit(R, t0 + 100, t0 + 600)
+    s.over()
+    R.step(t0 + 100)
+    R.step(t0 + 101)
+    cut3 = dict(R.cut or {})
+    ok3 = ("Claude's usage limit was reached" in (R.stop_reason or "") and cut3.get("why") == "limit" and cut3.get("left_s") == 3500
+           and cut3.get("resets_at") == t0 + 600 and s.whys() == [] and s.closed and R.status["state"] == "finishing")
+    out["no auto"] = (R.stop_reason, cut3, s.whys(), s.closed)
+    if not ok3:
+        bad.append("without auto_continue: the run ends")
+    # 4. auto_continue, but the reset is days away: it ends too
+    R, s, t0 = make()
+    limit(R, t0 + 100, t0 + 3 * 86400)
+    R.step(t0 + 100)
+    ok4 = R.pause is None and "too far to wait" in (R.stop_reason or "") and (R.cut or {}).get("why") == "limit"
+    # 5. stopped by the user while it waits: it ends
+    R, s, t0 = make()
+    limit(R, t0 + 100, t0 + 600)
+    R.step(t0 + 100)
+    open(os.path.join(root, "work", "director", "STOP"), "w").write("x")
+    a5 = R.step(t0 + 200)
+    ok5 = a5 is False and R.stop_reason == "stopped by the user" and s.whys() == [] and (R.cut or {}).get("left_s") == 3500
+    out["far, stop"] = (R.stop_reason, ok4, a5)
+    if not ok4:
+        bad.append("a reset too far away")
+    if not ok5:
+        bad.append("stopped while it waits")
+    # 6. its session ended meanwhile: resumed (--resume sid-1); one Claude Code can't resume: a fresh session
+    made = []
+
+    def factory(good):
+        def f(rid=None):
+            x = FakeSession()
+            x.status = R6.status
+            x.inits = 1 if (good or rid is None) else 0
+            x._alive = good or rid is None
+            made.append((rid, x))
+            return x
+        return f
+    for good in (True, False):
+        made.clear()
+        R6, s, t0 = make(factory=factory(good), fallback=lambda what, left, dl: f"FRESH BRIEF: This carries on {what}.")
+        limit(R6, t0 + 100, t0 + 600)
+        R6.step(t0 + 100)
+        s._alive = False                          # (its session ended while it waited)
+        R6.step(t0 + 700)
+        new = made[-1][1] if made else None
+        if good:
+            ok6 = ([m[0] for m in made] == ["sid-1"] and R6.s is new and new.whys() == ["the usage limit reset: carry on"]
+                   and "Claude's usage limit stopped you" in new.sent[0][1])
+        else:
+            ok6 = ([m[0] for m in made] == ["sid-1", None] and R6.s is new
+                   and new.whys() == ["the brief (a fresh session: the conversation couldn't be resumed)"]
+                   and "FRESH BRIEF: This carries on this run (run 1)" in new.sent[0][1]
+                   and "FRESH BRIEF" in open(os.path.join(root, "work", "director", "run-1", "brief.md"), encoding="utf-8").read())
+        out[f"relaunch {'good' if good else 'bad'}"] = ([m[0] for m in made], new.whys() if new else None)
+        if not ok6:
+            bad.append("its session resumed" if good else "a fresh session when it can't be resumed")
+    # 7. continuable() and wait_for_reset(): the last run that started, what it had left, a reset still to come
+    pd = os.path.join(PDIR, "cache", "_continue")
+    shutil.rmtree(pd, ignore_errors=True)
+    for k in (1, 2, 3):
+        os.makedirs(os.path.join(pd, "work", "director", f"run-{k}"))
+    t = time.time()
+    json.dump({"run": 1, "state": "done", "kind": "first", "budget_s": 5400, "started": t - 4000, "wall_s": 3000, "left_s": 2400,
+               "stop_reason": "Claude's usage limit was reached", "session_id": "sid-a", "cost_usd": 3.0,
+               "cut_off": {"why": "limit", "at": t - 1000, "left_s": 2400, "resets_at": t + 900}, "result": "no final"},
+              open(os.path.join(pd, "work", "director", "run-1", "status.json"), "w"))
+    json.dump({"run": 2, "state": "stopped", "result": "not started", "kind": "continue"},
+              open(os.path.join(pd, "work", "director", "run-2", "status.json"), "w"))
+    json.dump({"run": 3, "state": "dry-run"}, open(os.path.join(pd, "work", "director", "run-3", "status.json"), "w"))
+    json.dump({"run": 2, "state": "stopped", "dir": "work/director/run-2", "updated": t},
+              open(os.path.join(pd, "work", "director", "current.json"), "w"))
+    c = director.continuable(pd) or {}
+    ok7 = (c.get("run") == 1 and c.get("left_s") == 2400 and c.get("budget_s") == 2400 and c.get("resets_at") == t + 900
+           and c.get("limit") and c.get("cut") and c.get("resumable") and c.get("session_id") == "sid-a" and c.get("conv_cost_usd") == 3.0)
+    # a run whose runner was cut off while it waited: what its clock said last, its reset
+    json.dump({"run": 1, "state": "paused", "kind": "first", "budget_s": 3600, "started": t - 2000, "elapsed_s": 2000, "active_s": 1500,
+               "updated": t - 600, "paused": {"since": t - 1100, "resets_at": t + 300, "until": t + 360, "left_s": 2100}},
+              open(os.path.join(pd, "work", "director", "run-1", "status.json"), "w"))
+    c2 = director.continuable(pd) or {}
+    ok7 = ok7 and c2.get("left_s") == 2100 and c2.get("resets_at") == t + 300 and c2.get("limit") and c2.get("cut") \
+        and "runner stopped" in (c2.get("why") or "") and not c2.get("resumable")
+    st = {"run": 4, "budget": "40 min", "state": "waiting", "events": []}
+    rd = os.path.join(pd, "work", "director", "run-4")
+    os.makedirs(rd)
+    t0 = time.time()
+    w1 = director.wait_for_reset(pd, rd, st, t0 + 1.2, log=lambda x: None)
+    waited = time.time() - t0
+    cur = json.load(open(os.path.join(pd, "work", "director", "current.json"), encoding="utf-8"))
+    open(os.path.join(pd, "work", "director", "STOP"), "w").write("x")
+    t0 = time.time()
+    w2 = director.wait_for_reset(pd, rd, st, t0 + 60, log=lambda x: None)
+    ok7 = ok7 and w1 is True and 1.1 <= waited < 4 and cur.get("state") == "waiting" and cur.get("dir") == "work/director/run-4" \
+        and w2 is False and time.time() - t0 < 5 and "waiting for Claude's usage limit to reset" in st["events"][0]["text"]
+    out["continue"] = (c, c2, w1, round(waited, 1), cur.get("state"), w2)
+    shutil.rmtree(pd, ignore_errors=True)
+    shutil.rmtree(root, ignore_errors=True)
+    if not ok7:
+        bad.append("continuable / wait_for_reset")
+    say("FAIL" if bad else "PASS", "Claude's usage limit: read from Claude Code's own messages (its reset too; not a throttle, not the "
+        "director's words); a session counts each refused turn once; the runner waits with the clock stopped and carries on "
+        "(the same session, a resumed one, or a fresh one told where the work is), or ends the run with what was left; "
+        "continuable / wait_for_reset", ("failed: " + "; ".join(bad) + f" {out}")[:3000] if bad else "")
 
 
 def blender_shared_check(no_blender):
@@ -1368,6 +1651,56 @@ def agents_run_check(env):
         "a live note left while the agent works reaches the director within seconds (the song context, the plan's segment), "
         "is marked forwarded and done", f"forwarded_run {ln.get('forwarded_run')}, done {ln.get('done')}, fix {ln.get('fix')!r}; "
         f"heard while the agent worked: {open(heard).read().strip() if os.path.exists(heard) else '-'}")
+
+
+def continue_run_check(env):
+    """Claude's usage limit stops a run and it doesn't wait (the stand-in refuses its brief: FAKE_LIMIT=1:-1;
+    --no-auto-continue): the run ends at once, no reminder sent into a session that can't answer, cut_off says the
+    limit and what was left, report.md says so; then `direct --continue`: the same conversation (--resume), its first
+    message the studio's "carry on" (how run N ended, the new clock), the budget what was left (at least 15 min), kind
+    continue, delivered, its costs its own."""
+    print("== 7f. a run Claude's usage limit stops, then Continue the last run (stand-in)", flush=True)
+    dd = os.path.join(PDIR, "work", "director")
+
+    def last():
+        cur = json.load(open(os.path.join(dd, "current.json"), encoding="utf-8"))
+        rd = os.path.join(PDIR, cur["dir"])
+        return rd, json.load(open(os.path.join(rd, "status.json"), encoding="utf-8"))
+    t0 = time.time()
+    r = studio("direct", P, "--budget", "6m", "--effort", "low", "--model", "fake", "--critic-model", "off",
+               "--no-auto-continue", check=False, env=dict(env, FAKE_LIMIT="1:-1"), timeout=900)
+    wall = time.time() - t0
+    rd, st = last()
+    rep = open(os.path.join(PDIR, "report.md"), encoding="utf-8").read() if os.path.exists(os.path.join(PDIR, "report.md")) else ""
+    cut = st.get("cut_off") or {}
+    ok1 = (r.returncode == 0 and cut.get("why") == "limit" and st.get("result") == "no final" and 300 <= (st.get("left_s") or 0) <= 360
+           and "Claude's usage limit was reached" in (st.get("stop_reason") or "") and st.get("limit_hits") == 1
+           and [m["why"] for m in st.get("messages_sent") or []] == ["the brief"] and "of the budget left" in rep
+           and "Continue by itself when the usage limit resets: off (the limit stopped this run)" in rep and wall < 300)
+    say("PASS" if ok1 else "FAIL", "Claude's usage limit stops a run that doesn't wait for it: it ends at once (no reminder into a "
+        "session that can't answer), with what was left (cut_off), and report.md says so",
+        f"wall {wall:.0f} s; {st.get('stop_reason')}; cut_off {cut}; left {st.get('left_s')}; messages "
+        f"{[m['why'] for m in st.get('messages_sent') or []]}" + ("" if ok1 else f"; {(r.stdout + r.stderr)[-800:]}"))
+    n1 = st.get("run")
+    r = studio("direct", P, "--continue", "--effort", "low", "--model", "fake", "--critic-model", "off", check=False, env=env, timeout=1800)
+    rd, st = last()
+    cmd = json.load(open(os.path.join(rd, "command.json"), encoding="utf-8"))
+    msgs = open(os.path.join(rd, "messages.md"), encoding="utf-8").read() if os.path.exists(os.path.join(rd, "messages.md")) else ""
+    res = [json.loads(x) for x in open(os.path.join(rd, "events.jsonl"), encoding="utf-8") if x.strip() and '"result"' in x]
+    res = [x for x in res if x.get("type") == "result"]
+    co = st.get("continues") or {}
+    c0 = cmd.get("cmd") or []
+    rep = open(os.path.join(PDIR, "report.md"), encoding="utf-8").read() if os.path.exists(os.path.join(PDIR, "report.md")) else ""
+    ok2 = (r.returncode == 0 and st.get("kind") == "continue" and co.get("run") == n1 and co.get("resumed") is True
+           and "--resume" in c0 and c0[c0.index("--resume") + 1] == "fake" and len(cmd.get("launches") or []) == 1
+           and st.get("budget_s") == 900 and st.get("version") and f"(continuing run {n1})" in msgs
+           and f"Your run {n1} ended at" in msgs and "Claude's usage limit was reached" in msgs and "the deadline is **" in msgs
+           and res and st.get("cost_usd") == res[-1]["total_cost_usd"] and f"- Continues run {n1} (its conversation, resumed" in rep)
+    say("PASS" if ok2 else "FAIL", "Continue the last run (direct --continue): its own conversation (--resume), the studio's "
+        "'carry on' first (how it ended, the new clock), the budget it had left (at least 15 min), delivered; its costs its own",
+        f"run {st.get('run')} ({st.get('kind')}): continues {co}; budget {st.get('budget_s')} s; version v{st.get('version')}; "
+        f"resume {c0[c0.index('--resume') + 1] if '--resume' in c0 else None}; cost {st.get('cost_usd')}"
+        + ("" if ok2 else f"; {(r.stdout + r.stderr)[-800:]}"))
 
 
 def flags_check():

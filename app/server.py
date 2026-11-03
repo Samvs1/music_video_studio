@@ -8,8 +8,10 @@ The song (the song viewer) · Story (draft with Claude, edit) · Pitch round (op
 different angles, each proving its idea on the part of the song you choose (the studio's pick, a section, or one you
 drag on the song), the critic compares, you pick the one the director builds; each pitch a card with its proof, the
 song, "▶ live" and the critic's notes, the verdict, "Build this one") · Direct (the autonomous run: one director with full
-reign, agents its choice, ultracode and a cost cap optional; live progress: the live log, the critic's notes; or the
-interactive command; "▶ play the scenes live" during a run) · Watch (each version above the song lanes, notes with N, the report,
+reign, agents its choice, ultracode and a cost cap optional; "continue by itself when Claude's usage limit resets"
+(the run waits, its clock stopped); live progress: the live log, the critic's notes; "Continue the last run" once a
+run ended early, in its own conversation; or the interactive command; "▶ play the scenes live" during a run) · Watch
+(each version above the song lanes, notes with N, the report,
 the checks and the critic's notes, "Ask the critic"; and "▶ live": the project's scenes played in the browser with the
 song, no render, from each project's own live server, with notes that reach a running director).
 
@@ -18,7 +20,9 @@ API (JSON):
   GET  /api/p/<p>/director               GET  /api/doctor               GET  /api/formats
                                          (director: the last run's status: its live log, the clock, the agents
                                           [{description, model, state, started, ended, tools, last}], the costs per
-                                          model [{model, name, cost_usd, who}], total_usd with the critic, critiques)
+                                          model [{model, name, cost_usd, who}], total_usd with the critic, critiques;
+                                          paused / waiting_until: Claude's usage limit; continuable: the last run, when
+                                          it can be carried on: {run, why, left_s, budget_s, resets_at, limit, cut, ...})
   GET  /api/p/<p>/live                  (the live view: the project's live server (base), the delivery size, the song,
                                           the timelines (work/live.json, work/plan.json, the renders, the pitches' draft
                                           plans), the scenes, the live notes; mv/live.py; starts the live server)
@@ -30,7 +34,10 @@ API (JSON):
                                                                            /p/<p>/cache/lyrics/aligned.json)
   POST /api/p/<p>/brief {...}            POST /api/p/<p>/ingest         POST /api/p/<p>/song
   POST /api/p/<p>/story-draft            POST /api/p/<p>/story {text}   POST /api/p/<p>/direct {budget, model, effort, seed_notes,
-                                                                          revise, critic_model, ultracode, max_usd, nudge}
+                                                                          revise, critic_model, ultracode, max_usd, nudge,
+                                                                          auto_continue, continue}
+                                        (auto_continue: when Claude's usage limit stops the director, the run waits for
+                                         the reset and carries on; continue: Continue the last run, `direct --continue`)
   POST /api/p/<p>/critique {version | video, model}                       (the critic looks at a version or a video: job "critique";
                                                                            a version's notes land in final/critic_vN.md)
   POST /api/p/<p>/pitch {n, budget, proof, model, effort, critic_model, seed_notes, max_usd, auto, direct_budget}
@@ -223,12 +230,17 @@ def director_state(name, brief=True):
                                                "started", "deadline", "elapsed_s", "wall_s", "cost_usd", "turns", "version",
                                                "stop_reason", "result", "final_exists", "messages_sent", "claude_version",
                                                "critic_model", "critic_cost_usd", "version_critique", "ultracode", "max_usd",
-                                               "budget_hit", "agents", "model_usage", "background", "working", "pitch")}
+                                               "budget_hit", "agents", "model_usage", "background", "working", "pitch",
+                                               "auto_continue", "paused", "pauses", "paused_s", "active_s", "left_s", "cut_off",
+                                               "continues", "waiting_until", "resets_at")}
     out["critiques"] = [dict(c, url=f"/p/{name}/{c['file']}") for c in st.get("critiques") or [] if c.get("file")]
     import director                          # the costs per model, labelled as in report.md; the total with the critic
     out["costs"], out["total_usd"] = director.cost_rows(out), director.total_cost(out)
     out["events"] = st.get("events", [])[-200:]
     out["now"] = time.time()
+    c = director.continuable(d)                # Continue the last run (once it's over): what it had left, a reset to come
+    out["continuable"] = {k: c.get(k) for k in ("run", "kind", "why", "ended", "left_s", "budget_s", "resets_at", "limit", "cut",
+                                                "resumable", "version")} if c else None
     if brief and os.path.exists(os.path.join(d, cur["dir"], "brief.md")):
         out["brief"] = f"/p/{name}/{cur['dir']}/brief.md"
     if os.path.exists(os.path.join(d, cur["dir"], "messages.md")):
@@ -373,7 +385,7 @@ def stop_job(name):
 
 # ------------------------------------------------------------------ writes
 BRIEF_KEYS = {"title", "about", "mood", "ideas", "avoid", "lyrics"}
-DIRECTOR_KEYS = ("model", "effort", "budget", "critic_model", "critic_effort", "ultracode", "max_usd")
+DIRECTOR_KEYS = ("model", "effort", "budget", "critic_model", "critic_effort", "ultracode", "max_usd", "auto_continue")
 PITCH_KEYS = ("n", "budget", "model", "effort", "critic_model", "max_usd", "auto", "direct_budget", "proof")
 OLD_DIRECTOR_KEYS = ("mode", "planner_effort", "builders", "builder_model", "builder_effort")     # the removed pipeline's
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -401,9 +413,13 @@ def on(x):
 
 def direct_args(name, body):
     """The Direct page's form -> `studio.py direct`: one director (effort default max), the critic, ultracode (the
-    Workflow tool: more tokens), an optional cost cap in dollars. Anything out of range is left to the defaults."""
-    args = ["direct", name, "--budget", budget_of(body.get("budget"), "90m"),
-            "--effort", body.get("effort") if body.get("effort") in EFFORTS else "max"]
+    Workflow tool: more tokens), an optional cost cap in dollars; auto_continue (wait for Claude's usage limit to reset
+    and carry on, else the run ends there); continue (Continue the last run: without a budget, what it had left).
+    Anything out of range is left to the defaults."""
+    cont = on(body.get("continue"))
+    args = ["direct", name] + ([] if cont and not str(body.get("budget") or "").strip() else
+                               ["--budget", budget_of(body.get("budget"), "90m")])
+    args += ["--effort", body.get("effort") if body.get("effort") in EFFORTS else "max"]
     for key, flag in (("model", "--model"), ("critic_model", "--critic-model")):
         if MODEL_RE.fullmatch(str(body.get(key) or "")):
             args += [flag, str(body[key])]
@@ -413,8 +429,12 @@ def direct_args(name, body):
         args += ["--max-usd", f"{cap_of(body['max_usd']):g}"]
     if str(body.get("seed_notes") or "").strip():
         args += ["--seed-notes", str(body["seed_notes"])[:4000]]
-    if body.get("revise"):
+    if body.get("revise") and not cont:
         args.append("--revise")
+    if cont:
+        args.append("--continue")
+    if "auto_continue" in body:                     # (else the saved choice: project.json director.auto_continue)
+        args.append("--auto-continue" if on(body.get("auto_continue")) else "--no-auto-continue")
     if body.get("nudge") is False:                  # not on the page (tests, scripts): no early-finish nudge
         args.append("--no-nudge")
     return args
@@ -424,7 +444,7 @@ def saved_direct(pj):
     """The Direct form's saved settings (project.json "director") as the form would send them; its effort counts only
     when this form saved it (it always saves ultracode: the old forms saved "high" each time)."""
     d = pj.get("director") or {}
-    body = {k: d.get(k) for k in ("budget", "model", "critic_model", "ultracode", "max_usd")}
+    body = {k: d.get(k) for k in ("budget", "model", "critic_model", "ultracode", "max_usd", "auto_continue")}
     body["effort"] = d.get("effort") if "ultracode" in d and d.get("effort") in EFFORTS else "max"
     body["budget"] = body["budget"] or "90"
     return body

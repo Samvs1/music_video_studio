@@ -28,7 +28,10 @@ where it wants to; nothing forces agents (`--ultracode` and `--max-usd` optional
 previews and final and reports back in text, ambition first; the user's live notes reach it mid-run; directors mark
 notes done with `studio.py note-done <p> <id> "<fix>"`. Details: the skill's "How a run works". A pitch round
 (`studio.py pitch <p>`) is the user's optional step before a run; `direct --pitch round-K/pN`, or interactively
-`studio.py pitch-pick <p> round-K/pN`, starts from the pick. A director never starts a pitch round itself.
+`studio.py pitch-pick <p> round-K/pN`, starts from the pick. A director never starts a pitch round itself. When the
+user's Claude usage limit stops a run, `--auto-continue` (the Direct page's checkbox) waits for the reset with the
+clock stopped; otherwise `direct --continue` (Continue the last run) carries it on later in the same conversation
+(`claude --resume`). Details: `tools/INTERNALS.md`.
 
 ## Running things
 Always through the studio's venv: `.venv\Scripts\python.exe tools\studio.py ...` (Windows; prefix

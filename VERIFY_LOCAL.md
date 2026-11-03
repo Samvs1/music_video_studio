@@ -122,6 +122,23 @@ If it fails: the run's files are in `projects\<p>\work\director\run-N\` (`brief.
 `stderr.log`). `stopped` early with an error in `stderr.log` → send it to Claude. No v1 → the report says what was
 done; `.venv\Scripts\python.exe tools\studio.py check <p>` on whatever is in `final\`.
 
+## 8a. Continue the last run (uses your Claude plan: a few minutes of a director)
+- Start a run (budget 30), and after 3-4 minutes press **Stop it**. When it has wrapped up, the Direct page shows
+  *Run N was cut short · stopped by the user · ... of its budget left*, a **Minutes** box (what it had left, at least
+  15) and **Continue the last run**. Press it. The new run's view says *Continues run N in its own conversation*, and
+  its first live-log lines are `studio → director (continuing run N)` and then the director saying where it picks up
+  (it should know what it was doing without re-reading everything). `command.json` in its `run-N\` folder ends with
+  `"--resume", "<a session id>"`. Stop it again if you don't need the video.
+- If instead the view says *in a fresh session (its conversation couldn't be resumed ...)*, `stderr.log` of that run
+  says why: send it to Claude.
+- **Continue by itself when Claude's usage limit resets** can't be tried on demand (it needs a real usage limit). When
+  one happens with it ticked, the run view shows *paused: usage limit* and the time it carries on; afterwards the
+  report's Run settings say `- Waited N min for Claude's usage limit to reset, the clock stopped`. Unticked, the run
+  ends with *Claude's usage limit was reached (it resets HH:MM)* and **Continue the last run** says it starts at the
+  reset. If a real limit isn't recognised (the run keeps getting `studio → director (no final yet)` reminders that
+  fail at once), send Claude the run's `events.jsonl`: the studio reads the limit from Claude Code's own messages,
+  which can change between versions.
+
 ## 8b. The critic (cents to a dollar)
 ```
 .venv\Scripts\python.exe tools\studio.py critique <p> v1 --model haiku

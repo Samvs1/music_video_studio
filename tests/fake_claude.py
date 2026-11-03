@@ -46,6 +46,15 @@ It speaks the same headless protocol the studio uses:
         - <!-- mv:echo -->: works FAKE_ECHO_S seconds (default 2) on each turn, then answers every message of the turn
           (the session plumbing's test). <!-- mv:echo-agent --> also starts a background agent in its first turn
           (FAKE_AGENT_S seconds, default 4) and says "echo: the agent finished" in the turn of its own after it.
+FAKE_LIMIT=K:S (or a file of that name in the project) plays Claude's usage limit: the Kth message the session gets (1 = the first) is refused the way Claude
+        Code 2.1.317 says it (a rate_limit_event "rejected" with resetsAt, an assistant message of its own, model
+        "<synthetic>", error "rate_limit", "You've hit your session limit · resets 3pm", and a result with is_error and
+        the same text: nothing done, nothing spent), and so is every message until S seconds later (S < 0: only that
+        one). A director whose first message was refused starts its work with the next one that isn't.
+FAKE_LIMIT_WARN=1: a rate_limit_event "allowed_warning" (90% of the 5-hour limit) at the start of every turn.
+--resume <id> (a run carrying on a conversation): the session is that conversation's director (its first message
+        is the studio's "carry on", and it does the director's work); FAKE_RESUME_BAD=1 says "No conversation found with
+        session ID: <id>" on stderr and exits 1 before anything, as the real CLI does for a conversation it doesn't have.
 FAKE_CLAUDE_SLOW=<s> (or a file of that name in the project) sleeps that long first (to test stopping a run).
 FAKE_CLAUDE_NO_BUDGET=1 refuses --max-budget-usd the way an older Claude Code would (unknown option).
 FAKE_CLAUDE_CRITIC_ERROR=1 answers a critic prompt the way Claude Code reports a login or usage-limit error: exit 1,
@@ -101,10 +110,38 @@ class Costs:
                         "costUSD": c} for m, c in self.by.items()}
 
 
-def result(turns, t0, costs, capped=False):
+def result(turns, t0, costs, capped=False, error=None):
     emit({"type": "result", "subtype": "error_max_budget_usd" if capped else "success", "num_turns": turns,
-          "total_cost_usd": costs.total(), "modelUsage": costs.usage(), "is_error": capped,
-          "duration_ms": int((time.time() - t0) * 1000), "usage": {"input_tokens": 0, "output_tokens": 0}})
+          "total_cost_usd": costs.total(), "modelUsage": costs.usage(), "is_error": capped or bool(error),
+          "duration_ms": int((time.time() - t0) * 1000), "usage": {"input_tokens": 0, "output_tokens": 0}}
+         | ({"result": error} if error else {}))
+
+
+class Limit:
+    """Claude's usage limit, played (FAKE_LIMIT=K:S): refuse() answers a message the way Claude Code does when the
+    limit holds (and says so: the text), or returns None."""
+
+    def __init__(self, spec):
+        k, _, sec = (spec or "").partition(":")
+        self.k = int(k) if k.strip() else None
+        self.sec = float(sec or 0)
+        self.n, self.until = 0, 0.0
+
+    def refuse(self, session_id):
+        self.n += 1
+        now = time.time()
+        if self.k is not None and self.n == self.k:
+            self.until = now + self.sec
+        elif now >= self.until:
+            return None
+        resets = int(self.until)
+        h = time.localtime(resets).tm_hour
+        text = f"You've hit your session limit · resets {(h % 12) or 12}{'am' if h < 12 else 'pm'}"
+        emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": resets, "rateLimitType": "five_hour",
+              "isUsingOverage": False}, "uuid": f"u{time.time_ns()}", "session_id": session_id})
+        emit({"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>", "content": [{"type": "text", "text": text}]},
+              "parent_tool_use_id": None, "error": "rate_limit"})
+        return text
 
 
 def story():
@@ -483,30 +520,43 @@ def session(argv):
             q.put(line)
         q.put(None)
     threading.Thread(target=reader, daemon=True).start()
+    sid = argv[argv.index("--resume") + 1] if "--resume" in argv else "fake"
+    if "--resume" in argv and os.environ.get("FAKE_RESUME_BAD"):
+        print(f"No conversation found with session ID: {sid}", file=sys.stderr)
+        sys.exit(1)
     first = q.get()
     brief = (text_of(first) or "") if first else ""
     role = Echo if "<!-- mv:echo" in brief else Pitch if "<!-- mv:pitch -->" in brief else director_kind()
     model = f"fake-{role.__name__.lower()}"
     cap = float(argv[argv.index("--max-budget-usd") + 1]) if "--max-budget-usd" in argv else None
     costs = Costs(model, cap)
+    limit = Limit(os.environ.get("FAKE_LIMIT") or (open("FAKE_LIMIT").read().strip() if os.path.exists("FAKE_LIMIT") else ""))
     init = {"type": "system", "subtype": "init", "model": model, "tools": ["Task", "Read", "Bash", "TaskStop"],
-            "permissionMode": "dontAsk", "session_id": "fake"}
+            "permissionMode": "dontAsk", "session_id": sid}
+    warn = lambda: os.environ.get("FAKE_LIMIT_WARN") and emit({"type": "rate_limit_event", "rate_limit_info": {   # noqa: E731
+        "status": "allowed_warning", "resetsAt": int(time.time() // 3600 * 3600 + 7200), "rateLimitType": "five_hour",
+        "utilization": 0.9, "isUsingOverage": False}, "uuid": f"u{time.time_ns()}", "session_id": sid})
     emit(init)
+    warn()
     t0 = time.time()
     who = role(brief, q, costs)
     say = lambda text, tool=None, inp=None: assistant(text, tool, inp)     # noqa: E731
-    assistant("Reading the brief.", "Read", {"file_path": "song/README.md"})
-    slow = os.environ.get("FAKE_CLAUDE_SLOW") or (open("FAKE_CLAUDE_SLOW").read().strip() if os.path.exists("FAKE_CLAUDE_SLOW") else "0")
-    time.sleep(float(slow))
-    who.first(say)
-    turns, done, capped = 2, first is None, False
+    refused = limit.refuse(sid) if first else None
+    started = False
+    if not refused:
+        assistant("Reading the brief.", "Read", {"file_path": "song/README.md"})
+        slow = os.environ.get("FAKE_CLAUDE_SLOW") or (open("FAKE_CLAUDE_SLOW").read().strip() if os.path.exists("FAKE_CLAUDE_SLOW") else "0")
+        time.sleep(float(slow))
+        who.first(say)
+        started = True
+    turns, done, capped = 1 if refused else 2, first is None, False
 
     def end():                                     # stdin closed: it exits (a lingering one keeps "working")
         if getattr(who, "lingers", False):
             time.sleep(600)
 
     def handle(item):
-        nonlocal turns, done
+        nonlocal turns, done, refused, started
         if item is None:
             done = True
         elif isinstance(item, tuple):                  # an agent finished while this turn ran
@@ -516,7 +566,16 @@ def session(argv):
             msg = text_of(item)
             if msg:
                 turns += 1
-                say("(the cost cap was reached: nothing more)") if capped else who.answer(msg, say)
+                no = limit.refuse(sid)
+                if no:
+                    refused = no
+                elif capped:
+                    say("(the cost cap was reached: nothing more)")
+                elif not started:                      # (its first message was refused: the work starts now)
+                    started = True
+                    who.first(say)
+                else:
+                    who.answer(msg, say)
     while True:
         while True:                                # what came in meanwhile joins this turn
             try:
@@ -524,9 +583,11 @@ def session(argv):
             except queue.Empty:
                 break
             handle(item)
-        costs.add(model, 0.01)
+        if not refused:                            # (a refused request costs nothing)
+            costs.add(model, 0.01)
         capped = capped or costs.over()
-        result(turns, t0, costs, capped)
+        result(turns, t0, costs, capped, error=refused)
+        refused = None
         if done:
             return end()
         item = q.get()                             # idle until the next message, or one of its agents finishing
@@ -534,6 +595,7 @@ def session(argv):
             return end()
         t0, turns = time.time(), 0
         emit(init)                                 # every turn starts with an init (the real CLI's way)
+        warn()
         handle(item)
 
 

@@ -33,12 +33,23 @@ are the session's running totals, not the turn's (results gave 0.00735, 0.00820,
 latest result's; num_turns is the turn's own (2, 1, 1), so they add up.
 "No sign of life" (hung) counts from the last event (an agent's progress counts) or from the message that made it
 busy, whichever is later: the time it sat idle waiting for the studio (a render, the critic) doesn't count.
+Claude's usage limit (the user's plan: a 5-hour session window, a weekly one, a per-model one): the turn it stops ends
+at once with Claude Code's own error message instead of the director's work (limit_of: which events count, read from
+Claude Code 2.1.317's own code). Each one is counted (limit_hits) and kept (limit: {text, resets_at, kind, at}); the
+runner decides what happens (director.Runner: wait for the reset, or end the run). rate_limit_event says what the
+account's limits say whenever that changes (rate_limit: the latest; "close to its limit" once in the live log).
+A session can be a new process of a conversation an earlier one had (claude --resume <session id>): append=True keeps
+adding to the run's events.jsonl and stderr.log; cost_base / usage_base are what this run's earlier processes cost
+(added to this one's); cost_before / usage_before the conversation's running totals when it started, which a resumed
+process may or may not count in its own (its first result says which: then they're taken off). conv_cost_usd and
+conv_usage are the conversation's own totals as the latest process counts them (what the next resume starts from).
 The command (claude -p --input-format stream-json --output-format stream-json --verbose ...) comes from the caller
 (director.claude_args: the sandbox). rdir gets events.jsonl (every event, raw), stderr.log and messages.md (every
 message the studio sent, in full). The caller's status dict gets events (the live log), turns, cost_usd,
 model_usage {model: {input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd}}, agents
 [{id, description, model, subagent_type, started, ended, state, tools, last}] (seconds from the session's start),
-background (tasks running now), budget_hit (a result said the --max-budget-usd cap was reached), busy, working.
+background (tasks running now), budget_hit (a result said the --max-budget-usd cap was reached), busy, working,
+session_id (Claude Code's, from its first init: what --resume takes), limit_hits, limit, rate_limit.
 """
 import json, os, re, subprocess, threading, time
 
@@ -115,16 +126,168 @@ def dur(sec):
     return f"{sec} s" if sec < 90 else f"{round(sec / 60)} min"
 
 
+def add_usage(a, b):
+    """Two model_usage dicts added up (an earlier process of the conversation and this one)."""
+    out = {m: dict(u) for m, u in (a or {}).items()}
+    for m, u in (b or {}).items():
+        x = out.setdefault(m, {})
+        for k, v in u.items():
+            x[k] = round(float(x.get(k) or 0) + float(v or 0), 4) if k == "cost_usd" else int(x.get(k) or 0) + int(v or 0)
+    return out
+
+
+# ------------------------------------------------------------------ Claude's usage limit
+# How Claude Code says it (read from 2.1.317's own code; older ones say it differently, so every sign counts):
+#  - rate_limit_event {rate_limit_info: {status allowed | allowed_warning | rejected, resetsAt (epoch seconds),
+#    rateLimitType five_hour | seven_day | seven_day_opus | ..., isUsingOverage}} whenever the limits' state changes;
+#  - the turn the limit stops: an assistant message Claude Code writes itself (model "<synthetic>", error
+#    "rate_limit"; some builds add api_error "usage_limit_reached" and api_error_params.rate_limit_info), its text
+#    e.g. "You've hit your session limit · resets 3pm (Europe/Brussels)"; then a result, is_error true, the same text
+#    (older CLIs: "Claude AI usage limit reached|<the reset, epoch seconds>").
+# A temporary server throttle shares error "rate_limit" ("Server is temporarily limiting requests (not your usage
+# limit)"): Claude Code retries that itself, and no reset clears it, so it isn't one.
+LIMIT_RE = re.compile(r"usage limit|(?:session|weekly|5-hour|five-hour|daily|monthly) limit|hit your (?:[\w'-]+ ){0,3}limit"
+                      r"|out of (?:extra )?usage|limit reached.{0,80}\breset", re.I | re.S)
+NOT_LIMIT_RE = re.compile(r"not your usage limit|temporarily limiting", re.I)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+KINDS = {"five_hour": "5-hour limit", "seven_day": "weekly limit", "seven_day_opus": "weekly Opus limit",
+         "seven_day_sonnet": "weekly Sonnet limit", "seven_day_overage_included": "weekly limit", "overage": "extra usage"}
+
+
+def epoch(x):
+    """A time as Claude Code gives it (epoch seconds, or milliseconds) in epoch seconds, or None."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if v > 1e12:
+        v /= 1000
+    return v if v > 1e9 else None
+
+
+def when(t, now=None):
+    """A time for the live log: 15:00 today, else Mon 04 Nov 15:00."""
+    now = now or time.time()
+    same = time.strftime("%Y%m%d", time.localtime(t)) == time.strftime("%Y%m%d", time.localtime(now))
+    return time.strftime("%H:%M" if same else "%a %d %b %H:%M", time.localtime(t))
+
+
+def reset_at(text, now=None):
+    """When a limit message says the limit resets, in epoch seconds, or None when it doesn't say (or not in a way read
+    here): "...|1751342400" (older CLIs), "resets in 2h 15m", "resets 3pm", "resets 3:30pm (Europe/Brussels)",
+    "resets 15:00", "resets 18:05Z", "resets Nov 4, 10am", "resets 4 Nov 10am", "resets Mon 10am". A named time zone
+    counts when this Python knows it (zoneinfo; tzdata on Windows), else the machine's own: Claude Code shows the time
+    where the user is. A time without a day is the next one to come."""
+    import datetime as dt
+    now = now or time.time()
+    text = str(text or "")
+    m = re.search(r"\|\s*(\d{10,13})\b", text)
+    if m:
+        return epoch(m.group(1))
+    m = re.search(r"\breset(?:s|ting)?\b\s*(?:at\s+|on\s+)?(.{0,60})", text, re.I | re.S)
+    if not m:
+        return None
+    s = m.group(1)
+    rel = re.match(r"in\s+(?:(\d+)\s*(?:h|hr|hrs|hours?)\b)?\s*(?:(\d+)\s*(?:m|min|mins|minutes?)\b)?", s, re.I)
+    if rel and (rel.group(1) or rel.group(2)):
+        return now + int(rel.group(1) or 0) * 3600 + int(rel.group(2) or 0) * 60
+    tz = None
+    z = re.search(r"\(([A-Za-z]+(?:/[A-Za-z0-9_+-]+)+|UTC|GMT)\)", s)
+    if z:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("UTC" if z.group(1) == "GMT" else z.group(1))
+        except Exception:                       # (no tz database here: the machine's own time)
+            tz = None
+    t12 = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?", s, re.I)
+    t24 = re.search(r"\b(\d{1,2}):(\d{2})(Z)?(?![\d:])", s)
+    if t12:
+        h, mi = int(t12.group(1)) % 12 + (12 if t12.group(3).lower() == "p" else 0), int(t12.group(2) or 0)
+    elif t24:
+        h, mi = int(t24.group(1)), int(t24.group(2))
+        if t24.group(3):
+            tz = dt.timezone.utc
+    else:
+        return None
+    if h > 23 or mi > 59:
+        return None
+    base = dt.datetime.fromtimestamp(now, tz) if tz else dt.datetime.fromtimestamp(now)
+    cand = base.replace(hour=h, minute=mi, second=0, microsecond=0)
+    mons = "|".join(MONTHS)
+    md = re.search(r"\b(" + mons + r")[a-z]*\.?\s+(\d{1,2})\b", s, re.I)
+    dm = re.search(r"\b(\d{1,2})\s+(" + mons + r")[a-z]*\b", s, re.I)
+    wd = re.search(r"\b(" + "|".join(DAYS) + r")[a-z]*\b", s, re.I)
+    try:
+        if md or dm:
+            mon, day = (md.group(1), md.group(2)) if md else (dm.group(2), dm.group(1))
+            cand = cand.replace(month=MONTHS.index(mon.lower()[:3]) + 1, day=int(day))
+            if cand.timestamp() < now - 183 * 86400:          # (December's "resets Jan 2")
+                cand = cand.replace(year=cand.year + 1)
+        elif wd:
+            cand += dt.timedelta(days=(DAYS.index(wd.group(1).lower()[:3]) - base.weekday()) % 7)
+            if cand.timestamp() < now - 60:
+                cand += dt.timedelta(days=7)
+        elif cand.timestamp() < now - 60:
+            cand += dt.timedelta(days=1)
+    except ValueError:                          # a day the month doesn't have
+        return None
+    return cand.timestamp()
+
+
+def limit_of(ev, rejected=None, now=None):
+    """The usage limit an event says stopped the session: {"text", "resets_at" (epoch seconds, or None), "kind"}, or
+    None. Only Claude Code's own error messages count (an assistant message it wrote itself, a result marked
+    is_error), never the director's words. rejected: the latest rate_limit_event that said "rejected" ({"resets_at",
+    "kind", "t"}), for the reset when the message itself doesn't carry it."""
+    now = now or time.time()
+    t, typed, info = ev.get("type"), False, {}
+    if t == "assistant":
+        msg = ev.get("message") or {}
+        api = ev.get("api_error")
+        if not (ev.get("error") in ("rate_limit", "billing_error") or api or ev.get("is_api_error_message")
+                or msg.get("model") == "<synthetic>"):
+            return None
+        if api and api != "usage_limit_reached":       # another refusal Claude Code names (credits, a policy, ...)
+            return None
+        typed = api == "usage_limit_reached"
+        info = (ev.get("api_error_params") or {}).get("rate_limit_info") or {}
+        text = " ".join(str(c.get("text") or "") for c in msg.get("content") or []
+                        if isinstance(c, dict) and c.get("type") == "text")
+    elif t == "result":
+        if not ev.get("is_error") or "budget" in str(ev.get("subtype") or ""):
+            return None
+        text = str(ev.get("result") or "")
+    else:
+        return None
+    text = re.sub(r"\s+", " ", text).strip()
+    if not typed and (not LIMIT_RE.search(text) or NOT_LIMIT_RE.search(text)):
+        return None
+    rj = rejected if isinstance(rejected, dict) and now - float(rejected.get("t") or 0) < 15 * 60 else {}
+    resets = epoch(info.get("resetsAt")) or rj.get("resets_at") or reset_at(text, now)
+    return {"text": text[:300] or "usage limit reached", "resets_at": resets, "kind": info.get("rateLimitType") or rj.get("kind")}
+
+
 class Session:
     """A stream-json Claude Code process and what is known about it. `status` is the dict the caller saves (the run's
     status.json): this keeps the keys the module doc lists in it."""
 
-    def __init__(self, cmd, cwd, rdir, name="director", status=None, env=None, started=None, keep=300):
+    def __init__(self, cmd, cwd, rdir, name="director", status=None, env=None, started=None, keep=300, append=False,
+                 cost_base=0.0, usage_base=None, cost_before=0.0, usage_before=None):
         self.cmd, self.cwd, self.rdir, self.name, self.env = cmd, cwd, rdir, name, env
         self.status = status if status is not None else {}
         for k, v in (("events", []), ("turns", 0), ("cost_usd", 0.0), ("messages_sent", []), ("pid", None), ("agents", []),
-                     ("model_usage", {}), ("background", 0)):
+                     ("model_usage", {}), ("background", 0), ("limit_hits", 0)):
             self.status.setdefault(k, v)
+        self.append = append                    # a new process of the run's conversation: its files go on
+        # costs: base = what this run's earlier processes cost (added to this one's); before = the conversation's
+        # running total when this process started, which a resumed process may count in its own (then taken off)
+        self.cost_base, self.usage_base = float(cost_base or 0), usage_base or {}
+        self.cost_before, self.usage_before = float(cost_before or 0), usage_before or {}
+        self.carried = None                     # its running totals include `before` (its first result says)
+        self.rejected = None                    # the latest rate_limit_event that said "rejected"
+        self.limit_turn = False                 # this turn's limit is counted (its result says it again)
+        self.rl_said = set()                    # "close to its limit" said for these (kind, reset)
         self.started = started or time.time()
         self.keep = keep
         self.lock = threading.RLock()
@@ -156,8 +319,9 @@ class Session:
                                      creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         self.t_start = time.time()
         self.status["pid"] = self.proc.pid
-        self.raw = open(os.path.join(self.rdir, "events.jsonl"), "w", encoding="utf-8")
-        self.errlog = open(os.path.join(self.rdir, "stderr.log"), "w", encoding="utf-8")
+        mode = "a" if self.append else "w"
+        self.raw = open(os.path.join(self.rdir, "events.jsonl"), mode, encoding="utf-8")
+        self.errlog = open(os.path.join(self.rdir, "stderr.log"), mode, encoding="utf-8")
         threading.Thread(target=self._reader, daemon=True).start()
         threading.Thread(target=self._errreader, daemon=True).start()
         return self
@@ -222,6 +386,9 @@ class Session:
     def _event(self, ev, now):
         t, sub = ev.get("type"), ev.get("subtype")
         parent = ev.get("parent_tool_use_id")
+        if t == "rate_limit_event":
+            self.rate_limit(ev.get("rate_limit_info") or {}, now)
+            return
         if t == "system":
             if sub == "init":
                 self.inits += 1
@@ -265,20 +432,62 @@ class Session:
             for c in (ev.get("message") or {}).get("content") or []:
                 if c.get("type") == "tool_use" and c.get("name") in LAUNCHES:
                     self.launches[c.get("id")] = dict(c.get("input") or {}, tool=c.get("name"))
+        if t in ("assistant", "result") and not (t == "result" and self.limit_turn):
+            lim = limit_of(ev, self.rejected, now)
+            if lim:
+                self.limit_hit(lim, now)
         if t == "result":
             self.status["turns"] = int(self.status.get("turns") or 0) + int(ev.get("num_turns") or 0)
             if isinstance(ev.get("total_cost_usd"), (int, float)):      # the session's running total
-                self.status["cost_usd"] = round(max(float(self.status.get("cost_usd") or 0), ev["total_cost_usd"]), 4)
+                tot = float(ev["total_cost_usd"])
+                if self.carried is None:        # a resumed conversation may bring its earlier totals along
+                    self.carried = self.cost_before > 0 and tot >= self.cost_before - 0.005
+                own = tot - self.cost_before if self.carried else tot
+                self.status["conv_cost_usd"] = round(tot, 4)            # (the conversation's, as this process counts it)
+                self.status["cost_usd"] = round(max(float(self.status.get("cost_usd") or 0), self.cost_base + own), 4)
             if ev.get("modelUsage"):
-                self.status["model_usage"] = model_usage(ev["modelUsage"])
+                mu = model_usage(ev["modelUsage"])
+                self.status["conv_usage"] = mu
+                own = add_usage(mu, {m: {k: -v for k, v in u.items()} for m, u in self.usage_before.items()}) if self.carried else mu
+                self.status["model_usage"] = add_usage(self.usage_base, own)
             self.status["usage"] = ev.get("usage")
             if "budget" in str(sub or ""):
                 self.status["budget_hit"] = True
                 self.note("■ the session reached its cost cap (--max-budget-usd)")
             self.results.append(ev)
             self.busy, self.idle_at = False, now
+            self.limit_turn = False
         elif t in ("assistant", "user") and not self.busy:
             self.own_turn(now)
+
+    def rate_limit(self, info, now):
+        """A rate_limit_event: what the account's limits say now (status["rate_limit"]); "rejected" is kept for the
+        reset time of the limit message that follows (unless extra usage carries on past it); close to a limit is
+        said once per limit and reset."""
+        st = str(info.get("status") or "")
+        over = bool(info.get("isUsingOverage") or info.get("overageInUse"))
+        r, kind = epoch(info.get("resetsAt")), info.get("rateLimitType")
+        if st == "rejected" and not over:
+            self.rejected = {"resets_at": r, "kind": kind, "t": now}
+        elif st in ("allowed", "allowed_warning"):
+            self.rejected = None
+        self.status["rate_limit"] = {"status": st or None, "resets_at": r, "kind": kind, "utilization": info.get("utilization"),
+                                     "overage": over, "t": self.rel_t(now)}
+        if st == "allowed_warning" and (kind, r) not in self.rl_said:
+            self.rl_said.add((kind, r))
+            u = info.get("utilization")
+            pct = f"{round(float(u) * 100 if float(u) <= 1.5 else float(u))}% of " if isinstance(u, (int, float)) else ""
+            self.note(f"⚠ Claude's usage is close to its limit ({pct}the {KINDS.get(kind, 'usage limit')}"
+                      + (f", which resets {when(r, now)})" if r else ")"))
+
+    def limit_hit(self, lim, now):
+        """Claude Code says the usage limit stopped this turn: counted once (its result repeats it), kept, said."""
+        self.limit_turn = True
+        self.status["limit_hits"] = int(self.status.get("limit_hits") or 0) + 1
+        self.status["limit"] = dict(lim, at=now)
+        r = lim.get("resets_at")
+        self.note(f"⛔ Claude's usage limit stopped the {self.name}: {lim['text'][:200]}"
+                  + (f" (it resets {when(r, now)})" if r else " (it doesn't say when it resets)"))
 
     def own_turn(self, now):
         """It started a turn of its own: for its background tasks that finished (said in the live log), or for a
