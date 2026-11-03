@@ -195,6 +195,7 @@ canvas.sv{width:100%;display:block;border-radius:10px;background:#101114;cursor:
 .lx-list{position:relative;max-height:46vh;overflow:auto;margin-top:10px;border-top:1px solid var(--line)}
 .lx-r{display:grid;grid-template-columns:46px 92px 52px auto 1fr auto auto;gap:6px;align-items:center;padding:3px 4px;border-bottom:1px solid var(--line)}
 .lx-r.now{background:#2b2814}
+.lx-part{font:12px SpaceMono,monospace;color:var(--mut);padding:8px 4px 2px}
 .lx-r.cur{box-shadow:inset 3px 0 0 var(--acc)}
 .lx-n{cursor:pointer;color:var(--mut);font:12px SpaceMono,monospace;text-align:right;user-select:none}
 .lx-r.cur .lx-n{color:var(--acc);font-weight:700}
@@ -383,7 +384,7 @@ function vBrief() {
   <div class="two"><div><label>Delivery format</label><select id="b-fmt" onchange="fmtCustom()">${fmts}<option value="custom" ${pre === "custom" ? "selected" : ""}>custom size / fps</option></select></div>
     <div id="b-cust" style="display:${pre === "custom" ? "grid" : "none"};grid-template-columns:1fr 1fr 1fr;gap:8px;align-self:end">
       <input id="b-w" type="number" value="${f.width || 1920}" title="width"><input id="b-h" type="number" value="${f.height || 1080}" title="height"><input id="b-fps" type="number" value="${f.fps || 30}" title="fps"></div></div>
-  <label>Lyrics (optional)</label><textarea id="b-lyrics" style="min-height:120px" placeholder="Only if they're not online (LRCLIB): plain text, or LRC with [mm:ss.xx] line times; word times <mm:ss.xx> are used exactly.">${esc(p.lyrics)}</textarea>
+  <label>Lyrics (optional)</label><textarea id="b-lyrics" style="min-height:120px" placeholder="Only if they're not online (LRCLIB): plain text, or LRC with [mm:ss.xx] line times; word times <mm:ss.xx> are used exactly. [Verse 1] / [Chorus] tags above the parts name the sections; without them, a blank line between stanzas helps the analysis find them.">${esc(p.lyrics)}</textarea>
   <div class="row" style="margin-top:16px"><button onclick="saveBrief()">Save</button><button class="ghost" onclick="saveBrief('analyse')">Save &amp; analyse &rarr;</button></div>`;
   for (const [d, i, out] of [["#drop", "#fi", "#up"], ["#rdrop", "#rfi", "#rup"]]) {
     const drop = $(d), fi = $(i);
@@ -1445,18 +1446,26 @@ function lvAddNote() {
 // Tap along (Enter as each line starts), nudge, fix the words, add the repeats; the lanes and the line above them show
 // the edit while the song plays. Saved as LRC in project.json "lyrics", timed on this very song file; then the song is
 // analysed again, so every word gets aligned inside its line and the voice, sections and moments follow the lines.
-function lxParse(text) {          // lyrics text -> [{t, text, words}]: LRC times (and word times) kept, "[Chorus]" tags skipped
-  const out = []; let last = -1, k = 0;
-  for (const raw of String(text || "").split(/\r?\n/)) {
-    const line = raw.trim(); if (!line || line.startsWith("#")) continue;
+// a tag that names a section (the same words as tools/mv/parts.py KINDS); "[Male vocal]" and LRC headers are no section
+const LX_SECTION = /\b(pre[\s-]*(chorus|hook)|build([\s-]*up)?|lift|post[\s-]*(chorus|hook)|chorus|hook|drop|refrain|verse|rap|bridge|middle[\s-]*(8|eight)|intro(duction)?|outro|coda|end(ing)?|fade([\s-]*out)?|instrumental|interlude|solo|break([\s-]*down)?)\b/i;
+function lxParse(text) {          // lyrics text -> [{t, text, words, part, st}]: LRC times (and word times) kept; a "[Chorus]" tag
+  const out = []; let last = -1, k = 0, part = null, st = 0, fresh = false;    // names the lines under it (part), a blank line
+  for (const raw of String(text || "").split(/\r?\n/)) {                      // or a tag starts the next stanza (st)
+    const line = raw.trim(); if (line.startsWith("#")) continue;
+    if (!line) { fresh = true; continue; }
     const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)].map(m => +m[1] * 60 + +m[2]);
+    const tm = line.replace(/\[(\d+):(\d+(?:\.\d+)?)\]/g, "").trim().match(/^\[([^\]]*)\]/);
+    const tag = tm && !/^(ar|ti|al|au|by|re|ve|length|offset|tool|lang|la|id)\s*:/i.test(tm[1].trim()) && LX_SECTION.test(tm[1]) ? tm[1].replace(/\s+/g, " ").trim() : null;
+    if (tag) { part = tag; fresh = true; }
     const body = line.replace(/\[[^\]]*\]/g, ""), em = body.match(/<(\d+):(\d+(?:\.\d+)?)>\s*$/), e0 = em ? +em[1] * 60 + +em[2] : null;
     const words = [...body.matchAll(/<(\d+):(\d+(?:\.\d+)?)>\s*([^<]*)/g)].flatMap(m => m[3].trim().split(/\s+/).filter(Boolean).map((w, j) => [w, +m[1] * 60 + +m[2] + 0.001 * j]));
     const txt = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-    if (!txt) continue;
-    if (!stamps.length) { out.push({t: null, end: null, text: txt, words: null, key: last + 1e-6 * ++k}); continue; }
+    if (!txt) { if (stamps.length) fresh = true; continue; }
+    if (fresh && out.length) st++;
+    fresh = false;
+    if (!stamps.length) { out.push({t: null, end: null, text: txt, words: null, part, st, key: last + 1e-6 * ++k}); continue; }
     last = stamps[0];
-    stamps.forEach(t => out.push({t, text: txt, key: t, end: e0 != null && e0 > stamps[0] + 0.05 ? e0 - stamps[0] + t : null,
+    stamps.forEach(t => out.push({t, text: txt, key: t, part, st, end: e0 != null && e0 > stamps[0] + 0.05 ? e0 - stamps[0] + t : null,
       words: words.length && words.map(x => x[0]).join(" ") === txt ? words.map(([w, wt]) => [w, wt - stamps[0] + t]) : null}));
   }
   return out.sort((a, b) => a.key - b.key).map(({key, ...x}) => x);
@@ -1470,7 +1479,8 @@ function lxFromSong() {           // where the editor starts: your own LRC as wr
       ? {...x, t: x.t + off, end: x.end == null ? null : x.end + off, words: x.words && x.words.map(([w, t]) => [w, t + off]), set: S.project.lyrics_synced && mine(x)}
       : {...x, t: m.lyrics[k].t, end: null, words: null});                                   // the rest: where the analysis put it
   }
-  if (m.lyrics.length) return m.lyrics.map(x => ({t: x.t, end: x.end_src === "user" ? x.end : null, text: x.text, words: null}));
+  if (m.lyrics.length) return m.lyrics.map(x => ({t: x.t, end: x.end_src === "user" ? x.end : null, text: x.text, words: null,
+                                                  part: x.part || null, st: x.stanza ?? null}));
   return lxParse(txt);
 }
 function lxOpen() {
@@ -1502,6 +1512,10 @@ function lxView() {               // the edit, as the song map's lyric lines: th
   });
   SV.lt = SV.m.lyrics.map(x => x.t); SV.lastLine = null; SV.ed.now = undefined; SV.dirty = true;
 }
+function lxPartAbove(i) {           // the part (section tag) of the nearest line above with one
+  for (let j = i - 1; j >= 0; j--) if (SV.ed.lines[j].part) return SV.ed.lines[j].part;
+  return null;
+}
 function lxRender() {
   const ed = SV.ed, el = $("#lx"); if (!el || !ed) return;
   const y0 = window.scrollY;                        // the page stays where it is while the editor is drawn again
@@ -1521,7 +1535,7 @@ function lxRender() {
       ${ed.heardOnly.length > 1 ? `<button class="ghost small" id="lx-addall" onclick="lxAddHeard(-1)">add all ${ed.heardOnly.length}</button>` : ""}
       ${ed.heardOnly.map((h, q) => `<div><span class="mut" style="font:12px SpaceMono,monospace">${fmt(h.t)}</span> &ldquo;${esc(h.text)}&rdquo; <button class="small" onclick="lxAddHeard(${q})">add</button></div>`).join("")}</div>` : ""}
     <div id="lx-paste"></div>
-    <div class="lx-list" id="lx-list">${ed.lines.map((x, i) => `<div class="lx-r ${i === ed.cur ? "cur" : ""} ${x.set ? "set" : ""} ${!x.set && x.auto === "between" ? "ab" : ""} ${!x.set && x.auto === "repeat" ? "ar" : ""} ${x.added ? "new" : ""}" data-i="${i}" title="${!x.set && x.auto === "between" ? "Whisper didn't hear this line: it is placed between its neighbours, check it" : !x.set && x.auto === "repeat" ? "Whisper heard this line again here: added as a repeat" : ""}">
+    <div class="lx-list" id="lx-list">${ed.lines.map((x, i) => `${x.part && x.part !== lxPartAbove(i) ? `<div class="lx-part">[${esc(x.part)}]</div>` : ""}<div class="lx-r ${i === ed.cur ? "cur" : ""} ${x.set ? "set" : ""} ${!x.set && x.auto === "between" ? "ab" : ""} ${!x.set && x.auto === "repeat" ? "ar" : ""} ${x.added ? "new" : ""}" data-i="${i}" title="${!x.set && x.auto === "between" ? "Whisper didn't hear this line: it is placed between its neighbours, check it" : !x.set && x.auto === "repeat" ? "Whisper heard this line again here: added as a repeat" : ""}">
       <span class="lx-n" onclick="lxCur(${i}, true)" title="tap this line next">${i === ed.cur ? "&#9656; " : ""}${i + 1}</span>
       <button class="ghost tm" onclick="lxPlay(${i})" title="play from just before this line">${x.t == null ? "&ndash;:&ndash;&ndash;" : "&#9654; " + fmt(x.t)}</button>
       <span class="mut lx-pos" title="bar:beat">${x.t == null ? "" : svPosStr(x.t)}</span>
@@ -1697,7 +1711,7 @@ function lxAddHeard(q) {           // a line Whisper heard (q = -1: all of them)
 }
 function lxPasteBox() {
   lxBlur();
-  $("#lx-paste").innerHTML = `<div class="box" style="margin-top:10px"><b>Paste the lyrics</b> <span class="mut">one line per sung line, choruses written out each time they're sung; plain text or LRC (its times are kept); [Chorus]-style tags are skipped. This replaces the list.</span>
+  $("#lx-paste").innerHTML = `<div class="box" style="margin-top:10px"><b>Paste the lyrics</b> <span class="mut">one line per sung line, choruses written out each time they're sung; plain text or LRC (its times are kept); [Verse] / [Chorus]-style tags above the parts are kept: they name the song's sections. This replaces the list.</span>
     <textarea id="lx-ptx" style="min-height:160px;margin-top:8px"></textarea><div class="row" style="margin-top:8px"><button class="small" onclick="lxPasteUse()">Use these lines</button><button class="ghost small" onclick="$('#lx-paste').innerHTML=''">Cancel</button></div></div>`;
   $("#lx-ptx").focus();
 }
@@ -1721,6 +1735,7 @@ async function lxSave() {
   }
   $("#lx-save").disabled = true;
   try { await post(`/api/p/${S.name}/lyrics-timing`, {lines: L.map(x => ({t: Math.round(x.t * 100) / 100, text: x.text.trim(), words: x.words, set: !!(x.set || x.eset),
+                                                                             part: x.part || null, stanza: x.st ?? null,
                                                                              end: x.end != null && x.end > x.t + 0.05 ? Math.round(x.end * 100) / 100 : null}))}); }
   catch (e) { $("#lx-save").disabled = false; return toast(e.message); }
   lxRestore(); SV.ed = null;

@@ -215,6 +215,8 @@ def main():
     say("PASS" if [h["text"] for h in res["heard_only"]] == ["run run run"] and res["stats"]["repeats_added"] == 0 else "FAIL",
         "Whisper stuck in a loop adds no copies of a line", f"{res['stats']['repeats_added']} repeats, heard only {res['heard_only']}")
 
+    structure_check()
+
     print("== 4. mini director: web engine + Blender -> compose", flush=True)
     sys.path.insert(0, TESTS)
     import mini_director
@@ -313,6 +315,68 @@ def main():
         pitch_step_check()
         pitch_trouble_check()
     return finish(a, t_start)
+
+
+def structure_check():
+    """The sections of a song the sound can't cut (one loudness, one sound, a line sung in every bar): the lyric's
+    [tags] name them; with no tags, its blank lines between stanzas still find them (the sound and the repeats name
+    them); a chorus written once and sung again (Whisper's repeats) is a section of its own. No audio: a grid, lines."""
+    print("== 3d. sections from the lyric's structure ([tags], stanzas)", flush=True)
+    import random
+    import numpy as np
+    import song_kit as K
+    from mv import parts
+    rnd = random.Random(7)
+    syl = ["ka", "lo", "mi", "re", "tu", "san", "vel", "dor", "pi", "nex", "ra", "bo", "lin", "ter", "fa", "gus"]
+
+    def new(n):
+        return [" ".join("".join(rnd.choice(syl) for _ in range(2)) for _ in range(6)) for _ in range(n)]
+    pre_end, chorus = new(2), new(8)
+    plan = [("Intro", new(2)), ("Verse 1", new(8)), ("Pre-Chorus", new(2) + pre_end), ("Chorus", chorus),
+            ("Verse 2", new(8)), ("Pre-Chorus", new(2) + pre_end), ("Chorus", chorus), ("Bridge", new(4)),
+            ("Breakdown", new(4)), ("Final Chorus", chorus), ("Outro", new(4))]
+    bar, nb = 60 / 90.7 * 4, 74
+    db = [1.3 + i * bar for i in range(nb)]
+    flat = {"drums": [5] * nb, "bass": [5] * nb, "other": [5] * nb}
+
+    def sections(text, written=None):
+        A = {"beats": [1.3 + i * bar / 4 for i in range(nb * 4)], "downbeats": db, "beat_period": bar / 4, "lyrics": []}
+        G = K.Grid(A, 1.3 + nb * bar)
+        own = parts.walk(text)
+        for b, x in enumerate(written or [(x, x) for x in own], start=1):        # one line a bar, never a breath
+            src, ln = x
+            t0 = db[b] + 0.05
+            ws = ln["text"].split()
+            A["lyrics"].append({"t": t0, "end": t0 + 2.2, "text": ln["text"], "words": [{"w": w, "t": t0 + 0.35 * k} for k, w in
+                                enumerate(ws)], **parts.fields(src["part"], src["stanza"] if src is ln else None)})
+        lines = K.lyric_lines(A, G, [])
+        vf = np.array([0.8 if any(x["home"] == i for x in lines) else 0.0 for i in range(nb)])
+        R, why, why_all = K.segment(G, [0] * nb, lines, vf, np.full(nb, -10.0), flat)
+        if parts.tagged(lines):
+            return [s["name"] for s in K.tagged_sections(G, R, why_all, [0] * nb, lines, vf, np.full(nb, -10.0))[0]]
+        return [s["name"] for s in K.label_sections(R, lines, vf, np.full(nb, -10.0), True)]
+    tagged = "\n\n".join(f"[{tag}]\n" + "\n".join(ls) for tag, ls in plan)
+    got = sections(tagged)
+    want = ["intro", "verse 1", "pre-chorus 1", "chorus 1", "verse 2", "pre-chorus 2", "chorus 2", "bridge", "breakdown",
+            "final chorus", "outro"]
+    say("PASS" if got == want else "FAIL", "the lyric's [tags] name the sections", " → ".join(got))
+    stanzas = "\n\n".join("\n".join(ls) for _, ls in plan)
+    got = sections(stanzas)
+    want = ["verse 1", "pre-chorus 1", "chorus 1", "verse 2", "pre-chorus 2", "chorus 2", "bridge", "chorus 3", "outro"]
+    say("PASS" if got == want else "FAIL", "no tags: the stanzas (blank lines) find the sections, the repeats name them",
+        " → ".join(got))
+    got = sections("\n\n".join(x for _, ls in plan for x in ls))
+    say("PASS" if len(got) <= 3 else "FAIL", "a blank line after every line is no stanza break (no one-line sections)",
+        " → ".join(got))
+    own = parts.walk(tagged)                       # the final chorus left out of the lyric: Whisper heard it (repeats)
+    written = [(x, x) for x in own[:50]] + [(x, {"text": x["text"]}) for x in own[14:22]] + [(x, x) for x in own[58:]]
+    got = sections("", written)
+    say("PASS" if got[-4:] == ["bridge", "breakdown", "chorus 3", "outro"] else "FAIL",
+        "a chorus written once more than the lyric has it (Whisper's repeats) is a section of its own", " → ".join(got))
+    w = parts.walk("[ar:Someone]\n[Verse 1]\n[00:05.00] one line\n[Male vocal] [00:07.00] two\n\n[Chorus: all]\n[00:10.00] three\n")
+    say("PASS" if [(x["text"], x["part"], x["stanza"]) for x in w] == [("one line", "Verse 1", 0), ("two", "Verse 1", 0),
+                                                                        ("three", "Chorus: all", 1)] else "FAIL",
+        "LRC: section tags and stanzas read, LRC headers and [Male vocal] skipped", str(w))
 
 
 def critic_check(m):

@@ -27,6 +27,7 @@ import scipy.signal as sps
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mv.common import CACHE, SONG, STEMS, song_file, project, need_project  # noqa: E402
+from mv import parts  # noqa: E402
 
 SR = 22050
 HOP = 128  # 5.8 ms frames
@@ -270,7 +271,8 @@ def loose_on_whisper(lyrics, lines, meta, song):
         if lo < x["t"] < hi:                             # never across a line the user set
             ws = [{"w": w, "t": t_, "src": "whisper"} for w, t_ in x["words"]]
             ws[-1]["t_end"] = x["end"]
-            lyrics[k] = {"t": x["t"], "end": x["end"], "text": L["text"], "words": ws}
+            lyrics[k] = {"t": x["t"], "end": x["end"], "text": L["text"], "words": ws,
+                         **{f: L[f] for f in ("part", "stanza") if f in L}}
             moved += 1
     meta["source"] += f", {moved} lines not set by hand placed with Whisper"
     meta["heard_only"] = res["heard_only"][:20]
@@ -502,11 +504,13 @@ def analyze():
         on_sv = np.array([v["s"] for v in vocal_onsets])
         timed = lrc_words(c["syncedLyrics"]) if c.get("user") else {}
         ends = lrc_ends(c["syncedLyrics"]) if c.get("user") else {}
+        where = parts.lrc_map(c["syncedLyrics"])          # its [Chorus]-style tags and stanzas (song_kit's sections)
         if timed:
             meta["source"] = "user (LRC with word times)"
         for i, (t, s) in enumerate(lines):
             ue = ends.get(round(t, 3))                     # the user said when the line stops: kept as the line's end
             mine = {"end_src": "user"} if ue else {}
+            mine.update(parts.fields(*where.get(round(t, 3), (None, None))))
             if round(t, 3) in timed:                       # the user gave every word's time: keep them exactly
                 ws = timed[round(t, 3)]
                 t1 = ue + off if ue else lines[i + 1][0] + off if i + 1 < len(lines) else min(dur, ws[-1][1] + off + 1.0)
@@ -544,7 +548,8 @@ def analyze():
     placed = None
     if best is None and ukind == "plain":           # the user's text without times: placed on Whisper's words if there are any
         from align_lyrics import anchor, transcription_for
-        plain = [x.strip() for x in utext.splitlines() if x.strip() and not x.strip().startswith(("[", "#"))]
+        own = parts.walk(utext)                     # the lines, each with its [Verse]-style tag and stanza
+        plain = [x["text"] for x in own]
         heard = transcription_for(os.path.join(CACHE, "lyrics", "transcribed.json"), path)
         placed = anchor(plain, heard) if heard else None
         if not heard:
@@ -557,11 +562,17 @@ def analyze():
                          f"\"{' '.join(h['w'] for h in heard[:12])}\")")
             placed = None
     if placed:
+        first_of = {}
+        for x in own:
+            first_of.setdefault(x["text"], x)
         for x in placed["lines"]:
             ws = [{"w": w, "t": t, "src": "whisper"} for w, t in x["words"]]
             if ws:
                 ws[-1]["t_end"] = x["end"]
-            lyrics.append({"t": x["t"], "end": x["end"], "text": x["text"], "words": ws})
+            # a line sung again that the lyric has once (a repeat) belongs to that line's part, in no stanza of its own
+            pf = parts.fields(own[x["i"]]["part"], own[x["i"]]["stanza"]) if x.get("i") is not None else \
+                parts.fields((first_of.get(x["text"]) or {}).get("part"), None)
+            lyrics.append({"t": x["t"], "end": x["end"], "text": x["text"], "words": ws, **pf})
         st_ = placed["stats"]
         meta = {"source": "user (plain text, timed with Whisper)", "match_z": None, "whisper": st_,
                 "heard_only": placed["heard_only"][:20]}
@@ -579,7 +590,8 @@ def analyze():
                 wt.append(round(t0 + (t1 - t0) * 0.8 * acc / max(sum(syl), 1), 3))
                 acc += sy
             lyrics.append({"t": round(t0, 3), "end": round(float(t1), 3), "text": text,
-                           "words": [{"w": w, "t": tt} for w, tt in zip(words, wt)]})
+                           "words": [{"w": w, "t": tt} for w, tt in zip(words, wt)],
+                           **parts.fields(own[i]["part"], own[i]["stanza"])})
         meta = {"source": "user (plain text, timed by estimate)", "match_z": None, "whisper_note": meta_note}
         print(f"   lyrics: {len(lyrics)} lines of the user's text, timed roughly (forced alignment places the words)")
     tp = os.path.join(CACHE, "lyrics", "transcribed.json")

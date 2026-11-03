@@ -779,7 +779,8 @@ def pitch_check(B, name, out, browser=True):
 def lyric_timing_check(B, name):
     """The lyric timing editor's save: LRC in project.json, marked as timed on this song file, so the analysis uses the
     times as they are (here shifted 3 s on purpose: an offset search would have moved them back); the old lyrics kept;
-    then the true times again (with their word times). Changed lyrics on the brief page drop the mark."""
+    then the true times again (with their word times, and [Verse] / [Chorus] tags: kept in the LRC, they name the
+    sections). Changed lyrics on the brief page drop the mark."""
     st = requests.get(f"{B}/api/p/{name}").json()
     m = requests.get(B + st["song"]["map"]).json()
     true = [{"t": x["t"], "text": x["text"], "words": [[w["w"], w["t"]] for w in x["words"]]} for x in m["lyrics"]]
@@ -809,9 +810,16 @@ def lyric_timing_check(B, name):
     keep = bool(pj.get("lyrics_synced"))
     pj = requests.post(f"{B}/api/p/{name}/brief", json={"lyrics": pj["lyrics"] + "[00:59.00] one more\n"}).json()
     say(keep and not pj.get("lyrics_synced"), "the brief page keeps the mark for the same lyrics, drops it for changed ones")
+    for x, part in zip(true, ["Verse"] * 4 + ["Chorus"] * 4 + ["Bridge", "Outro"]):
+        x["part"] = part
     requests.post(f"{B}/api/p/{name}/lyrics-timing", json={"lines": true})
     wait_job(B, name, want="ingest")
-    m3 = requests.get(B + requests.get(f"{B}/api/p/{name}").json()["song"]["map"]).json()
+    st3 = requests.get(f"{B}/api/p/{name}").json()
+    m3 = requests.get(B + st3["song"]["map"]).json()
+    names = [s["name"] for s in m3["sections"]]
+    say(all(f"[{p}]" in st3["project"]["lyrics"] for p in ("Verse", "Chorus", "Bridge", "Outro"))
+        and str(m3.get("sections_from")).startswith("the lyric's") and [n for n in names if n != "intro"] == ["verse", "chorus", "bridge", "outro"],
+        "the lyric's [Verse] / [Chorus] tags are kept through the editor and name the sections", " → ".join(names))
     same = all(abs(a["t"] - b["t"]) < 0.02 and len(a["words"]) == len(b["words"]) and
                all(abs(w[1] - v["t"]) < 0.012 for w, v in zip(a["words"], b["words"])) for a, b in zip(true, m3["lyrics"]))
     say(same and len(m3["lyrics"]) == len(true) and "word times" in (m3.get("lyrics_meta") or {}).get("source", ""),

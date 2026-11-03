@@ -33,7 +33,7 @@ import scipy.ndimage as ndi
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mv.common import ROOT, CACHE, SONG, STEMS as STEM_DIR, project, song_file, delivery, decode_audio, jsave, need_project  # noqa: E402
-from mv import device as D, listen as L, songdoc, curves as CV  # noqa: E402
+from mv import device as D, listen as L, songdoc, curves as CV, parts  # noqa: E402
 
 SR, FPS = L.SR, L.FPS
 STEMS = ("vocals", "drums", "bass", "other")
@@ -164,7 +164,8 @@ def lyric_lines(A, G, warn):
         if p and p[0] == home and p[1] >= nbeats - 1.5 and home + 1 < G.nb:    # a pickup into the next bar
             home += 1
         out.append({"i": li, "t": round(t0, 3), "end": round(t1, 3), "text": Lr["text"], "home": home,
-                    "norm": L.norm_line(Lr["text"]), "words": ws, **({"end_src": "user"} if mine else {})})
+                    "norm": L.norm_line(Lr["text"]), "words": ws, **({"end_src": "user"} if mine else {}),
+                    **parts.fields(Lr.get("part"), Lr.get("stanza"))})
     for a in out:                           # how often the same (or nearly the same) line comes back elsewhere
         a["repeat"] = sum(1 for b in out if b is not a and abs(b["home"] - a["home"]) >= 1 and
                           (b["norm"] == a["norm"] or SequenceMatcher(None, a["norm"], b["norm"]).ratio() >= 0.8))
@@ -173,10 +174,12 @@ def lyric_lines(A, G, warn):
 
 # ------------------------------------------------------------------ structure
 def segment(G, bar_lab, lines, vfrac, loud, lvl):
-    """Section boundaries from evidence per bar: the singing stopping or starting (2), the lyric turning from new lines
-    to lines that come back or back (1.5), a new stanza after a gap (1), a loudness step (1-1.5), the sound class
-    changing (1), drums / bass coming in or dropping out (0.75). The strongest points at least MIN_SECTION bars apart
-    win (evidence one bar away counts half). Returns [(sound class, bar0, bar1)] and the reasons per boundary."""
+    """Section boundaries from evidence per bar: the singing stopping or starting (2), a stanza break in the user's
+    lyric (2: a blank line or a [tag] between the lines; 1 into or out of a repeat Whisper heard), the lyric turning
+    from new lines to lines that come back or back (1.5), a new stanza after a gap (1), a loudness step (1-1.5), the
+    sound class changing (1), drums / bass coming in or dropping out (0.75). The strongest points at least MIN_SECTION
+    bars apart win (2 between two stanza breaks; evidence one bar away counts half). Returns [(sound class, bar0,
+    bar1)], the reasons per boundary and the reasons per bar (all of them, chosen or not)."""
     nb = G.nb
     S = np.zeros(nb + 1)
     why = [[] for _ in range(nb + 1)]
@@ -208,6 +211,17 @@ def segment(G, bar_lab, lines, vfrac, loud, lvl):
     for k in range(1, len(lines)):
         if lines[k]["t"] - lines[k - 1]["end"] >= 0.8 * G.bar_s:
             add(lines[k]["home"], 1.0, "new stanza")
+    stz = set()
+    sizes = list(Counter(x["stanza"] for x in lines if x.get("stanza") is not None).values())
+    blank_each = bool(sizes) and float(np.median(sizes)) < 2          # a blank line after every line says nothing
+    for k in range(1, len(lines)):
+        a, b = lines[k - 1].get("stanza"), lines[k].get("stanza")
+        if a != b and lines[k]["home"] != lines[k - 1]["home"] and not blank_each:
+            if a is not None and b is not None:
+                add(lines[k]["home"], 2.0, "the lyric's stanza break")
+                stz.add(lines[k]["home"])
+            elif any(x.get("stanza") is not None for x in lines):
+                add(lines[k]["home"], 1.0, "a repeat starts" if b is None else "a repeat ends")
     flags = [x["repeat"] > 0 for x in lines]
     for p in range(2, len(lines) - 1):
         if flags[p - 1] == flags[p - 2] and flags[p] == flags[p + 1] and flags[p] != flags[p - 1]:
@@ -229,11 +243,15 @@ def segment(G, bar_lab, lines, vfrac, loud, lvl):
     cand = sorted([i for i in range(2, nb - 1) if S[i] >= 1.0 and strength[i] >= 2.0], key=lambda i: (-S[i], -strength[i]))
     chosen = []
     for i in cand:
-        if all(abs(i - j) >= MIN_SECTION for j in chosen):
+        if all(abs(i - j) >= (2 if i in stz and j in stz else MIN_SECTION) for j in chosen):
             chosen.append(i)
     bounds = [0] + sorted(chosen) + [nb]
-    R = [(int(np.bincount([x for x in bar_lab[a:b] if x >= 0] or [0]).argmax()), a, b) for a, b in zip(bounds[:-1], bounds[1:])]
-    return R, {i: why[i] for i in chosen}
+    R = [(sound_class(bar_lab, a, b), a, b) for a, b in zip(bounds[:-1], bounds[1:])]
+    return R, {i: why[i] for i in chosen}, why
+
+
+def sound_class(bar_lab, a, b):
+    return int(np.bincount([x for x in bar_lab[a:b] if x >= 0] or [0]).argmax())
 
 
 def tempo_changes(G, min_change=0.06):
@@ -248,6 +266,109 @@ def tempo_changes(G, min_change=0.06):
                 all(abs(j - i) > 3 for j, _ in out):
             out.append((i, f"tempo {a:.0f} → {b:.0f} BPM"))
     return out
+
+
+def tagged_sections(G, R, why_all, bar_lab, lines, vfrac, loud):
+    """The sections the user's lyric names with its [Verse] / [Chorus] tags (parts.tagged(lines) is True): each tagged
+    part starts on the home bar of its first line and runs to the next part. Only where nobody sings does the
+    evidence decide: a lead-in, a gap or a tail of MIN_SECTION bars or more (a riff under 6 bars between two parts
+    stays with the part before it unless it is 4+ LU quieter) is its own intro / instrumental / break / outro, cut
+    where segment() found boundaries inside it. A repeat Whisper heard (a line written once) belongs to its line's part,
+    or to the part around it when it sits inside another one. Returns sections as label_sections does, each with "tag"
+    (the user's own words) on the tagged ones, and the reasons per section start."""
+    nb = G.nb
+    real = [k for k, x in enumerate(lines) if x.get("stanza") is not None]
+    blocks = []
+    for k, x in enumerate(lines):
+        part = x.get("part")
+        if x.get("stanza") is None:                      # a repeat: inside a part, it is that part's
+            pv = [q for q in real if q < k]
+            nx = [q for q in real if q > k]
+            if pv and nx and lines[pv[-1]].get("part") == lines[nx[0]].get("part"):
+                part = lines[pv[-1]].get("part")
+            elif part is None:
+                part = lines[pv[-1]].get("part") if pv else None
+        if blocks and blocks[-1]["tag"] == part:
+            blocks[-1]["lines"].append(x)
+        else:
+            blocks.append({"tag": part, "lines": [x]})
+    for b in blocks:
+        b["bar0"] = min(x["home"] for x in b["lines"])
+        b["sung1"] = max(G.bar_of(max(x["t"], x["end"] - 0.25 * G.bar_s)) for x in b["lines"]) + 1
+    kept = []
+    for b in blocks:                                     # two parts starting in one bar: the first one keeps it
+        if kept and b["bar0"] <= kept[-1]["bar0"]:
+            kept[-1]["lines"] += b["lines"]
+            kept[-1]["sung1"] = max(kept[-1]["sung1"], b["sung1"])
+        else:
+            kept.append(b)
+    blocks = kept
+    med = float(np.median(loud)) if len(loud) else -20
+    inner = sorted({a for _, a, _ in R} - {0})          # segment()'s boundaries, for the stretches nobody sings
+
+    def free(a, b, label):
+        """Untagged pieces of [a, b): cut at segment()'s boundaries where both sides keep MIN_SECTION bars."""
+        cuts = [a]
+        for i in inner:
+            if cuts[-1] + MIN_SECTION <= i <= b - MIN_SECTION:
+                cuts.append(i)
+        cuts.append(b)
+        out = []
+        for p, q in zip(cuts[:-1], cuts[1:]):
+            lab = label or ("instrumental" if L.energy_mean_db(loud[p:q]) >= med - 1.5 else "break")
+            out.append({"bar0": p, "bar1": q, "label": lab, "tag": None, "lines": []})
+        return out
+    pieces = []
+    first = blocks[0]
+    if first["bar0"] >= MIN_SECTION and parts.kind(first["tag"]) != "intro":
+        pieces += free(0, first["bar0"], "intro")
+    else:
+        first["bar0"] = 0
+    for k, b in enumerate(blocks):
+        nxt = blocks[k + 1]["bar0"] if k + 1 < len(blocks) else nb
+        end = min(max(b["sung1"], b["bar0"] + 1), nxt)
+        gap = nxt - end
+        if k + 1 == len(blocks):
+            own_gap = gap >= MIN_SECTION and parts.kind(b["tag"]) != "outro"
+        else:
+            quiet = gap > 0 and L.energy_mean_db(loud[end:nxt]) < L.energy_mean_db(loud[b["bar0"]:end]) - 4
+            own_gap = gap >= MIN_SECTION and (gap >= 6 or quiet)
+        pieces.append({"bar0": b["bar0"], "bar1": end if own_gap else nxt, "tag": b["tag"],
+                       "label": parts.kind(b["tag"]) or "verse", "lines": b["lines"]})
+        if own_gap:
+            pieces += free(end, nxt, "outro" if k + 1 == len(blocks) else None)
+    secs = []
+    for s in pieces:                                     # untagged neighbours with the same name are one section
+        if secs and s["tag"] is None and secs[-1]["tag"] is None and secs[-1]["label"] == s["label"]:
+            secs[-1]["bar1"] = s["bar1"]
+        else:
+            secs.append(s)
+    letters, starts = {}, {}
+    for s in secs:
+        a, b = s["bar0"], s["bar1"]
+        lab = sound_class(bar_lab, a, b)
+        s["letter"] = letters.setdefault(lab, "ABCDEFGHIJ"[len(letters) % 10])
+        s["vocal"] = float(np.mean(vfrac[a:b])) if b > a else 0.0
+        s["loud"] = float(L.energy_mean_db(loud[a:b]))
+        s["rep"] = float(np.mean([x["repeat"] > 0 for x in s["lines"]])) if s["lines"] else 0.0
+        ev = [w for w in (why_all[a] if a < len(why_all) else []) if w != "the lyric's stanza break"]
+        starts[a] = ([f"your [{s['tag']}]"] if s["tag"] else []) + ev
+    base = [(s["tag"] or s["label"]).lower() for s in secs]
+    total, count, used = Counter(base), Counter(), set()
+    for s, b in zip(secs, base):                         # the user's words, numbered when a tag comes back
+        if total[b] > 1:
+            count[b] += 1
+            name = f"{b} ({count[b]})" if b[-1:].isdigit() else f"{b} {count[b]}"
+        else:
+            name = b
+        k = 2
+        while name in used:                              # "Chorus 1" written next to two "Chorus": still one name each
+            name, k = f"{name} ({k})", k + 1
+        used.add(name)
+        s["name"] = name
+        if not s["tag"]:
+            s.pop("tag")
+    return secs, starts
 
 
 def label_sections(R, lines, vfrac, loud, has_lyrics):
@@ -302,9 +423,9 @@ def label_sections(R, lines, vfrac, loud, has_lyrics):
         elif i in group_of:
             s["label"] = "post-chorus" if i - 1 in chorus else "pre-chorus" if i + 1 in chorus else "refrain"
         elif last_ch is not None and i > last_ch:
-            # after the last chorus: new lines with more music after them = a bridge; the tail = the outro
+            # after the last chorus: new lines with more singing after them = a bridge; the last sung part = the outro
             new_lines = s["lines"] and s["rep"] < 0.5 and s["bar1"] - s["bar0"] >= 4
-            s["label"] = "bridge" if new_lines and i < len(secs) - 1 else "outro"
+            s["label"] = "bridge" if new_lines and any(j > i for j in voc) else "outro"
         else:
             s["label"] = "verse"
     # pre-chorus: a short non-repeating vocal section that leads into a chorus, more than once
@@ -556,10 +677,21 @@ def analyse(tags=True, cpu=False):
     def ref90(key):
         return float(np.percentile([L.energy_mean_db(E[key]["db"][a:max(b, a + 1)]) for a, b in G.spans], 90))
     lvl = {k: L.bar_level(E[k]["db"], ref90(k), G.spans) for k in ("drums", "bass", "other")}
-    R, why = segment(G, bar_lab, lines, vfrac, bar_loud, lvl)
-    secs = label_sections(R, lines, vfrac, bar_loud, bool(lines))
+    R, why, why_all = segment(G, bar_lab, lines, vfrac, bar_loud, lvl)
+    if parts.tagged(lines):              # the lyric names its sections: its tags place them, the evidence fills the rest
+        secs, why = tagged_sections(G, R, why_all, bar_lab, lines, vfrac, bar_loud)
+        sections_from = "the lyric's [section] tags (where nobody sings: the sound)"
+    else:                                # no tags: worked out from the sound and the lyric's repeats (and stanzas)
+        secs = label_sections(R, lines, vfrac, bar_loud, bool(lines))
+        stanzas = any("the lyric's stanza break" in w for w in why_all)
+        sections_from = ("the sound, the lyric's repeats and its stanzas" if stanzas else
+                         "the sound and the lyric's repeats" if lines else "the sound")
+        if len(lines) >= 16 and sum(1 for s in secs if s["lines"]) <= 2:
+            warn.append(f"only {len(secs)} sections found in a song with {len(lines)} sung lines: the sound and the "
+                        "lyric's repeats don't show where its parts start. Put [Verse] / [Chorus]-style tags above the "
+                        "parts in your lyrics (the brief page) and analyse again: the tags then name the sections")
     for s in secs:
-        s["why"] = why.get(s["bar0"], ["start"] if s["bar0"] == 0 else [])
+        s["why"] = why.get(s["bar0"]) or (["start"] if s["bar0"] == 0 else [])
     clock(f"structure (k={k_cls})")
 
     # ---- per bar
@@ -636,7 +768,7 @@ def analyse(tags=True, cpu=False):
                    "first": round(lines[0]["t"], 2) if lines else None, "last": round(lines[-1]["end"], 2) if lines else None},
         "lyrics_meta": A.get("lyrics_meta"),
         "beats": [round(float(b), 3) for b in G.beats],
-        "sections": secs, "bars": bars, "moments": moments,
+        "sections_from": sections_from, "sections": secs, "bars": bars, "moments": moments,
         "lyrics": [{k_: v for k_, v in x.items() if k_ != "norm"} for x in lines],
         "notes": {"vocal": vnotes, "bass": bnotes},
         "chords": collapse([(float(G.beats[j]), c) for j, c in enumerate(beat_ch)], float(G.ends[-1])),
@@ -684,7 +816,8 @@ def analyse(tags=True, cpu=False):
                          "pitch": f"torchcrepe {pitch_model}" if pitch_model else None,
                          "tagger": L.CLAP_MODEL if clap is not None else None},
               "decoder_lag_samples": lag, "timings_s": clock.d, "warnings": warn,
-              "confidence": confidence(A, lines, key_score, key2_score, secs, sung, in_music),
+              "confidence": {**confidence(A, lines, key_score, key2_score, secs, sung, in_music),
+                             "sections_from": model["sections_from"]},
               "signals": signals}
     return model, env, report, {"G": G}
 

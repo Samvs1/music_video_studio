@@ -30,6 +30,24 @@ def chords_str(c):
     return " ".join(seq[:8]) + (" …" if len(seq) > 8 else "")
 
 
+def tagged(m):
+    return str(m.get("sections_from") or "").startswith("the lyric's")
+
+
+def sections_note(m):
+    if tagged(m):
+        return ("named by the user's own `[Verse]` / `[Chorus]` tags in the lyric (`tag` in song-map.json); each starts on "
+                "the bar of its first sung line. Where nobody sings, the sound decides (intro / instrumental / break / outro).")
+    return "names come from repetition (the sound) and the lyric (lines that come back = chorus; a stanza break = a boundary)."
+
+
+def sections_caveat(m):
+    if tagged(m):
+        return ("Section names are the user's own (their lyric's tags); a section starts where its first line is sung, so "
+                "a part whose music starts earlier (an instrumental lead into a chorus) shows that in the bars before it.")
+    return "Section names are inferred: if the bars say otherwise, trust your reading and say so in `song-story.md`."
+
+
 def shape(m):
     secs = m["sections"]
     if not secs:
@@ -79,6 +97,8 @@ def song_map_md(m):
                  f"(mostly {vo['core'][0]}–{vo['core'][1]})"
                  + (f"; first word {mmss(vo['first'])}, last {mmss(vo['last'])}" if vo.get("first") is not None else ""))
     L.append(f"- **Shape** {shape(m)}")
+    if m.get("sections_from"):
+        L.append(f"- **Sections** from {m['sections_from']}")
     lm = m.get("lyrics_meta") or {}
     if m["lyrics"]:
         aligned = any("fa" in w for x in m["lyrics"] for w in x["words"])
@@ -250,12 +270,12 @@ designer animates with. Made by `tools/song_kit.py` from the song file, its stem
   values: +3 LU is clearly louder, +6 LU is a big lift.
 - **V D B O** (0-9): **V** = how much of the bar is sung (9 = all through); **D / B / O** = how loud the drums, bass and
   *other* (guitars, keys, synths, strings) are against their own loudest bars (0 = not playing, 9 = full).
-- **Sections**: names come from repetition (the *sound* letter: sections with the same letter share chords and texture)
-  and the lyric (lines that come back = chorus). `AB` = merged from two classes.
+- **Sections**: {sections_note(m)} The *sound* letter: sections with the same letter share chords and
+  texture; `AB` = merged from two classes.
 - **Moments**: ★ (cut on it if it's handy) → ★★★ (the song's own peaks and turns: the video's big ideas go here).
 
 ## Caveats
-- Section names are inferred: if the bars say otherwise, trust your reading and say so in `song-story.md`.
+- {sections_caveat(m)}
 - Chords are major/minor triads from the *other* + *bass* stems (no 7ths/sus): good for where harmony changes,
   approximate for spelling. Key: {m['key']['name']} (fit {m['key']['score']:.2f} vs {m['key']['runner_up']} {m['key']['runner_up_score']:.2f}).
 - Notes come from pitch tracking (CREPE) on the vocal / bass stems: reliable for contour, highest notes and holds;

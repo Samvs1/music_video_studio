@@ -39,7 +39,9 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    song is about to you, mood or direction, ideas, things to avoid, **people & references** (photos of the people in
    the song, each with who it is, so Claude knows what everyone looks like: it draws them in the video's own style,
    the photos never appear in the video), the delivery format (1080p 30/60/24, 4K, vertical, square, or custom), and
-   the lyrics if they aren't online (plain text, or LRC with line or word times).
+   the lyrics if they aren't online (plain text, or LRC with line or word times). `[Verse 1]` / `[Chorus]`-style tags
+   above the parts name the song's sections (each starts where its first line is sung); without tags the analysis
+   works the sections out from the sound and the lyric's repeats, and a blank line between stanzas helps it.
 2. **Analyse** (a few minutes): stems, beats and bars, lyrics, melody, chords, sections, moments → the song folder.
 3. **The song**: the song the way Claude reads it, playing along: sections, loudness and the ★★★ moments, melody and
    bass notes, chords, beats, the four stems (hear any of them alone: M V D B O), a beat click (K), every sung word.

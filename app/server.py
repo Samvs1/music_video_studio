@@ -766,10 +766,34 @@ def lrc_time(t):
     return f"{int(m):02d}:{s:05.2f}"
 
 
+def lyric_structure(rows):
+    """The LRC lines (rows of (t, line, set, part, stanza) in time order) with the lyric's tags and stanza breaks put
+    back: "[Chorus]" above a line whose part differs from the one above it, a blank line between two stanzas. A line
+    with neither (a repeat Whisper heard, a line added in the editor) goes on in the part above it; a repeat that has a
+    part but sits inside another part (the parts above and below it agree) stays in that part."""
+    out, cur, cur_st = [], None, None
+    for k, (_, line, _, part, st) in enumerate(rows):
+        if part and st is None:
+            nxt = next((r[3] for r in rows[k + 1:] if r[4] is not None), None)
+            if cur and nxt == cur:
+                part = cur
+        if part and part != cur:
+            out += ([""] if out else []) + [f"[{part}]"]
+            cur, cur_st = part, st
+        elif st is not None:
+            if cur_st is not None and st != cur_st:
+                out.append("")
+            cur_st = st
+        out.append(line)
+    return out
+
+
 def save_lyric_timing(name, body):
     """The lyric timing editor (The song page): every line with its start, its end where the user set one (a time tag
     after the last word: "[00:12.00] hold the light <00:14.10>") and its words' times where the user's LRC had them,
     becomes LRC in project.json "lyrics", marked as timed on this very song file ("lyrics_synced": no offset search).
+    The lyric's own structure stays in it: a line's part ("[Chorus]") is written above the first line of each part and
+    a blank line between stanzas (lyric_structure()), so the analysis still names the sections from the tags.
     The lines the user set by hand are listed in "lyrics_set" (their start times): the analysis keeps those exactly
     and places every other line where Whisper heard it (an untouched line's time was only ever a guess). The lyrics
     it replaces are kept in cache/lyrics/. Then the song is analysed again (the stems are reused)."""
@@ -788,7 +812,9 @@ def save_lyric_timing(name, body):
         end = x.get("end")
         if end is not None and t + 0.05 < float(end) < 6 * 3600:      # when the line stops
             text += f" <{lrc_time(float(end))}>"
-        out.append((t, f"[{lrc_time(t)}] {text}", bool(x.get("set"))))
+        part = re.sub(r"[\[\]\s]+", " ", str(x.get("part") or "")).strip()[:80] or None
+        st = x.get("stanza")
+        out.append((t, f"[{lrc_time(t)}] {text}", bool(x.get("set")), part, st if isinstance(st, int) else None))
     if len(out) < 3:
         raise ValueError("at least 3 lyric lines are needed")
     if job_state(name).get("running"):
@@ -800,9 +826,9 @@ def save_lyric_timing(name, body):
             os.makedirs(os.path.join(d, "cache", "lyrics"), exist_ok=True)
             open(os.path.join(d, "cache", "lyrics", f"lyrics_{time.strftime('%Y%m%d-%H%M%S')}.txt"), "w",
                  encoding="utf-8").write(old if isinstance(old, str) else json.dumps(old, ensure_ascii=False))
-        pj["lyrics"] = "\n".join(line for _, line, _ in sorted(out, key=lambda z: z[0])) + "\n"
+        pj["lyrics"] = "\n".join(lyric_structure(sorted(out, key=lambda z: z[0]))) + "\n"
         pj["lyrics_synced"] = True
-        pj["lyrics_set"] = [round(int(m) * 60 + float(s_), 2) for t, _, mine in out if mine
+        pj["lyrics_set"] = [round(int(m) * 60 + float(s_), 2) for t, _, mine, _, _ in out if mine
                             for m, s_ in [lrc_time(t).split(":")]]        # as the LRC reads back
         studio.save_project(d, pj)
     if body.get("analyse", True):
