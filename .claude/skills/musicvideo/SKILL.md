@@ -46,7 +46,10 @@ the studio the clock, the render queue, the checks, the versions, the costs (and
   you to use the time left if you finish early. While your agents work it waits (no reminder, no nudge); when they
   finish you get a turn of your own. At the deadline plus a grace it ends the session, archives the cut as the next
   version, runs the checks and appends the run settings (models and their costs, agents, ultracode) to report.md.
-  `S clock <p>` prints the time left.
+  `S clock <p>` prints the time left. If the user's Claude usage limit stops you mid-run, the studio may pause the run
+  (its clock stopped) and tell you when the limit has reset, or a later run carries on your conversation ("This is
+  run N, and it carries on from there"): an agent or command that was running then was stopped, so check what it
+  left on disk, say where you pick up, and carry on; don't start over.
 - **A pitch round** (optional, the user's choice; an autonomous director never starts one): several directors pitch
   at once from different angles, each proving its idea on one window of the song; the critic and a verdict rank them,
   the user picks. Interactively, when the user is torn or asks for options, suggest one (the Pitch round page, or

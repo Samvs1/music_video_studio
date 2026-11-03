@@ -94,6 +94,14 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
    critic's and the total. While it runs, **▶ play the scenes live** opens the live view (step 6). **Stop** wraps it
    up cleanly. Or direct it *with* Claude: open Claude Code in this folder and type `/musicvideo <project>`: the same
    director's workflow and tools (the critic, the plan tools, agents if it wants them), and you can talk along.
+   **When your Claude plan's usage limit stops the director mid-run**: with **Continue by itself when Claude's usage
+   limit resets** ticked (kept like the other settings), the run waits, its clock stopped (the run view says "paused:
+   usage limit" and when it carries on), and once the limit resets the director carries on where it was, with the
+   time it had left. Unticked, the run ends there. Either way, a run that ended early (the limit, Stop, a closed
+   console, a machine that slept) shows **Continue the last run** on the Direct page: the director picks it up in the
+   same conversation (it remembers what it was doing), with the minutes the run had left (at least 15; change them in
+   the box), and the form's settings; if the limit hasn't reset yet, the run waits for it first. From the command
+   line: `studio.py direct <project> --continue` (and `--auto-continue` / `--no-auto-continue`).
 6. **Watch & review**: each version with the song's lanes under the video, and the critic's notes on it (scores, the
    worst problems with their times, what works; **Ask the critic** for a fresh look). Press **N** for a note at that moment.
    **▶ live** (the default while there's no video yet) plays the project's scenes as they are now, in your browser with
@@ -116,7 +124,7 @@ Start the studio (the `.bat`, or `studio.py serve`) → http://127.0.0.1:8765 �
 | `align-lyrics <p> [--in lines.json]` | the lyric lines placed where Whisper hears them (`cache/lyrics/aligned.json`; the timing editor's button) |
 | `pitch <p> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet] [--critic-effort E] [--proof "chorus 1"\|24-44\|1:02-1:20] [--angles story,wild,...] [--seed-notes "..."] [--max-usd N] [--auto [--direct-budget 90m] [--direct-effort max] [--direct-model M] [--direct-max-usd N] [--ultracode]] [--dry-run]` | the pitch round, optional: N directors pitch at once from different angles, each proving its idea on the same window of the song (`work/pitches/round-K/`); proof_av.mp4 (the proof with the song), the critic on each proof, one verdict (ambition first) with graft ideas, the costs; `--auto`: the verdict's winner is built at once |
 | `pitch-pick <p> round-K/pN [--dry-run]` | put a picked pitch in place for an interactive director (`/musicvideo`), as `direct --pitch` does first, and print what's where, the critic's notes on its proof and the verdict's graft ideas |
-| `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-effort medium] [--critic-max 6] [--pitch round-K/pN]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final; `--pitch`: it starts from that pitch (put in place first) and goes further |
+| `direct <p> --budget 90m [--model opus] [--effort max] [--ultracode] [--max-usd N] [--seed-notes "..."] [--revise] [--no-nudge] [--dry-run] [--critic-model sonnet\|haiku\|opus\|off] [--critic-effort medium] [--critic-max 6] [--pitch round-K/pN] [--continue] [--auto-continue\|--no-auto-continue]` | the autonomous run: one director with full reign (it deploys agents if it wants to; `--ultracode` adds multi-agent workflows: more tokens; `--max-usd` caps the session, its agents included); the critic looks at every preview and the final; `--pitch`: it starts from that pitch (put in place first) and goes further; `--continue`: carries on the last run in its own conversation (`claude --resume`) with the budget it had left (or `--budget`), after the usage limit that stopped it has reset; `--auto-continue`: when Claude's usage limit stops the director, the run waits for the reset (its clock stopped) and carries on (default: the Direct page's choice) |
 | `critique <p> <video \| vN> [--model sonnet] [--effort medium] [--focus "..."] [--max-usd 2] [--pictures a.png,b.png] [--concept PATH] [--out DIR] [--no-look]` | the critic: a cheaper model with fresh eyes looks at a video, reports back in text (`work/critic/`; a version also `final/critic_vN.md`) |
 | `plan validate\|status <p>` | the optional plan tools (`work/plan.json`, a scene list): check it (exit 1 with what to fix) · each scene's renders, the previews with the critic's scores, the final's estimated render time here, the render queue |
 | `plan render <p> [--preview\|--final] [--only s1,s3]` · `plan assemble <p> [--preview\|--final] [--no-critic]` | each segment over its own frame range (unchanged ones from the cache) · join, layer, mux → `work/previews/preview_N.mp4` or `final/music-video.mp4`, then the eyes, the checks and the critic on the whole film |
@@ -387,6 +395,21 @@ director how they look, so it can draw them; the pictures never appear in the vi
   video render, the director's and its agents', waits its turn in the render queue; the final render is the floor no
   fan-out lowers. `MV_RENDER_LOCK=0` turns it off; `MV_RENDER_WHO` names a render while it holds the queue.
 - **The cut that exists is never lost**: the start of a run archives `final/music-video.mp4` as a version.
+- **Claude's usage limit is read from Claude Code's own words**, never the director's: the turn the limit stops
+  ends with an assistant message Claude Code writes itself (model `<synthetic>`, error `rate_limit`, "You've hit
+  your session limit · resets 3pm") and a result marked `is_error`; a `rate_limit_event` just before it says
+  `rejected` and gives the reset to the second. A temporary server throttle ("not your usage limit") isn't one. A
+  refused request costs nothing, so waiting and trying again is free. With "continue by itself" the run pauses (no
+  reminders, nudges, critic or live notes go in; the clock stops, so the director gets the time it had left) and at
+  the reset plus a minute it carries on: a message to the same session, or, if that session ended meanwhile, a new
+  process of its conversation (`claude --resume <session id>`). A reset more than a day away isn't waited for. A
+  critique the limit refused gives its slot back and is tried again after the reset.
+- **Continue the last run resumes the conversation** rather than starting over: the director keeps what it knew (its
+  concept, its plan, what it was halfway through) and is told how the run ended, what was stopped, and its new clock.
+  When Claude Code can't resume it (the conversation isn't on this machine: it ends before its first turn), a fresh
+  session gets the brief with a note saying where the work is (`work/log.md` first) and not to start over. A resumed
+  process may or may not count the earlier process's costs in its running totals; its first result says which, so a
+  run's cost is its own either way.
 - **The critic never looks twice at one cut**: `plan assemble` runs the critic on its own cut and marks it from the
   mux on (`work/critic/pending/`), every critic.py run marks its cut while it works, and the runner's watcher skips a
   cut that has a critique already (its path, size and mtime) or is being critiqued, and an older preview once a newer
@@ -424,6 +447,11 @@ director how they look, so it can draw them; the pictures never appear in the vi
 - Costs are known when a turn ends: Claude Code reports them in a `result`, so during a long first turn the run view's
   costs stay at what the last turn said (at first $0.00), and an agent's cost shows once a turn ends after it. The cap
   (`--max-usd`) is Claude Code's own check on those totals.
+- The usage limit's messages were read from Claude Code 2.1.317's own code, not seen live (a real limit can't be
+  produced on demand): the studio watches every sign of it (the `rate_limit_event`, the error message, the result's
+  text, older CLIs' `usage limit reached|<epoch>`), and a reset it can't read is tried every 15 minutes. An agent
+  that was running when the limit hit is stopped by it; the director is told to check what it left on disk before
+  starting it again.
 - The cost per model is labelled by model: a model the director's agents asked for is "agents", the session's own
   "the director"; an agent on the director's own model can't be told apart from it (that line says "the director and
   its agents").

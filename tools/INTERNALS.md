@@ -54,6 +54,52 @@ requires them. What the studio does around them (`director.py`, `mv/session.py`)
   was reached the run ends there without more messages, and report.md says so.
 - **Renders**: every video render waits its turn in the render queue (below), the agents' too.
 
+## Claude's usage limit during a run, and Continue the last run
+- **How it shows** (read from Claude Code 2.1.317's own code: a real limit can't be made on demand, so every sign
+  counts; `mv/session.py` `limit_of`): a `rate_limit_event` {rate_limit_info: {status allowed | allowed_warning |
+  rejected, resetsAt (epoch s), rateLimitType five_hour | seven_day | ..., isUsingOverage}} whenever the limits' state
+  changes; the refused turn's assistant message is Claude Code's own (model `<synthetic>`, `error: "rate_limit"`,
+  some builds `api_error: "usage_limit_reached"` with `api_error_params.rate_limit_info`), text like "You've hit
+  your session limit · resets 3pm (Europe/Brussels)"; then its `result`, `is_error` true, the same text (older CLIs:
+  "Claude AI usage limit reached|<epoch>"). Only Claude Code's own messages count, never the director's words; a
+  temporary throttle ("Server is temporarily limiting requests (not your usage limit)") and the cost cap aren't one.
+  The reset: the message's own `rate_limit_info`, else the `rejected` event of the last 15 min, else the text
+  (`reset_at`: `|epoch`, "in 2h 15m", "3pm", "3:30pm (Area/City)" through zoneinfo, "15:00", "18:05Z", "Nov 4,
+  10am", "Mon 10am"; the next such time to come). The session counts each refused turn once (`limit_hits`; its result
+  repeats it) and keeps the latest (`limit`: {text, resets_at, kind, at}); `allowed_warning` is said once per limit
+  and reset in the live log ("close to its limit").
+- **The runner** (`Runner.check_limit`): with `auto_continue` (`--auto-continue`; default the Direct page's choice,
+  project.json `director.auto_continue`) the run pauses: `state` "paused", `paused` {since, resets_at, until,
+  left_s, text}; nothing goes to the director (no time warning, reminder, nudge, live note or critic's note: they wait),
+  no new critique starts, the clock is stopped (`active_s` is the run's own time; at the end `deadline` moves by the
+  wait, `paused_s` adds up, `pauses` [{t, s, resets_at, text, end}]). At the reset plus `RESET_MARGIN_S` (60 s; no
+  reset given: every `RETRY_S`, 15 min) it carries on: `RESUME_MSG` to the same session (its time left, the new
+  deadline, an agent the limit stopped), or, when the session ended meanwhile, `launch()`: a new process of the same
+  conversation (`claude --resume <session_id>`, `append` to the run's events.jsonl and stderr.log). A limit that still
+  holds pauses it again from its next refusal. A reset more than `MAX_WAIT_S` (a day) away, or refusals for more than
+  a day, end the run. Without auto_continue the run ends at once (`stop_reason` "Claude's usage limit was reached (it
+  resets HH:MM)", no time's-up message: it can't answer). A STOP while it waits ends it. A critique the limit refused
+  gives its slot back and its cut is looked at again after the reset (`CriticWatcher.hold_until`).
+- **What a run that ended early keeps** (status.json): `cut_off` {why limit | stopped | cost cap | ended, at, left_s,
+  resets_at, text}, `left_s` (its budget not used), `session_id` (Claude Code's, from its first init), `conv_cost_usd`
+  / `conv_usage` (the conversation's running totals as its last process counted them). `continuable(p)` reads the last
+  run that started (not a dry run, not a continuing run stopped while it waited): what it had left (a run whose runner
+  was cut off: what its clock said last, `active_s`), a reset still to come, whether it can be resumed;
+  `GET /api/p/<p>/director` passes it on as `continuable` once no run is going on.
+- **`direct --continue`** (the Direct page's Continue the last run): a new run (kind "continue", `continues` {run, why,
+  kind, resumed}) with the budget the last one had left (at least `CONTINUE_MIN_S`, 15 min; `--budget` overrides).
+  When the limit that stopped it resets later, the run waits first (`state` "waiting", `waiting_until`; current.json
+  kept fresh; STOP ends it as "not started"). Then `claude --resume <its session_id>` with `CONTINUE_MSG` first (how
+  run N ended, that anything running then was stopped, the new clock, the critic, the user's notes for this run and
+  open live notes). A process that ends before its first turn couldn't resume it ("No conversation found with
+  session ID": not on this machine): a fresh session instead, the full brief with `CONT_BRIEF` (where the work is,
+  `work/log.md` first, don't start over), brief.md rewritten, `continues.resumed` false. command.json keeps every
+  `launches` entry.
+- **Costs across processes**: a resumed process's `total_cost_usd` may or may not include the conversation's earlier
+  totals (Claude Code can restore them for the session it last ran in this folder). `Session(cost_base, usage_base,
+  cost_before, usage_before)`: its first result says which (at least `cost_before`: they're included and taken off);
+  this run's earlier processes are added. A run's cost is its own either way.
+
 ## pitch.py: the pitch round, optional (`studio.py pitch <p>`)
 Several directors pitch the video at the same time from different angles; the critic compares; the user picks which
 one the director builds (`studio.py direct <p> --pitch round-K/pN`). A run without a pitch round is exactly as before.

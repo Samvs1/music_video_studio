@@ -19,7 +19,10 @@ the size picker, the sound delay, a stateful scene caught up after a seek, N for
 across the song, a click on a section, a bad time, ▶ Listen; then started from the Pitch round page in headless
 Chromium on the section chosen: the round at work, GET pitches, the cards with their proofs,
 ▶ live over the proof window, Build this one -> a director run from the pitch; pitch-pick's refusals; Stop on a pitch
-job) -> doctor. Then each page of the UI in headless Chromium: no JavaScript errors, a screenshot per page in
+job) -> Claude's usage limit (the stand-in refuses the brief: with "continue by itself" ticked the run pauses, its
+clock stopped, and the run view says so, Stop ends it; unticked it ends at once and the Direct page's "Continue the
+last run" carries it on in its own conversation) -> doctor. Then each page of the UI in headless Chromium: no
+JavaScript errors, a screenshot per page in
 tests/out/ui/; on the brief page a picture is added and named, on the song page the lyric timing editor opens, taps,
 undoes and closes, and aligns with Whisper; the Direct page has the critic select and the settings kept, the Watch
 page the critic's box with its scores.
@@ -190,6 +193,7 @@ def main():
         direct_form_check(B, name, out, browser=not a.no_browser)
         live_check(B, name, out, browser=not a.no_browser)
         pitch_check(B, name, out, browser=not a.no_browser)
+        limit_check(B, name, out, browser=not a.no_browser)
         r = requests.get(B + "/api/doctor").json()
         say("Music Video Studio" in r.get("text", ""), "GET /api/doctor")
         if not a.no_browser:
@@ -266,10 +270,13 @@ def direct_form_check(B, name, out, browser=True):
             page.goto(f"{B}/#{name}/direct")
             page.wait_for_selector("#dir-live .box", timeout=10000)
             live = page.inner_text("#dir-live")
-            defaults = (page.input_value("#d-effort"), page.is_checked("#d-ultra"), page.input_value("#d-cap"))
-            say("stopped" in live and page.locator("#dir-ev").count() == 1 and defaults == ("max", False, ""),
-                "UI: the Direct page: the last run's view (its live log); the form's defaults (effort max, Ultracode off, no cap; "
-                "an effort the old forms saved doesn't count)", f"{live.splitlines()[0][:80] if live else 'empty'}; defaults {defaults}")
+            defaults = (page.input_value("#d-effort"), page.is_checked("#d-ultra"), page.input_value("#d-cap"), page.is_checked("#d-auto"))
+            cont = page.inner_text("#d-cont-box") if page.locator("#d-cont-box").count() else ""
+            say("stopped" in live and page.locator("#dir-ev").count() == 1 and defaults == ("max", False, "", False)
+                and "was cut short" in cont and page.locator("#go-cont").count() == 1,
+                "UI: the Direct page: the last run's view (its live log); the form's defaults (effort max, Ultracode off, no cap, "
+                "'continue by itself' off; an effort the old forms saved doesn't count); the stopped run offered to continue",
+                f"{live.splitlines()[0][:80] if live else 'empty'}; defaults {defaults}; {cont[:120]!r}")
             page.fill("#d-budget", form["budget"])
             page.fill("#d-model", form["model"])
             page.select_option("#d-critic", form["critic_model"])
@@ -497,6 +504,136 @@ def live_check(B, name, out, browser=True):
             if os.path.exists(lj):
                 os.remove(lj)
     say(not errs, "UI: the live view (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
+
+
+def limit_check(B, name, out, browser=True):
+    """Claude's usage limit, in the web app (the stand-in refuses the brief: a FAKE_LIMIT file in the project). With
+    the Direct form's "Continue by itself when Claude's usage limit resets" ticked (kept in project.json, sent as
+    auto_continue) the run pauses: GET director says paused (its clock stopped at what was left, when it carries on),
+    the run view says so; Stop ends it. Unticked, the run ends at once; GET director's continuable says the limit
+    stopped it and what it had left, the Direct page offers "Continue the last run" with those minutes, and its button
+    starts `direct --continue`: the same conversation (--resume), and the run view says it continues run N. No
+    JavaScript errors."""
+    shots = os.path.join(out, "ui")
+    os.makedirs(shots, exist_ok=True)
+    pdir = os.path.join(STUDIO, "projects", name)
+    flag = os.path.join(pdir, "FAKE_LIMIT")
+    pw = page = b = None
+    errs = []
+    if browser:
+        sys.path.insert(0, os.path.join(STUDIO, "tools"))
+        from mv.web import launch
+        from playwright.sync_api import sync_playwright
+        pw = sync_playwright().start()
+        b, _ = launch(pw, "off")
+        page = b.new_page(viewport={"width": 1400, "height": 1000})
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
+
+    def director(most=120, until=lambda d: False):
+        t0, d = time.time(), {}
+        while time.time() - t0 < most:
+            d = requests.get(f"{B}/api/p/{name}/director").json() or {}
+            if until(d):
+                break
+            time.sleep(1)
+        return d
+    run = {"effort": "low", "model": "fake", "critic_model": "off", "nudge": False}
+    try:
+        # 1. "continue by itself" ticked: the run pauses for the limit, its clock stopped; Stop ends it
+        open(flag, "w").write("1:600")
+        if page:
+            page.goto(f"{B}/#{name}/direct")
+            page.wait_for_selector("#d-auto", timeout=10000)
+            page.check("#d-auto")                      # (kept as it changes)
+            page.wait_for_timeout(800)
+        else:
+            requests.post(f"{B}/api/p/{name}/brief", json={"director": {"auto_continue": True}})
+        kept = (requests.get(f"{B}/api/p/{name}").json()["project"].get("director") or {}).get("auto_continue")
+        r = requests.post(f"{B}/api/p/{name}/direct", json=dict(run, budget=6, auto_continue=True)).json()
+        t0 = time.time()
+        d = director(120, lambda d: d.get("state") == "paused" and d.get("run") and d.get("started", 0) >= t0 - 5)
+        p = d.get("paused") or {}
+        say(kept is True and r.get("ok") and d.get("state") == "paused" and d.get("auto_continue") is True
+            and (p.get("until") or 0) > time.time() + 500 and 300 <= (p.get("left_s") or 0) <= 360 and "session limit" in (p.get("text") or ""),
+            "the usage limit with 'continue by itself' ticked (kept, sent): the run pauses, its clock stopped at what was left, "
+            "and says when it carries on (GET director: paused)", f"kept {kept}; state {d.get('state')}; paused {p}")
+        if page:
+            page.reload()
+            page.wait_for_selector("#dir-paused", timeout=15000)
+            head, why = page.inner_text("#dir-live .row"), page.inner_text("#dir-paused")
+            page.screenshot(path=os.path.join(shots, "direct-paused.png"), full_page=True)
+            say("paused: usage limit" in head and "clock stopped at" in head and "carries on by itself at" in why
+                and "Stop it to end the run now" in why and page.is_checked("#d-auto"),
+                "UI: a run paused for the usage limit says so (its clock stopped, when it carries on, Stop ends it)",
+                (head + " || " + why).replace("\n", " ")[:300])
+        requests.post(f"{B}/api/p/{name}/stop")
+        wait_job(B, name, timeout=300, want="direct")
+        d = director(5, lambda d: d.get("state") not in ("paused", "running", "finishing"))
+        ps = d.get("pauses") or []
+        say(d.get("state") == "stopped" and (d.get("cut_off") or {}).get("why") == "stopped" and ps and ps[-1].get("end") == "stopped",
+            "Stop while it waits for the limit: the run ends (stopped), the wait recorded", f"{d.get('state')}; {d.get('stop_reason')}; pauses {ps}")
+        # 2. unticked: the run ends at once; Continue the last run carries it on in its own conversation
+        open(flag, "w").write("1:-1")
+        if page:
+            page.uncheck("#d-auto")
+            page.wait_for_timeout(800)
+        requests.post(f"{B}/api/p/{name}/direct", json=dict(run, budget=6, auto_continue=False))
+        wait_job(B, name, timeout=300, want="direct")
+        d = director(5)
+        c = d.get("continuable") or {}
+        say(d.get("state") == "done" and (d.get("cut_off") or {}).get("why") == "limit" and c.get("run") == d.get("run") and c.get("limit")
+            and 300 <= (c.get("left_s") or 0) <= 360 and c.get("budget_s") == 900 and c.get("resumable") and d.get("auto_continue") is False,
+            "the usage limit with 'continue by itself' off: the run ends at once; GET director's continuable says the limit "
+            "stopped it and what it had left", f"{d.get('state')}; {d.get('stop_reason')}; continuable {c}")
+        os.remove(flag)
+        prev = d.get("run")
+        if page:
+            page.reload()
+            page.wait_for_selector("#d-cont-box", timeout=15000)
+            box = page.inner_text("#d-cont-box")
+            say("stopped by Claude's usage limit" in box and "of its budget left" in box and "same conversation" in box
+                and page.input_value("#d-cbudget") == "15" and page.locator("#go-cont").count() == 1,
+                "UI: the Direct page offers 'Continue the last run' (how it ended, what it had left, the same conversation, "
+                "the minutes)", box.replace("\n", " ")[:300])
+            sent = []
+
+            def no_nudge(route):
+                body = json.loads(route.request.post_data or "{}")
+                sent.append(body)
+                route.continue_(post_data=json.dumps(dict(body, nudge=False)))      # (the critic on: the Watch page checks its notes)
+            page.route("**/api/p/*/direct", no_nudge)
+            page.click("#go-cont")
+            page.wait_for_timeout(1500)
+            page.unroute("**/api/p/*/direct")
+            got = sent[0] if sent else {}
+            say(got.get("continue") is True and got.get("budget") == "15" and got.get("auto_continue") is False,
+                "UI: Continue the last run sends continue with its minutes and the form's settings", str(got)[:300])
+        else:
+            requests.post(f"{B}/api/p/{name}/direct", json=dict(run, budget=15, critic_model="sonnet", **{"continue": True}))
+        wait_job(B, name, timeout=1500, want="direct")
+        d = director(5)
+        co = d.get("continues") or {}
+        cmd = json.load(open(os.path.join(pdir, "work", "director", f"run-{d.get('run')}", "command.json"), encoding="utf-8"))["cmd"]
+        say(d.get("kind") == "continue" and co.get("run") == prev and co.get("resumed") is True and "--resume" in cmd
+            and d.get("budget_s") == 900 and d.get("version") and d.get("state") == "done",
+            "Continue the last run from the web app: `direct --continue`, its own conversation (--resume), the minutes asked, delivered",
+            f"run {d.get('run')} {d.get('kind')}: continues {co}; budget {d.get('budget_s')}; v{d.get('version')}; {d.get('stop_reason')}")
+        if page:
+            page.reload()
+            page.wait_for_selector("#dir-continues", timeout=15000)
+            txt = page.inner_text("#dir-continues")
+            page.screenshot(path=os.path.join(shots, "direct-continued.png"), full_page=True)
+            say(f"Continues run {prev} in its own conversation" in txt, "UI: the run view says it continues run N in its own conversation", txt[:200])
+            say(not errs, "UI: the usage limit on the Direct page (headless Chromium)", "no JS errors" if not errs else "; ".join(errs)[:300])
+    finally:
+        if os.path.exists(flag):
+            os.remove(flag)
+        requests.post(f"{B}/api/p/{name}/brief", json={"director": {"auto_continue": False}})
+        if b:
+            b.close()
+        if pw:
+            pw.stop()
 
 
 def pitch_check(B, name, out, browser=True):

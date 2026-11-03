@@ -4,6 +4,10 @@
   studio.py direct <p> --budget 90m ...   the autonomous run: one director (templates/director-brief.md) with full
                                           reign: it builds the video itself, or deploys agents where it wants to
   studio.py direct <p> --revise ...       the review round: templates/revise-brief.md with the user's notes
+  studio.py direct <p> --continue ...     carry on the last run in its own conversation (claude --resume), with the
+                                          budget it had left (after the usage limit that stopped it has reset)
+  studio.py direct <p> --auto-continue    when Claude's usage limit stops the director, wait for the reset (the clock
+                                          stopped) and carry on; without, the run ends there
   studio.py clock <p>                     time left in the running budget
   studio.py deliver <p>                   archive final/music-video.mp4 as the next version, run the checks, record it
 
@@ -33,6 +37,12 @@ The autonomous run (checked against `claude --help` of Claude Code 2.1.x):
   The session plumbing is mv/session.py: a session is busy from a message to an idle session until its next result;
   messages sent while it is busy join the running turn (verified on the real CLI), so the studio decides only when a
   turn has ended and nothing of the director's is still running.
+  Claude's usage limit (the user's plan) stopping the director mid-run (mv/session.py reads it from Claude Code's own
+  messages): with --auto-continue the run pauses, its clock stopped and nothing sent, and once the limit has reset it
+  carries on (a message to the same session, or a resumed process of its conversation); without, the run ends there
+  and status.json's cut_off says what it had left. `direct --continue` (continuable(): the last run that started)
+  carries it on later: claude --resume <its session id> with the studio's "carry on" first, or, when Claude Code can't
+  resume it, a fresh session whose brief says where the work is. tools/INTERNALS.md has the details.
 """
 import glob, json, os, re, shutil, subprocess, sys, threading, time
 
@@ -41,7 +51,7 @@ STUDIO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from mv.common import delivery, jload, jsave, song_file, project as load_pj, save_project  # noqa: E402
 from mv.claude import claude_bin, claude_print, kill_tree  # noqa: E402
-from mv.session import Session  # noqa: E402
+from mv.session import Session, LIMIT_RE, NOT_LIMIT_RE, reset_at, when  # noqa: E402
 
 TEMPLATES = os.path.join(STUDIO, "templates")
 SKILL = os.path.join(STUDIO, ".claude", "skills", "musicvideo", "SKILL.md")
@@ -241,13 +251,16 @@ def current(pdir):
 
 
 RUN_FRESH_S = 180                # a runner writes current.json every second: quiet this long, it was cut off
+# a run at work: "paused" waits for Claude's usage limit to reset (its clock stopped), "waiting" is a continuing run
+# that waits for it before its clock starts
+ACTIVE = ("running", "finishing", "paused", "waiting")
 
 
 def run_active(pdir):
     """The autonomous run going on in this project (its current.json), or None. A run whose runner stopped writing
     (its console closed, the machine slept or restarted, the process killed) is over, whatever its file says."""
     c = current(pdir)
-    if not c or c.get("state") not in ("running", "finishing"):
+    if not c or c.get("state") not in ACTIVE:
         return None
     try:
         fresh = time.time() - float(c.get("updated") or 0) < RUN_FRESH_S
@@ -270,11 +283,21 @@ def clock(pdir):
             return
         c = current(pdir)
         print("no autonomous run is going on (no time budget). " + (f"Last run: {c.get('state')}" if c else "")
-              + (" (its runner stopped writing: it was cut off)" if c and c.get("state") in ("running", "finishing") else ""))
+              + (" (its runner stopped writing: it was cut off)" if c and c.get("state") in ACTIVE else ""))
+        return
+    if c.get("state") == "waiting":
+        print(f"{time.strftime('%H:%M:%S')}  run {c.get('run')} waits for Claude's usage limit to reset: it starts at "
+              f"{hm(c.get('waiting_until') or now)} with {fmt_dur(c.get('budget_s') or 0)}")
+        return
+    if c.get("state") == "paused":
+        p = c.get("paused") or {}
+        print(f"{time.strftime('%H:%M:%S')}  PAUSED: Claude's usage limit stopped the director at {hm(p.get('since') or now)}; "
+              f"the clock is stopped at {fmt_dur(p.get('left_s') or 0)} left; it carries on at {hm(p.get('until') or now)}")
         return
     left = c["deadline"] - now
     agents = [a for a in c.get("agents") or [] if a.get("state") == "running"]
-    print(f"{time.strftime('%H:%M:%S')}  elapsed {fmt_dur(now - c['started'])} of {fmt_dur(c['budget_s'])}; "
+    active = now - c["started"] - float(c.get("paused_s") or 0)
+    print(f"{time.strftime('%H:%M:%S')}  elapsed {fmt_dur(active)} of {fmt_dur(c['budget_s'])}; "
           f"{'LEFT ' + fmt_dur(left) if left > 0 else 'TIME IS UP: finish now'} (deadline {hm(c['deadline'])})"
           + (f"; {len(agents)} agent{'s' * (len(agents) != 1)} running" if agents else ""))
 
@@ -313,9 +336,11 @@ def looking(critic, project, python, tools):
 
 
 def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadline=None, critic=None, ultracode=False,
-                pitch_text="", pitch_ref=None):
+                pitch_text="", pitch_ref=None, cont_text=""):
     """The run's brief (templates/director-brief.md, or revise-brief.md for a review round). pitch_text: the short
-    section on the pitch the run starts from (pitch.brief_section), "" without one; pitch_ref its "round-K/pN"."""
+    section on the pitch the run starts from (pitch.brief_section), "" without one; pitch_ref its "round-K/pN".
+    cont_text: a run that carries on earlier work in a fresh session (CONT_BRIEF: where the work is), after the
+    user's notes."""
     pj = load_pj(pdir)
     d = delivery(pj)
     sf = song_file(pdir)
@@ -351,10 +376,10 @@ def build_brief(pdir, budget_s, seed_notes="", revise=False, started=None, deadl
         if not rows:
             raise SystemExit(f"no open notes on v{vn}: leave notes on the Watch page (press N) first")
         vals.update(version=vn, notes="\n".join(rows), round=vn + 1, note_done=note_done_cmd(pdir),
-                    direction=("\nMy notes on the song (as before):\n" + notes) if notes else "")
+                    direction=(("\nMy notes on the song (as before):\n" + notes) if notes else "") + cont_text)
         text = fill(open(os.path.join(TEMPLATES, "revise-brief.md"), encoding="utf-8").read(), vals)
     else:
-        vals["direction"] = (("\n" + notes + "\n") if notes else "") + live_brief(pdir, pitch_ref)
+        vals["direction"] = (("\n" + notes + "\n") if notes else "") + cont_text + live_brief(pdir, pitch_ref)
         text = fill(open(os.path.join(TEMPLATES, "director-brief.md"), encoding="utf-8").read(), vals)
     return text
 
@@ -390,12 +415,14 @@ def rule_path(p):
     return "/" + q
 
 
-def claude_args(pdir, model, effort, ultracode=False, max_usd=None, extra_deny=(), settings_path=None, system=None):
+def claude_args(pdir, model, effort, ultracode=False, max_usd=None, extra_deny=(), settings_path=None, system=None,
+                resume=None):
     """The stream-json session's command with the director's sandbox (its agents share it): the project is the
     director's, the studio's own folders are read-only, no network. ultracode adds the Workflow tool; max_usd is a
     hard cap on the session's spending (--max-budget-usd). The pitch round's directors get more deny rules (extra_deny:
     everything in the project outside their own pitch folder that matters), their own settings file and system
-    prompt."""
+    prompt. resume: Claude Code's session id of a conversation to carry on (--resume: a run that continues an earlier
+    one, or this run's own after its session ended while Claude's usage limit held it; the cwd must be the same)."""
     cl = claude_bin()
     if not cl:
         raise SystemExit("Claude Code isn't installed: https://claude.com/claude-code (or set MV_CLAUDE)")
@@ -420,6 +447,8 @@ def claude_args(pdir, model, effort, ultracode=False, max_usd=None, extra_deny=(
         cmd += ["--effort", effort]
     if max_usd:
         cmd += ["--max-budget-usd", f"{float(max_usd):g}"]
+    if resume:
+        cmd += ["--resume", str(resume)]
     return cmd
 
 
@@ -451,7 +480,9 @@ class CriticWatcher:
     critiqued (or being critiqued) elsewhere. At most `most` critiques per run, the last one kept for a final; no
     preview critique when its notes couldn't reach the director in time (`min_left`), and nothing new once the run is
     stopping. Finished critiques wait in take() for the runner; the first preview passed over because the critiques
-    are used up waits in passed() (the director is told once: it isn't looking at full previews itself).
+    are used up waits in passed() (the director is told once: it isn't looking at full previews itself). A critique
+    Claude's usage limit refused (the critic and the director share the user's plan) gives its slot back and its cut
+    is looked at again once the limit has reset (nothing new starts before; "limit": True on its entry).
     The final is rewritten in place, often minutes apart while the director iterates: it is critiqued once the
     director says it's ready (its turn ended: `idle`), or once it has held still for `settle` s, not on every write
     (late in the run, when waiting would keep its notes from reaching the director, at once)."""
@@ -463,6 +494,7 @@ class CriticWatcher:
         self.seen, self.handled, self.finished = {}, set(), []
         self.since = {}                         # path -> when the poll first saw its current size + mtime
         self.job, self.n, self.last = None, 0, 0.0
+        self.hold_until = 0.0                   # Claude's usage limit refused a critique: nothing new before this
         self.done_at = 0.0                      # the newest cut critiqued elsewhere (its mtime)
         self.skipped, self.told = [], False     # a preview passed over for want of critiques left (said once)
         self.lock = threading.Lock()
@@ -517,7 +549,7 @@ class CriticWatcher:
                     coming.append(k[2])
                 else:
                     ready.append(k)
-        if stopping or not ready:
+        if stopping or not ready or now < self.hold_until:
             return
         ready.sort(key=lambda k: k[2])
         fins = [k for k in ready if self.is_final(k)]
@@ -577,10 +609,16 @@ class CriticWatcher:
             if job["proc"]:
                 kill_tree(job["proc"])
         tail = [x for x in out.strip().splitlines() if x.strip()][-1:] or ["no output"]
+        limit = not c and is_limit(tail[0])
         with self.lock:
+            if limit and not job.get("superseded"):     # its slot back; its cut again after the reset
+                self.n -= 1
+                self.handled.discard(job["key"])
+                r = reset_at(tail[0])
+                self.hold_until = max(time.time() + 60, (r + RESET_MARGIN_S) if r else time.time() + RETRY_S)
             if not job.get("superseded"):           # a stopped preview critique (a new final came) is dropped
                 self.finished.append(dict(c, key=job["key"], t=round(time.time() - self.started)) if c else
-                                     {"video": job["video"], "error": tail[0][:300], "cost_usd": critic.spent(out)})
+                                     {"video": job["video"], "error": tail[0][:300], "cost_usd": critic.spent(out), "limit": limit})
             if self.job is job:
                 self.job = None
 
@@ -906,6 +944,41 @@ class LiveNotes:
 HUNG_S = 25 * 60                 # working with no events this long: said in the live log (a long command makes none either)
 STOP_MSG = ("The user stopped this run. Stop now: don't start anything new, and stop any agent of yours that is still "
             "running (TaskStop). If final/music-video.mp4 exists, write report.md in a few lines and end.")
+# Claude's usage limit (the user's plan) stopping the director mid-run. With auto_continue the run waits, its clock
+# stopped, and carries on by itself once the limit has reset; without, it ends there (direct --continue carries it
+# on later, in the same conversation). A request the limit refuses costs nothing, so trying again is free.
+MAX_WAIT_S = 24 * 3600           # a reset further off than this isn't waited for: the run ends (continue it then)
+RESET_MARGIN_S = 60              # carry on this long after the reset it gives (the message says it to the minute)
+RETRY_S = 15 * 60                # it gives no reset (or the limit still holds past it): try again this often
+RESUME_WAIT_S = 60               # claude --resume: a process that ends before its first turn couldn't resume it
+CONTINUE_MIN_S = 15 * 60         # a continuing run gets at least this much by default
+RESUME_MSG = ("Claude's usage limit stopped you at {at}; it has reset now ({waited} later): carry on where you were. The "
+              "run's clock was stopped while you waited, so you still have {left}, and the deadline is now **{dl}** "
+              "(`{clock}` prints the time left). An agent of yours that was running then was stopped by the limit, and a "
+              "background command may have finished meanwhile: check what each left before you start it again, and "
+              "don't redo what's done.")
+CONTINUE_MSG = ("The studio again. Your run {prev} ended at {at}: {why}. This is run {n}, and it carries on from there in "
+                "this same conversation, so what you knew then is still yours. Anything that was running when it ended "
+                "(an agent of yours, a render, a background command) was stopped: check what each left on disk before you "
+                "start it again (renders resume from the frames already there), and don't redo what's done.\n\n"
+                "The new clock: you have {budget}; the deadline is **{deadline}** (`{clock}` prints the time left). The "
+                "studio messages you as time runs down, as before, and stops the session a few minutes after the "
+                "deadline. {critic}\n{notes}\nCarry on where you were: say in one line where you pick up, then deliver "
+                "final/music-video.mp4, run the checks and write report.md before the deadline.")
+CONT_BRIEF = ("\nThis carries on {what}. Everything made so far is in this folder: your log (work/log.md), the "
+              "concept, the scenes, the plan, the renders and previews, the critic's notes (work/critic/). Don't start "
+              "over: read work/log.md first and look at what's there, then carry on from where it stopped (say in one line "
+              "where you pick up). Keep its concept unless it really doesn't work. Anything that was running then (an "
+              "agent, a render, a background command) was stopped: renders resume from the frames already on disk.\n")
+
+
+def is_limit(text):
+    """Claude Code's own words for its usage limit (mv/session.py LIMIT_RE), not a temporary server throttle."""
+    return bool(LIMIT_RE.search(str(text or "")) and not NOT_LIMIT_RE.search(str(text or "")))
+
+
+def clock_cmd(pdir):
+    return f"{venv_python(pdir)} {rel(os.path.join(STUDIO, 'tools'), pdir)}/studio.py clock {os.path.basename(pdir)}"
 
 
 class Runner:
@@ -915,15 +988,29 @@ class Runner:
     messages.md and status.json (current.json for `clock` and `stop`). The runner keeps the time warnings, STOP, the
     deadline + grace, the cost cap, the early-finish nudge and the "no final yet" reminder (only when the director's
     turn is over and none of its agents is running), and the end: the cut archived as the next version, the checks,
-    report.md's run settings, the critic's notes on the version."""
+    report.md's run settings, the critic's notes on the version.
+    Claude's usage limit (mv/session.py counts each time Claude Code says it stopped a turn): with auto_continue the
+    run pauses ("paused": its clock stopped, nothing sent, the critic and the live notes held) until the limit has
+    reset, then carries on: a message to the same session, or, when that session ended meanwhile, a new process of
+    its conversation (claude --resume, through new_session; when that can't be resumed, a fresh session with
+    fallback(why), a brief that says where the work is). A reset more than MAX_WAIT_S away isn't waited for. Without
+    auto_continue (or too far) the run ends there, and cut_off says when, why and how much of the budget was left
+    (`direct --continue` carries it on). new_session(resume_id) -> a Session not started yet; launch() starts one."""
 
-    def __init__(self, pdir, n, rdir, status, session, budget_s, started, nudge=True, critic=None, st=None, log=print):
+    def __init__(self, pdir, n, rdir, status, session, budget_s, started, nudge=True, critic=None, st=None, log=print,
+                 auto_continue=False, new_session=None, fallback=None):
         self.pdir, self.n, self.rdir, self.status, self.s = pdir, n, rdir, status, session
         self.ddir = os.path.join(pdir, "work", "director")
         self.fin = os.path.join(pdir, "final", "music-video.mp4")
         self.budget_s, self.started, self.deadline = budget_s, started, started + budget_s
         self.nudge, self.st, self.log = nudge, st, log
-        self.lock = session.lock
+        self.lock = session.lock if session else threading.RLock()
+        self.auto, self.new_session, self.fallback = bool(auto_continue), new_session, fallback
+        self.pause = None                        # waiting for Claude's usage limit to reset: {since, resets_at, retry_at, ...}
+        self.paused_s = 0.0                      # how long the run waited for it (its clock stopped)
+        self.limits_seen = 0                     # the limit hits the runner has dealt with (status limit_hits)
+        self.cut = None                          # what ended the run early: {why, at, left_s, resets_at, text}
+        status.setdefault("pauses", [])
         self.use_critic = bool(critic)
         self.critic_model = critic["model"] if critic else "off"
         self.critic_effort = critic.get("effort") if critic else None
@@ -943,17 +1030,30 @@ class Runner:
     # ------------------------------------------------------------------ bookkeeping
     def save(self):
         status = self.status
-        status["updated"] = time.time()
-        status["elapsed_s"] = round(time.time() - self.started)
+        now = time.time()
+        status["updated"] = now
+        status["elapsed_s"] = round(now - self.started)
+        status["active_s"] = round(self.active(now))
         status["final_exists"] = os.path.exists(self.fin)
         jsave(os.path.join(self.rdir, "status.json"), status)
         jsave(os.path.join(self.ddir, "current.json"), {k: v for k, v in status.items() if k != "events"} | {"dir": rel(self.rdir, self.pdir)})
 
     def note(self, line):
-        self.s.note(line)
+        if self.s is not None:
+            self.s.note(line)
+        else:                                    # (before its first session started)
+            self.status.setdefault("events", []).append({"t": round(time.time() - self.started), "text": line})
 
     def send(self, text, why):
         return self.s.send(text, why)
+
+    def active(self, now):
+        """The run's own time: the wall clock without the waits for Claude's usage limit."""
+        return now - self.started - self.paused_s - (now - self.pause["since"] if self.pause else 0)
+
+    def left(self, now):
+        """The time left on the run's clock (stopped while it waits for the limit)."""
+        return self.deadline - (self.pause["since"] if self.pause else now)
 
     def record(self, c, used="waiting"):
         """A finished critique into status.json (with how it reached the director: `used`); one that couldn't run
@@ -963,7 +1063,8 @@ class Runner:
             self.status["critic_cost_usd"] = round(self.status["critic_cost_usd"] + (c.get("cost_usd") or 0), 4)
             if c.get("error"):
                 self.status["critic_failed"] = self.status.get("critic_failed", 0) + 1
-                self.note(f"🔍 the critic couldn't look at {c['video']}: {c['error']}")
+                self.note(f"🔍 the critic couldn't look at {c['video']}: {c['error']}"
+                          + (" (Claude's usage limit: it looks again once the limit has reset)" if c.get("limit") else ""))
                 return
             self.status["critiques"].append({k: c.get(k) for k in ("t", "video", "scores", "verdict", "file", "cost_usd", "model")}
                                             | {"used": used})
@@ -994,7 +1095,7 @@ class Runner:
                     break
             except Exception as ex:              # a bug or a file in the way: noted, and the run goes on
                 self.trouble("a step of the run", ex)
-                if now > self.deadline + self.grace:
+                if now > self.deadline + self.grace + (now - self.pause["since"] if self.pause else 0):
                     self.stop_reason = self.stop_reason or "budget ran out (deadline + grace)"
                     break
 
@@ -1034,7 +1135,7 @@ class Runner:
     def live_may_send(self, now):
         """A message can go: the session is there and open, the run isn't stopping, and there's time to act on it."""
         s = self.s
-        return s.alive() and not s.closed and self.stop_reason is None and self.deadline - now > 120
+        return s.alive() and not s.closed and self.stop_reason is None and self.pause is None and self.deadline - now > 120
 
     def live_message(self, notes):
         n = len(notes)
@@ -1045,7 +1146,9 @@ class Runner:
     def check_stop(self, now):
         if self.stop_reason is None and os.path.exists(os.path.join(self.ddir, "STOP")):
             self.stop_reason = "stopped by the user"
-            self.send(STOP_MSG, "stop")
+            self.cut = self.cut or {"why": "stopped", "at": now, "left_s": round(self.left(now))}
+            if not self.pause:                   # (waiting for the limit, it can't answer)
+                self.send(STOP_MSG, "stop")
             self.deadline = min(self.deadline, now)
             self.grace = 60
 
@@ -1055,9 +1158,161 @@ class Runner:
         if not self.capped and self.status.get("budget_hit"):
             self.capped = True
             self.stop_reason = self.stop_reason or f"the cost cap (${float(self.status.get('max_usd') or 0):g}) was reached"
+            self.cut = self.cut or {"why": "cost cap", "at": now, "left_s": round(self.left(now))}
             self.deadline = min(self.deadline, now)
             self.grace = 60
             self.warned.add("up")
+
+    # ------------------------------------------------------------------ Claude's usage limit
+    def check_limit(self, now):
+        """Claude Code said its usage limit stopped a turn (the session counts each: limit_hits): with auto_continue
+        the run pauses until it resets (a reset more than MAX_WAIT_S away isn't waited for), else it ends here. A run
+        that is ending anyway (the user, the cap, its time up) just ends."""
+        hits = int(self.status.get("limit_hits") or 0)
+        if hits <= self.limits_seen:
+            return
+        self.limits_seen = hits
+        lim = dict(self.status.get("limit") or {})
+        r = lim.get("resets_at")
+        if self.pause:                           # again while it waits (its agents ending, a turn of its own)
+            if r and r > (self.pause.get("resets_at") or 0):
+                self.pause.update(resets_at=r, retry_at=max(self.pause["retry_at"], r + RESET_MARGIN_S))
+                self.status["paused"].update(resets_at=r, until=self.pause["retry_at"])
+            return
+        left = self.deadline - now
+        if self.stop_reason is not None or left <= 60:
+            return
+        far = r is not None and r - now > MAX_WAIT_S
+        if self.auto and not far:
+            return self.start_pause(now, lim)
+        self.stop_reason = ("Claude's usage limit was reached" + (f" (it resets {when(r, now)})" if r else "")
+                            + ("; the reset is more than a day away, too far to wait for" if self.auto else ""))
+        self.cut = {"why": "limit", "at": now, "left_s": round(left), "resets_at": r, "text": lim.get("text")}
+        self.deadline, self.grace = now, 60
+        self.warned.add("up")                    # (no "time's up" message: it couldn't answer)
+        self.status["state"] = "finishing"
+        self.note(f"⛔ the run ends here with {fmt_dur(left)} of its budget left: Claude can't work until the limit "
+                  f"resets. Continue the last run (the Direct page, or `studio.py direct {os.path.basename(self.pdir)} "
+                  f"--continue`) carries it on from where it stopped, in the same conversation")
+
+    def start_pause(self, now, lim):
+        r = lim.get("resets_at")
+        retry = r + RESET_MARGIN_S if r and r + RESET_MARGIN_S > now else now + (RETRY_S if not r else RETRY_S // 3)
+        left = self.deadline - now
+        self.pause = {"since": now, "resets_at": r, "retry_at": retry, "text": lim.get("text"), "left_s": round(left), "tries": 1}
+        self.status["state"] = "paused"
+        self.status["paused"] = {"since": now, "resets_at": r, "until": retry, "left_s": round(left), "text": lim.get("text")}
+        self.note(f"⏸ the run waits for the limit to reset, its clock stopped at {fmt_dur(left)} left; it carries on by "
+                  f"itself at {when(retry, now)}" + ("" if r else f" (no reset time given: it tries every {RETRY_S // 60} min)"))
+
+    def paused_step(self, now):
+        """A second of waiting for the limit: nothing goes to the director; the critic's finished notes wait; at the
+        retry time it carries on (a limit that still holds pauses it again, from its next refusal)."""
+        p = self.pause
+        if self.stop_reason is not None:         # stopped while it waited: it ends (it couldn't answer)
+            self.unpause(now, "stopped")
+            return False
+        if self.critics:
+            for c in self.critics.take():
+                self.record(c, "the director ran it" if c.get("seen") else "waiting")
+                if not c.get("error") and not c.get("seen"):
+                    self.unsent.append(c)
+        if now - p["since"] > MAX_WAIT_S + 3600:     # refused for more than a day: the run ends
+            self.cut = {"why": "limit", "at": p["since"], "left_s": p["left_s"], "resets_at": None, "text": p["text"]}
+            self.unpause(now, "gave up")
+            self.stop_reason = "Claude's usage limit still held after a day of waiting"
+            self.deadline, self.grace = now, 60
+            self.warned.add("up")
+            return self.s.alive()
+        if now < p["retry_at"]:
+            return True
+        self.unpause(now, "carried on")
+        self.carry_on(now, p)
+        return True
+
+    def unpause(self, now, how):
+        p, waited = self.pause, now - self.pause["since"]
+        self.pause = None
+        self.paused_s += waited
+        if how == "carried on":                  # the clock runs again from where it stopped
+            self.deadline += waited
+        with self.lock:
+            self.status.update(state="running" if how == "carried on" else "finishing", deadline=self.deadline,
+                               paused_s=round(self.paused_s))
+            self.status.pop("paused", None)
+            self.status["pauses"].append({"t": round(p["since"] - self.started), "s": round(waited), "resets_at": p["resets_at"],
+                                          "text": p["text"], "end": how})
+
+    def carry_on(self, now, p):
+        """The limit has reset: the same session gets a message; one that ended meanwhile is resumed (launch)."""
+        left = self.deadline - now
+        msg = RESUME_MSG.format(at=hm(p["since"]), waited=fmt_dur(now - p["since"]), left=fmt_dur(left),
+                                dl=hm(self.deadline), clock=clock_cmd(self.pdir))
+        why = "the usage limit reset: carry on"
+        s = self.s
+        if s.alive() and not s.closed:
+            s.ack()                              # (the turn the limit ended needs nothing more)
+            if self.send(msg, why):
+                self.note(f"▶ the usage limit has reset: the director carries on ({fmt_dur(left)} left, deadline now {hm(self.deadline)})")
+                return
+        sid = self.status.get("session_id")
+        fb = (lambda: self.fallback(f"this run (run {self.n}): Claude's usage limit stopped its director at "
+                                    f"{hm(p['since'])}, and its conversation couldn't be brought back",
+                                    self.deadline - time.time(), self.deadline)) if self.fallback else None
+        self.note("▶ the usage limit has reset; the director's session had ended meanwhile: the studio "
+                  + ("resumes its conversation" if sid else "starts a fresh one, told where the work is"))
+        ok = self.launch(msg, why, resume=sid, fallback=fb) if sid else \
+            bool(fb) and self.launch(fb(), "the brief (a fresh session: there was no conversation to resume)")
+        if not ok:
+            self.stop_reason = self.stop_reason or "the director's session couldn't be started again after the usage limit"
+
+    def launch(self, text, why, resume=None, fallback=None):
+        """A new director session for this run (new_session), `text` its first message: with resume, a new process of
+        that conversation (claude --resume <id>). One that ends before its first turn couldn't be resumed (no such
+        conversation here): then a fresh session with fallback() (a brief that says where the work is), if there is
+        one. False when nothing could start."""
+        if not self.new_session:
+            return False
+        for rid in ([resume] if resume else []) + [None]:
+            first = text if rid or not resume else (fallback() if fallback else None)
+            if first is None:
+                return False
+            s = self.new_session(rid)
+            try:
+                s.start()
+            except Exception as ex:
+                self.note(f"⚠ Claude Code couldn't start: {type(ex).__name__}: {ex}")
+                return False
+            old, self.s, self.lock = self.s, s, s.lock
+            if old is not None and old is not s:
+                try:
+                    old.finish()
+                except Exception:
+                    pass
+            if rid is None and resume:
+                open(os.path.join(self.rdir, "brief.md"), "w", encoding="utf-8").write(first)
+            s.send(first, why if rid or not resume else "the brief (a fresh session: the conversation couldn't be resumed)")
+            if not rid:
+                return True
+            t0 = time.time()
+            while time.time() - t0 < RESUME_WAIT_S and s.alive() and not s.inits:
+                time.sleep(0.5)
+                try:
+                    with self.lock:
+                        self.save()
+                except Exception:
+                    pass
+            if s.inits or s.alive():
+                return True
+            err = ""
+            try:
+                err = [x for x in open(os.path.join(self.rdir, "stderr.log"), encoding="utf-8", errors="replace").read().splitlines()
+                       if x.strip()][-1][:200]
+            except (OSError, IndexError):
+                pass
+            self.note(f"⚠ Claude Code couldn't resume the conversation{(': ' + err) if err else ''}"
+                      + (": a fresh session instead, its brief says where the work is" if fallback else ""))
+        return False
 
     def check_hung(self, now):
         if not self.hung_said and self.s.hung(now, HUNG_S):
@@ -1069,7 +1324,7 @@ class Runner:
 
     def warnings(self, now, left):
         for frac, key, msg in ((0.5, "half", "Half of your time is gone ({left} left, deadline {dl}). Check your plan against the clock."),):
-            if key not in self.warned and now - self.started >= frac * self.budget_s and left > 0:
+            if key not in self.warned and self.active(now) >= frac * self.budget_s and left > 0:
                 self.warned.add(key)
                 self.send(msg.format(left=fmt_dur(left), dl=hm(self.deadline)), key)
         final_at = max(10 * 60, 0.25 * self.budget_s)
@@ -1096,8 +1351,12 @@ class Runner:
         left = self.deadline - now
         self.check_stop(now)
         self.check_cap(now)
-        if self.capped:
+        self.check_limit(now)
+        if self.pause:
+            return self.paused_step(now)
+        if self.capped or (self.cut or {}).get("why") == "limit":     # (it can't answer: no time warnings)
             self.status["state"] = "finishing"
+            left = min(left, self.deadline - now)
         else:
             self.warnings(now, left)
         if left <= -self.grace:
@@ -1172,15 +1431,24 @@ class Runner:
     # ------------------------------------------------------------------ the end
     def end(self):
         s, status = self.s, self.status
-        if s.alive():
+        if self.pause:
+            self.unpause(time.time(), "ended")
+        if s is not None and s.alive():
             s.stop(self.stop_reason or "the run ended")
         user_stop = bool(self.stop_reason and "user" in self.stop_reason)
-        s.finish()
-        wall = time.time() - self.started
+        if s is not None:
+            s.finish()
+        now = time.time()
+        wall = now - self.started
         status["wall_s"] = round(wall)
+        status["active_s"] = round(self.active(now))
         status["state"] = "stopped" if user_stop else "done"
         status["stop_reason"] = self.stop_reason or self.end_reason
-        status["exit_code"] = s.returncode
+        status["exit_code"] = s.returncode if s is not None else None
+        if not self.cut and self.deadline - now > 120 and not (os.path.exists(self.fin) and os.path.getmtime(self.fin) > self.started):
+            self.cut = {"why": "ended", "at": now, "left_s": round(self.deadline - now)}   # (its session ended early, no final)
+        status["cut_off"] = self.cut
+        status["left_s"] = round(max(0, self.cut["left_s"] if self.cut else self.deadline - now))
         if self.st:
             self.st.step(1)
         v = None
@@ -1212,7 +1480,7 @@ class Runner:
 
     RUN_KEYS = ("run", "kind", "model", "model_used", "effort", "ultracode", "max_usd", "budget_hit", "budget", "wall_s",
                 "cost_usd", "turns", "version", "result", "stop_reason", "claude_version", "critic_model", "critic_cost_usd",
-                "pitch")
+                "pitch", "auto_continue", "paused_s", "left_s", "continues")
 
     def keep_record(self, v):
         """report.md's run settings, status.json, current.json, project.json runs."""
@@ -1265,19 +1533,112 @@ class Runner:
         status["critic_cost_usd"] = round(max(status["critic_cost_usd"], sum(d.get("cost_usd") or 0 for d in logged)), 4)
 
 
-def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=False, nudge=True, dry_run=False,
+def last_run(pdir):
+    """The latest director run that started (work/director/run-N/status.json, the newest first): not a dry run, not a
+    continuing run that never started (stopped, or its runner cut off, while it waited for the usage limit). None when
+    there is none."""
+    ddir = os.path.join(pdir, "work", "director")
+    try:
+        ns = sorted((int(x.split("-")[1]) for x in os.listdir(ddir) if re.fullmatch(r"run-\d+", x)), reverse=True)
+    except OSError:
+        return None
+    for k in ns:
+        st = jload(os.path.join(ddir, f"run-{k}", "status.json"), None)
+        if isinstance(st, dict) and st.get("state") not in ("dry-run", "waiting") and st.get("result") != "not started":
+            return dict(st, dir=f"work/director/run-{k}")
+    return None
+
+
+def continuable(pdir, now=None):
+    """The last run, for "Continue the last run" (the Direct page, `direct --continue`), or None when there is none or
+    one is going on: {run, kind, state, why (how it ended), ended (when), left_s (its budget not used), budget_s (what a
+    continuing run gets by default: that, at least CONTINUE_MIN_S), resets_at (the reset of Claude's usage limit that
+    stopped it, still to come; else None), limit (the limit stopped it), cut (it ended early, or without a final),
+    resumable (Claude Code's session id is known: --resume), session_id, conv_cost_usd, conv_usage, version}. A run
+    whose runner was cut off (the console closed, the machine slept) counts with what its clock said last."""
+    now = now or time.time()
+    st = last_run(pdir)
+    if not st or run_active(pdir):
+        return None
+    stale = st.get("state") in ACTIVE
+    left = st.get("left_s")
+    if left is None:
+        act = st.get("active_s")
+        act = act if act is not None else float(st.get("elapsed_s") or 0) - float(st.get("paused_s") or 0)
+        left = max(0.0, float(st.get("budget_s") or 0) - float(act))
+    cut = st.get("cut_off") or {}
+    p = (st.get("paused") or {}) if stale else {}
+    r = cut.get("resets_at") if cut.get("why") == "limit" else p.get("resets_at")
+    why = st.get("stop_reason") or ("its runner stopped (the console closed, or the machine slept or restarted)" if stale
+                                    else "it ended")
+    return {"run": st.get("run"), "kind": st.get("kind"), "state": st.get("state"), "why": why,
+            "ended": float(st.get("updated") or 0) if stale else float(st.get("started") or 0) + float(st.get("wall_s") or st.get("elapsed_s") or 0),
+            "left_s": round(left), "budget_s": max(CONTINUE_MIN_S, -(-int(left) // 60) * 60),
+            "resets_at": r if r and r > now else None, "limit": cut.get("why") == "limit" or bool(p),
+            "cut": bool(cut) or stale or st.get("result") == "no final", "resumable": bool(st.get("session_id")),
+            "session_id": st.get("session_id"), "conv_cost_usd": st.get("conv_cost_usd", st.get("cost_usd")),
+            "conv_usage": st.get("conv_usage", st.get("model_usage")), "version": st.get("version"), "dir": st.get("dir")}
+
+
+def wait_for_reset(pdir, rdir, status, until, log=print):
+    """A continuing run, before its clock starts: it waits until Claude's usage limit has reset (state "waiting":
+    current.json kept fresh, so the web app and `clock` see it and no second run starts over it). True when it's time;
+    False when the user stopped it (STOP)."""
+    ddir = os.path.join(pdir, "work", "director")
+    line = f"⏳ waiting for Claude's usage limit to reset: run {status['run']} starts at {when(until)}, with {status['budget']}"
+    status.setdefault("events", []).append({"t": 0, "text": line})
+    log(line)
+    while True:
+        now = time.time()
+        status["updated"] = now
+        try:
+            jsave(os.path.join(rdir, "status.json"), status)
+            jsave(os.path.join(ddir, "current.json"), {k: v for k, v in status.items() if k != "events"} | {"dir": rel(rdir, pdir)})
+        except Exception:                        # (Windows: the web app had the file open just then)
+            pass
+        if os.path.exists(os.path.join(ddir, "STOP")):
+            return False
+        if now >= until:
+            return True
+        time.sleep(max(0.05, min(2.0, until - now)))
+
+
+def continue_message(pdir, n, prev, budget_s, deadline, critic, seed_notes=""):
+    """The first message of a run that carries on the last one in its own conversation (claude --resume)."""
+    crit_line = (f"The studio's critic ({critic[0]}) is on: it looks at every full preview you mux into work/previews/ and "
+                 f"at the final (up to {critic[1]} critiques this run), and its notes come as messages, as before."
+                 if critic else "The studio's critic is off this run: look at your renders with the eyes tools yourself.")
+    notes = (f"\nMy notes for this run: {seed_notes.strip()}\n" if seed_notes.strip() else "") + live_brief(pdir)
+    return CONTINUE_MSG.format(prev=prev["run"], at=when(prev["ended"]) if prev.get("ended") else "?", why=prev["why"], n=n,
+                               budget=fmt_dur(budget_s), deadline=f"{hm(deadline)} (in {fmt_dur(budget_s)})",
+                               clock=clock_cmd(pdir), critic=crit_line, notes=notes)
+
+
+def direct(pdir, budget=None, effort=None, model=None, seed_notes="", revise=False, nudge=True, dry_run=False,
            critic_model=None, critic_effort=None, critic_max=6, ultracode=False, max_usd=None, pitch=None, picked_by=None,
-           log=print):
+           auto_continue=None, cont=False, log=print):
     """The autonomous run: one director session (model: the project's, else opus; effort default max) with full reign,
     agents its choice (ultracode: the Workflow tool too; max_usd: a hard cap on the session's spending), the critic
     watcher, the user's live notes. pitch ("round-K/pN"): first the pitch round's pitch is put in place (pitch.promote:
     the concept, the scenes, the style frames, a draft plan) and the brief says to build it and go further; picked_by
-    "auto" when the round's verdict picked it (studio.py pitch --auto). Returns the run's status."""
+    "auto" when the round's verdict picked it (studio.py pitch --auto). budget: default 90m.
+    auto_continue: when Claude's usage limit stops the director, the run waits for the reset, its clock stopped, and
+    carries on (None: the Direct page's saved choice, project.json director.auto_continue); without, it ends there.
+    cont: carry on the last run (continuable): in its own conversation (claude --resume) when Claude Code still has it,
+    else a fresh session whose brief says where the work is; budget default what that run had left (at least
+    CONTINUE_MIN_S); when the limit that stopped it hasn't reset yet, this run waits for it before its clock starts.
+    Returns the run's status."""
     from studio import Status
     import critic as crit
     if not os.path.exists(os.path.join(pdir, "song", "song-map.json")):
         raise SystemExit("no song folder yet: run ingest first")
-    budget_s = parse_budget(budget)
+    if cont and (pitch or revise):
+        raise SystemExit("--continue carries on the last run as it was: leave out --pitch and --revise")
+    prev = continuable(pdir) if cont else None
+    if cont and not prev:
+        raise SystemExit("a director run is going on in this project: let it finish (or `studio.py stop`) first"
+                         if run_active(pdir) else "no director run to continue in this project yet")
+    budget_s = parse_budget(budget) if budget else prev["budget_s"] if prev else parse_budget("90m")
     if max_usd is not None and float(max_usd) <= 0:
         raise SystemExit("--max-usd must be more than 0 (leave it out for no cap)")
     if pitch and revise:
@@ -1290,11 +1651,17 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     if pitch:                                  # a pitch that can't be built is refused before anything is made or moved
         pitches.promote(pdir, pitch, dry=True, log=lambda x: None)
     pj = load_pj(pdir)
+    if auto_continue is None:
+        auto_continue = str((pj.get("director") or {}).get("auto_continue")).lower() in ("1", "true", "on")
     model = model or (pj.get("director") or {}).get("model") or "opus"
     effort = effort or "max"
     cm, ce = crit.settings(pj)
     critic_model, critic_effort = critic_model or cm, critic_effort or ce
     use_critic = critic_model != "off" and (critic_max or 0) > 0
+    wait_until = prev["resets_at"] + RESET_MARGIN_S if prev and prev.get("resets_at") else None
+    if wait_until and wait_until - time.time() > MAX_WAIT_S:
+        raise SystemExit(f"Claude's usage limit that stopped run {prev['run']} resets {when(prev['resets_at'])}: more than "
+                         f"a day away. Continue it then.")
     ddir = os.path.join(pdir, "work", "director")
     os.makedirs(ddir, exist_ok=True)
     n = 1 + max([int(x.split("-")[1]) for x in os.listdir(ddir) if re.fullmatch(r"run-\d+", x)] or [0])
@@ -1313,29 +1680,59 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     picked = None
     if pitch:                                  # the pitch in place before the clock starts (its brief section names it)
         picked = pitches.promote(pdir, pitch, by="auto" if picked_by == "auto" else "the user", run=n, dry=dry_run, log=log)
-    started = time.time()
-    deadline = started + budget_s
-    critic = {"model": critic_model, "effort": critic_effort, "max": critic_max} if use_critic else None
-    text = build_brief(pdir, budget_s, seed_notes, revise, started, deadline,
-                       critic=(critic_model, critic_max) if use_critic else None, ultracode=ultracode,
-                       pitch_text=pitches.brief_section(picked) if picked else "", pitch_ref=picked["ref"] if picked else None)
-    open(os.path.join(rdir, "brief.md"), "w", encoding="utf-8").write(text)
-    cmd = claude_args(pdir, model, effort, ultracode=ultracode, max_usd=max_usd)
-    json.dump({"cmd": cmd, "cwd": pdir}, open(os.path.join(rdir, "command.json"), "w"), indent=1)
     cver = ""
     try:
         cver = subprocess.run([*claude_bin(), "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
     except Exception:
         pass
-    status = {"run": n, "state": "running", "kind": "revise" if revise else "first", "model": model, "effort": effort,
-              "ultracode": bool(ultracode), "max_usd": float(max_usd) if max_usd else None,
-              "budget_s": budget_s, "budget": fmt_dur(budget_s), "started": started, "deadline": deadline,
+    critic = {"model": critic_model, "effort": critic_effort, "max": critic_max} if use_critic else None
+    status = {"run": n, "state": "running", "kind": "continue" if prev else "revise" if revise else "first", "model": model,
+              "effort": effort, "ultracode": bool(ultracode), "max_usd": float(max_usd) if max_usd else None,
+              "budget_s": budget_s, "budget": fmt_dur(budget_s), "started": time.time(), "deadline": None,
               "claude_version": cver, "events": [], "turns": 0, "cost_usd": 0.0, "model_usage": {}, "agents": [],
               "messages_sent": [], "pid": None, "critic_model": critic_model if use_critic else "off",
               "critic_effort": critic_effort if use_critic else None, "critiques": [], "critic_cost_usd": 0.0,
+              "auto_continue": bool(auto_continue),
+              "continues": {"run": prev["run"], "why": prev["why"], "kind": prev["kind"], "resumed": None} if prev else None,
               "pitch": {"ref": picked["ref"], "title": picked["title"], "angle": picked["angle"], "by": picked["by"],
                         "proof_av": picked["proof_av"], "round_cost_usd": picked.get("cost_usd"),
                         "round_costs": picked.get("costs"), "chained": picked_by == "auto"} if picked else None}
+    if wait_until and not dry_run:             # the limit that stopped it hasn't reset yet: the clock starts after it
+        status.update(state="waiting", waiting_until=wait_until, resets_at=prev["resets_at"])
+        if not wait_for_reset(pdir, rdir, status, wait_until, log):
+            status.update(state="stopped", result="not started", stop_reason="stopped by the user while it waited for "
+                          "Claude's usage limit to reset (not started)", updated=time.time())
+            jsave(os.path.join(rdir, "status.json"), status)
+            jsave(os.path.join(ddir, "current.json"), {k: v for k, v in status.items() if k != "events"} | {"dir": rel(rdir, pdir)})
+            log(f"director run {n}: stopped before it started")
+            return status
+        status["state"] = "running"
+        status.pop("waiting_until", None)
+    started = time.time()
+    deadline = started + budget_s
+    status.update(started=started, deadline=deadline)
+    crit_arg = (critic_model, critic_max) if use_critic else None
+
+    def fresh(what, left_s, dl):               # a fresh session's brief, carrying on the work that's on disk
+        rv = (prev or {}).get("kind") == "revise" if prev else revise
+        for r in ((rv, False) if rv else (False,)):
+            try:
+                return build_brief(pdir, left_s, seed_notes, r, time.time(), dl, critic=crit_arg, ultracode=ultracode,
+                                   cont_text=CONT_BRIEF.format(what=what))
+            except SystemExit:                 # (a review round's notes all done meanwhile: the first brief)
+                continue
+    if prev:
+        text = continue_message(pdir, n, prev, budget_s, deadline, crit_arg, seed_notes)
+        resume = prev.get("session_id")
+        if not resume:                         # (no conversation to resume: a fresh session, told where the work is)
+            text = fresh(f"run {prev['run']}, which ended at {when(prev['ended'])}: {prev['why']}", budget_s, deadline)
+    else:
+        text = build_brief(pdir, budget_s, seed_notes, revise, started, deadline, critic=crit_arg, ultracode=ultracode,
+                           pitch_text=pitches.brief_section(picked) if picked else "", pitch_ref=picked["ref"] if picked else None)
+        resume = None
+    open(os.path.join(rdir, "brief.md"), "w", encoding="utf-8").write(text)
+    cmd = claude_args(pdir, model, effort, ultracode=ultracode, max_usd=max_usd, resume=resume)
+    json.dump({"cmd": cmd, "cwd": pdir}, open(os.path.join(rdir, "command.json"), "w"), indent=1)
     if dry_run:
         log(text)
         log("\n" + " ".join(cmd[:4]) + " ... (dry run: not started)")
@@ -1347,16 +1744,45 @@ def direct(pdir, budget="90m", effort=None, model=None, seed_notes="", revise=Fa
     # the director's own `critique` and `plan assemble` (and its agents') use the run's critic
     env = dict(os.environ, MV_PROJECT=pdir, PYTHONIOENCODING="utf-8", MV_RENDER_WHO="the director",
                MV_CRITIC_MODEL=critic_model, MV_CRITIC_EFFORT=critic_effort or "")
-    session = Session(cmd, pdir, rdir, name="director", status=status, env=env, started=started)
-    session.start()
-    R = Runner(pdir, n, rdir, status, session, budget_s, started, nudge=nudge, critic=critic, st=st, log=log)
-    R.send(text, "the brief")
+    launches = []
+
+    def new_session(rid=None):
+        """A director process for this run: the first, or a new one of its conversation (rid: claude --resume); its
+        costs go on from this run's so far (a continuing run's first: from nothing, the earlier run's taken off if the
+        resumed process counts them)."""
+        c = claude_args(pdir, model, effort, ultracode=ultracode, max_usd=max_usd, resume=rid)
+        first = not launches
+        launches.append({"t": round(time.time() - started), "resume": rid})
+        json.dump({"cmd": c, "cwd": pdir, "launches": launches}, open(os.path.join(rdir, "command.json"), "w"), indent=1)
+        if not rid:                            # a fresh conversation counts from nothing
+            before = (0, {})
+        elif first and prev:                   # the earlier run's conversation, as its last process counted it
+            before = (prev.get("conv_cost_usd") or 0, prev.get("conv_usage") or {})
+        else:                                  # this run's own conversation
+            before = (status.get("conv_cost_usd", status.get("cost_usd")) or 0, status.get("conv_usage", status.get("model_usage")) or {})
+        return Session(c, pdir, rdir, name="director", status=status, env=env, started=started,
+                       append=os.path.exists(os.path.join(rdir, "events.jsonl")),
+                       cost_base=status.get("cost_usd") or 0, usage_base=dict(status.get("model_usage") or {}),
+                       cost_before=before[0], usage_before=dict(before[1]))
+    R = Runner(pdir, n, rdir, status, None, budget_s, started, nudge=nudge, critic=critic, st=st, log=log,
+               auto_continue=auto_continue, new_session=new_session, fallback=fresh)
+    ok = R.launch(text, f"continuing run {prev['run']}" if prev and resume else "the brief", resume=resume,
+                  fallback=(lambda: fresh(f"run {prev['run']}, which ended at {when(prev['ended'])}: {prev['why']}",
+                                          deadline - time.time(), deadline)) if prev and resume else None)
+    if prev:                                   # its conversation resumed, or (it couldn't be) a fresh session
+        status["continues"]["resumed"] = bool(ok and resume and len(launches) == 1)
     log(f"director run {n}: {model}, effort {effort}, budget {fmt_dur(budget_s)} (until {hm(deadline)})"
+        + (f"; continuing run {prev['run']}" + (" in its conversation" if status["continues"].get("resumed") else
+                                                " in a fresh session") if prev else "")
         + (f"; critic {critic_model}" if use_critic else "; no critic") + ("; ultracode" if ultracode else "")
         + (f"; cost cap ${float(max_usd):g}" if max_usd else "")
+        + ("; it waits for Claude's usage limit to reset if it hits it" if auto_continue else "")
         + (f"; starting from pitch {picked['ref']}" + (f" \"{picked['title']}\"" if picked["title"] else "") if picked else ""))
+    if not ok:
+        R.stop_reason = "Claude Code couldn't start"
     try:
-        R.loop()
+        if ok:
+            R.loop()
     finally:
         R.end()
     return status
@@ -1430,7 +1856,21 @@ def append_settings(pdir, status, v):
              f"ultracode {'on' if status.get('ultracode') else 'off'}"
              + (f"; cost cap ${float(cap):g}" + (" (reached: the run ended there)" if status.get("budget_hit") else " (not reached)")
                 if cap else ""),
-             f"- Budget: {fmt_dur(status['budget_s'])}; wall time: {fmt_dur(status.get('wall_s', 0))}; ended: {status.get('stop_reason')}",
+             f"- Budget: {fmt_dur(status['budget_s'])}; wall time: {fmt_dur(status.get('wall_s', 0))}; ended: {status.get('stop_reason')}"
+             + (f"; {fmt_dur(status['left_s'])} of the budget left" if (status.get("left_s") or 0) >= 60 else "")]
+    co = status.get("continues") or {}
+    if co:
+        lines.append(f"- Continues run {co.get('run')} (" + ("its conversation, resumed" if co.get("resumed") else
+                     "a fresh session: its conversation couldn't be resumed") + f"; it had ended: {co.get('why')})")
+    ps = status.get("pauses") or []
+    if ps:
+        lines.append(f"- Waited {fmt_dur(sum(p.get('s') or 0 for p in ps))} for Claude's usage limit to reset, the clock "
+                     f"stopped ({len(ps)} time{'s' * (len(ps) != 1)}: " + ", ".join(
+                         f"at {fmt_dur(p.get('t') or 0)} in, {fmt_dur(p.get('s') or 0)}" for p in ps[:4]) + ")")
+    elif "auto_continue" in status:
+        lines.append(f"- Continue by itself when the usage limit resets: {'on' if status.get('auto_continue') else 'off'}"
+                     + (" (the limit stopped this run)" if (status.get("cut_off") or {}).get("why") == "limit" else ""))
+    lines += [
              f"- Claude Code {status.get('claude_version') or '?'}; turns {status.get('turns')}; cost reported "
              f"${float(status.get('cost_usd') or 0):.2f} (the director's session, its agents included)",
              f"- Costs per model: {costs_line(status)}"]

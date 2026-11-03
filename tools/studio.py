@@ -10,12 +10,15 @@
                                                                      (cache/lyrics/aligned.json; the web app's timing editor)
   python tools/studio.py direct <project> --budget 90m [--model opus] [--effort max] [--seed-notes "..."] [--revise]
                          [--ultracode] [--max-usd N] [--critic-model sonnet|haiku|opus|off] [--critic-effort medium]
-                         [--critic-max 6] [--pitch round-K/pN]
+                         [--critic-max 6] [--pitch round-K/pN] [--continue] [--auto-continue | --no-auto-continue]
                                                                      the autonomous run (Claude Code headless) -> final/music-video.mp4:
                                                                      one director with full reign (agents if it wants them;
                                                                      --ultracode: multi-agent workflows too; --max-usd: a cap)
                                                                      and the critic on its previews and the final
-                                                                     (--pitch: it starts from that pitch, put in place first)
+                                                                     (--pitch: it starts from that pitch, put in place first;
+                                                                     --continue: carries on the last run in its own conversation,
+                                                                     with what it had left; --auto-continue: when Claude's usage
+                                                                     limit stops it, it waits for the reset and carries on)
   python tools/studio.py pitch <project> [--n 3] [--budget 20m] [--model M] [--effort high] [--critic-model sonnet]
                          [--critic-effort E] [--proof "chorus 1" | --proof 24-44] [--angles story,wild,...]
                          [--seed-notes "..."] [--max-usd N] [--dry-run]
@@ -354,7 +357,7 @@ def cmd_direct(a):
     director.direct(project_dir(a.project), budget=a.budget, effort=a.effort, model=a.model, seed_notes=a.seed_notes,
                     revise=a.revise, nudge=not a.no_nudge, dry_run=a.dry_run, critic_model=a.critic_model,
                     critic_effort=a.critic_effort, critic_max=a.critic_max, ultracode=a.ultracode, max_usd=a.max_usd,
-                    pitch=a.pitch)
+                    pitch=a.pitch, auto_continue=a.auto_continue, cont=a.cont)
 
 
 def cmd_pitch(a):
@@ -502,7 +505,8 @@ def main():
     p = sp.add_parser("story"); p.add_argument("project"); p.add_argument("--model")
     p = sp.add_parser("align-lyrics"); p.add_argument("project"); p.add_argument("--in", dest="inp")
     efforts = ["low", "medium", "high", "xhigh", "max"]
-    p = sp.add_parser("direct"); p.add_argument("project"); p.add_argument("--budget", default="90m")
+    p = sp.add_parser("direct"); p.add_argument("project")
+    p.add_argument("--budget", default=None, help="the time budget, e.g. 90m, 1h30m (default 90m; --continue: what the last run had left)")
     p.add_argument("--effort", default=None, choices=efforts, help="the director's (default max)")
     p.add_argument("--model", default=None, help="the director's (default: project.json director.model, else opus)")
     p.add_argument("--ultracode", action="store_true",
@@ -516,6 +520,15 @@ def main():
     p.add_argument("--critic-effort", help="the critic's effort (default medium)")
     p.add_argument("--critic-max", type=int, default=6, help="automatic critiques per run (default 6)")
     p.add_argument("--pitch", help="start from a pitch of a pitch round: round-K/pN (studio.py pitch)")
+    p.add_argument("--continue", dest="cont", action="store_true",
+                   help="carry on the last run (cut off by Claude's usage limit, stopped, ...): its own conversation "
+                        "(claude --resume), the budget it had left unless --budget says; it waits for a limit still to reset")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--auto-continue", dest="auto_continue", action="store_const", const=True, default=None,
+                   help="when Claude's usage limit stops the director, wait for the reset (the clock stopped) and carry on "
+                        "(default: the Direct page's choice, project.json director.auto_continue)")
+    g.add_argument("--no-auto-continue", dest="auto_continue", action="store_const", const=False,
+                   help="when Claude's usage limit stops the director, end the run there (continue it later)")
     p = sp.add_parser("pitch", help="the pitch round (tools/pitch.py)"); p.add_argument("project")
     import pitch as pitch_
     pitch_.add_args(p)
