@@ -573,6 +573,7 @@ def pitch_check(B, name, out, browser=True):
             # started); ▶ Listen plays that part and stops; then the section from the dropdown, and the round starts
             page.wait_for_function("() => /bar:beat/.test(($('#pw-txt') || {}).innerText || '')", timeout=15000)
             auto_txt = page.inner_text("#pw-txt")
+            page.locator("#pw-cv").scroll_into_view_if_needed()          # filling the notes scrolled the strip off-screen
             box = page.locator("#pw-cv").bounding_box()
             X, Y = (lambda t: box["x"] + t / m["duration"] * box["width"]), box["y"] + box["height"] / 2
             page.mouse.move(X(0.1 * m["duration"]), Y)
