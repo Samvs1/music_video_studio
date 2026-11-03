@@ -601,7 +601,7 @@ def limit_check(B, name, out, browser=True):
             def no_nudge(route):
                 body = json.loads(route.request.post_data or "{}")
                 sent.append(body)
-                route.continue_(post_data=json.dumps(dict(body, nudge=False, critic_model="off")))
+                route.continue_(post_data=json.dumps(dict(body, nudge=False)))      # (the critic on: the Watch page checks its notes)
             page.route("**/api/p/*/direct", no_nudge)
             page.click("#go-cont")
             page.wait_for_timeout(1500)
@@ -610,7 +610,7 @@ def limit_check(B, name, out, browser=True):
             say(got.get("continue") is True and got.get("budget") == "15" and got.get("auto_continue") is False,
                 "UI: Continue the last run sends continue with its minutes and the form's settings", str(got)[:300])
         else:
-            requests.post(f"{B}/api/p/{name}/direct", json=dict(run, budget=15, **{"continue": True}))
+            requests.post(f"{B}/api/p/{name}/direct", json=dict(run, budget=15, critic_model="sonnet", **{"continue": True}))
         wait_job(B, name, timeout=1500, want="direct")
         d = director(5)
         co = d.get("continues") or {}
