@@ -77,7 +77,7 @@ LIVE = {}            # project -> its live server (mv/live.py: 127.0.0.1, its ow
 LIVE_LOCK = threading.Lock()
 PJ_LOCK = threading.Lock()          # project.json: one writer at a time (the brief, uploads, reference pictures)
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp")
-MAX_REFS, MAX_REF_BYTES, REF_SIDE = 24, 40 << 20, 1600      # Claude sees images at ~1568 px on the long side at most
+MAX_REF_BYTES, REF_SIDE = 40 << 20, 1600      # Claude sees images at ~1568 px on the long side at most
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("audio/mp4", ".m4a")
 
@@ -923,8 +923,6 @@ def add_ref(d, fn, rfile, n):
         with PJ_LOCK:
             pj = jload(os.path.join(d, "project.json"), {})
             refs = pj.get("refs") or []
-            if len(refs) >= MAX_REFS:
-                raise ValueError(f"{MAX_REFS} reference pictures at most: a few clear ones per person are enough")
             base, ext = os.path.splitext(fn)
             stem = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:40] or "ref"
             dst = tidy_image(part, os.path.join(rd, stem), ext)

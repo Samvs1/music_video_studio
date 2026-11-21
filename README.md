@@ -281,7 +281,7 @@ director how they look, so it can draw them; the pictures never appear in the vi
   pictures fix who is who, never the style.
 - **Reference pictures are tidied on upload**: turned upright (the phone's EXIF rotation applied), at most 1600 px on
   the long side (Claude sees images at ~1568 px anyway), metadata such as GPS dropped; JPEG, or PNG when transparent.
-  HEIC isn't read (save it as JPEG); 24 pictures at most. The director writes `work/cast.md` from them once.
+  HEIC isn't read (save it as JPEG); there is no limit on how many. The director writes `work/cast.md` from them once.
 - **Frames are evaluated at the end of their time slot**, so a downbeat that lands anywhere in a frame's slot shows in
   that frame (it was one frame late half of the time otherwise; found with the sync check on the test song).
 - **JPEG q98 capture** for opaque web passes: Chrome's PNG encoder took ~0.5 s per busy 1080p frame, JPEG ~0.08 s; the

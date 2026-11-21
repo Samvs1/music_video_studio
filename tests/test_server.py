@@ -1066,6 +1066,16 @@ def refs_check(B, name):
     say(len(refs) == 1 and not os.path.exists(os.path.join(pdir, "refs", f2)) and os.path.exists(os.path.join(pdir, "trash", f2)),
         "POST ref (delete: the file goes to trash/)")
     say("error" in requests.post(f"{B}/api/p/{name}/ref", json={"id": 1, "name": "x"}).json(), "POST ref refuses an unknown id")
+    buf = io.BytesIO()
+    Image.new("RGB", (24, 24), (90, 120, 200)).save(buf, "JPEG")
+    many = [requests.put(f"{B}/api/p/{name}/upload?filename=crowd {i}.jpg", data=buf.getvalue()).json() for i in range(30)]
+    n_all = len(requests.get(f"{B}/api/p/{name}").json()["project"].get("refs", []))
+    for x in many:
+        if x.get("ref"):
+            refs = requests.post(f"{B}/api/p/{name}/ref", json={"id": x["ref"]["id"], "delete": True}).json()
+    say(all(x.get("kind") == "ref" for x in many) and n_all == 31 and len(refs) == 1,
+        "no limit on how many reference pictures (31 at once; the extra 30 removed again)",
+        f"{n_all} pictures; {next((x['error'] for x in many if x.get('error')), '')}")
     sys.path.insert(0, os.path.join(STUDIO, "tools"))
     import director
     pj = json.load(open(os.path.join(pdir, "project.json"), encoding="utf-8"))
